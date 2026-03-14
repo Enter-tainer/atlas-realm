@@ -18,6 +18,11 @@ app.innerHTML = `
 const statusEl = null;
 const layersEl = null;
 
+
+function absoluteUrl(path) {
+  return new URL(path, window.location.origin).toString();
+}
+
 function popupHtml(properties = {}) {
   const row = (label, value) => value === undefined || value === null || value === '' ? '' : `<div><strong>${label}：</strong>${value}</div>`;
   const title = properties.localized_name || properties.name || properties.standard_label || properties.label || properties.ref || '铁路要素';
@@ -41,12 +46,12 @@ async function loadImage(url) {
 }
 
 function rewriteOrmStyle(style) {
-  style.glyphs = '/orm/font/{fontstack}/{range}';
+  style.glyphs = absoluteUrl('/orm/font/{fontstack}/{range}');
 
   if (Array.isArray(style.sprite)) {
-    style.sprite = style.sprite.map((sprite) => ({ ...sprite, url: sprite.url.startsWith('/orm/') ? sprite.url : `/orm${sprite.url}` }));
+    style.sprite = style.sprite.map((sprite) => ({ ...sprite, url: absoluteUrl(sprite.url.startsWith('/orm/') ? sprite.url : `/orm${sprite.url}`) }));
   } else if (style.sprite?.startsWith('/')) {
-    style.sprite = `/orm${style.sprite}`;
+    style.sprite = absoluteUrl(`/orm${style.sprite}`);
   }
 
   const rewrittenSources = [];
