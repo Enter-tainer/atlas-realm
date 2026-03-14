@@ -1,0 +1,116 @@
+import * as shared from '../shared.mjs'
+const { signals_railway_line, loading_gauges, track_classes, knownStyles, defaultDate, themeSwitch, colors, font, turntable_casing_width, trainProtectionColor, railway_casing_add, bridge_casing_add, abandoned_dasharray, disused_dasharray, razed_dasharray, construction_dasharray, proposed_dasharray, present_dasharray, train_protection_construction_dasharray, turboColorMap, speedColor, speedHoverColor, electrification_construction_dashes, electrification_proposed_dashes, color_no, color_delectrified, color_lt750v_dc, color_750v_dc, color_gt750v_lt1kv_dc, color_1kv_dc, color_gt1kv_lt1500v_dc, color_1500v_dc, color_gt1500v_lt3kv_dc, color_3kv_dc, color_gt3kv_dc, color_lt15kv_ac, color_gte15kv_lt25kv_ac, color_gte25kv_ac, color_15kv_16_67hz, color_15kv_16_7hz, color_25kv_50hz, color_25kv_60hz, color_12kv_25hz, color_12_5kv_60hz, color_20kv_50hz, color_20kv_60hz, electrificationVoltageFrequencyColor, electrificationVoltageMaximumCurrentColor, electrificationPowerColor, gauge_construction_dashes, dual_construction_dashes, multi_construction_dashes, gauge_dual_gauge_dashes, gauge_multi_gauge_dashes, color_gauge_0064, color_gauge_0089, color_gauge_0127, color_gauge_0184, color_gauge_0190, color_gauge_0260, color_gauge_0381, color_gauge_0500, color_gauge_0597, color_gauge_0600, color_gauge_0610, color_gauge_0700, color_gauge_0750, color_gauge_0760, color_gauge_0762, color_gauge_0785, color_gauge_0800, color_gauge_0891, color_gauge_0900, color_gauge_0914, color_gauge_0950, color_gauge_1000, color_gauge_1009, color_gauge_1050, color_gauge_1067, color_gauge_1100, color_gauge_1200, color_gauge_1372, color_gauge_1422, color_gauge_1432, color_gauge_1435, color_gauge_1440, color_gauge_1445, color_gauge_1450, color_gauge_1458, color_gauge_1495, color_gauge_1520, color_gauge_1522, color_gauge_1524, color_gauge_1581, color_gauge_1588, color_gauge_1600, color_gauge_1668, color_gauge_1676, color_gauge_1700, color_gauge_1800, color_gauge_1880, color_gauge_2000, color_gauge_miniature, color_gauge_monorail, color_gauge_broad, color_gauge_narrow, color_gauge_standard, color_gauge_unknown, gaugeColor, loadingGaugeFillColor, trackClassFillColor, searchResults, railwayLine, historicalRailwayLine, railwayKmText, preferredDirectionLayer, imageLayerWithOutline, hillshade, route, routeText, routeStops, DATA_MAX_ZOOM, capSourcesForDataMaxZoom, capLayersForDataMaxZoom, makeStyle } = shared
+export const sources = {
+  search: {
+    type: 'geojson',
+    data: {
+      type: 'FeatureCollection',
+      features: [],
+    },
+  },
+  route: {
+    type: 'geojson',
+    // Data will be updated with URL of route GeoJSON
+    data: {
+      type: 'FeatureCollection',
+      features: [],
+    }
+  },
+  route_stops: {
+    type: 'geojson',
+    // Data will be updated with URL of route GeoJSON
+    data: {
+      type: 'FeatureCollection',
+      features: [],
+    }
+  },
+  standard_railway_line_low: {
+    type: 'vector',
+    url: '/standard_railway_line_low',
+  },
+  speed_railway_line_low: {
+    type: 'vector',
+    url: '/speed_railway_line_low',
+  },
+  signals_railway_line_low: {
+    type: 'vector',
+    url: '/signals_railway_line_low',
+  },
+  electrification_railway_line_low: {
+    type: 'vector',
+    url: '/electrification_railway_line_low',
+  },
+  track_railway_line_low: {
+    type: 'vector',
+    url: '/track_railway_line_low',
+  },
+  operator_railway_line_low: {
+    type: 'vector',
+    url: '/operator_railway_line_low',
+  },
+  route_railway_line_low: {
+    type: 'vector',
+    url: '/route_railway_line_low',
+  },
+  openrailwaymap_low: {
+    type: 'vector',
+    url: '/railway_line_high',
+  },
+  standard_railway_text_stations_low: {
+    type: 'vector',
+    url: '/standard_railway_text_stations_low',
+    metadata: {
+      supports: ['language'],
+    },
+  },
+  standard_railway_text_stations_med: {
+    type: 'vector',
+    url: '/standard_railway_text_stations_med',
+    metadata: {
+      supports: ['language'],
+    },
+  },
+  high: {
+    type: 'vector',
+    url: '/railway_line_high,railway_text_km',
+  },
+  openrailwaymap_standard: {
+    type: 'vector',
+    url: '/standard_railway_turntables,standard_railway_text_stations,standard_railway_grouped_stations,standard_railway_grouped_station_areas,standard_railway_symbols,standard_railway_switch_ref,standard_station_entrances,standard_railway_platforms,standard_railway_platform_edges,standard_railway_stop_positions',
+    metadata: {
+      supports: ['language'],
+    },
+  },
+  openrailwaymap_speed: {
+    type: 'vector',
+    url: '/speed_railway_signals',
+  },
+  openrailwaymap_signals: {
+    type: 'vector',
+    url: '/signals_railway_signals,signals_signal_boxes',
+  },
+  openrailwaymap_electrification: {
+    type: 'vector',
+    url: '/electrification_signals,electrification_catenary,electrification_railway_symbols,electrification_substation',
+  },
+  openrailwaymap_operator: {
+    type: 'vector',
+    url: '/operator_railway_symbols',
+  },
+  openhistoricalmap: {
+    type: 'vector',
+    tiles: ['https://vtiles.openhistoricalmap.org/maps/osm/{z}/{x}/{y}.pbf'],
+    attribution: '<a target="_blank" href="https://www.openhistoricalmap.org/">OpenHistoricalMap</a>',
+  },
+  dem: {
+    type: 'raster-dem',
+    tiles: [
+      // See https://registry.opendata.aws/terrain-tiles/
+      'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'
+    ],
+    attribution: '<a target="_blank" href="https://registry.opendata.aws/terrain-tiles/">Mapzen Terrain</a>',
+    encoding: 'terrarium',
+    tileSize: 256,
+    maxzoom: 15,
+  },
+}
