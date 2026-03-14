@@ -20,7 +20,7 @@ const layersEl = null;
 
 
 function absoluteUrl(path) {
-  return new URL(path, window.location.origin).toString();
+  return `${window.location.origin}${path}`;
 }
 
 function popupHtml(properties = {}) {
