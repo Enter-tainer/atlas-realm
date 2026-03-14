@@ -10,7 +10,7 @@
     "generate:style": "cd scripts/styles && node styles.mjs && cp ../../scripts/styles/standard.json ../../public/orm/style/standard.generated.json"
   },
   "devDependencies": {
-    "vite": "^8.0.0"
+    "vite": "^7.1.0"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.4",
