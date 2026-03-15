@@ -147,7 +147,7 @@ function addMapterhornTerrain(style, demSource) {
       minzoom: 10,
       layout: {
         'symbol-placement': 'line',
-        'symbol-spacing': 300,
+        'symbol-spacing': 180,
         'text-size': 10,
         'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
         'text-font': ['Noto Sans Regular'],
