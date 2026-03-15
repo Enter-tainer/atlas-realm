@@ -255,8 +255,11 @@ function parseLocationPath() {
 function updateLocationPath(map) {
   const center = map.getCenter();
   const zoom = Math.round(map.getZoom() * 100) / 100;
-  const lat = Math.round(center.lat * 100000) / 100000;
-  const lng = Math.round(center.lng * 100000) / 100000;
+  // Match MapLibre's hash precision: 512px * 2^z / 360 / 10^d < 0.5px
+  const precision = Math.ceil((zoom * Math.LN2 + Math.log(512 / 360 / 0.5)) / Math.LN10);
+  const m = Math.pow(10, precision);
+  const lat = Math.round(center.lat * m) / m;
+  const lng = Math.round(center.lng * m) / m;
   const path = `/${zoom}/${lat}/${lng}`;
   window.history.replaceState(null, '', path);
 }
