@@ -1,6 +1,5 @@
-// Turbo colormap (subset of Google's turbo, 256 entries approximated by formula)
+// Turbo colormap (polynomial approximation per channel)
 function turboColor(t) {
-  // t in [0, 1], returns [r, g, b] in [0, 255]
   t = Math.max(0, Math.min(1, t));
   const r = Math.max(0, Math.min(255, Math.round(34.61 + t * (1172.33 - t * (10793.56 - t * (33300.12 - t * (38394.49 - t * 14825.05)))))));
   const g = Math.max(0, Math.min(255, Math.round(23.31 + t * (557.33 + t * (1225.33 - t * (3574.96 - t * (1073.77 + t * 707.56)))))));
@@ -36,7 +35,6 @@ function parseGpx(xmlString) {
     });
   }
 
-  // If no trkpts, try rtept or wpt
   if (points.length === 0) {
     const rtepts = doc.querySelectorAll('rtept');
     for (const pt of rtepts) {
@@ -52,15 +50,30 @@ function parseGpx(xmlString) {
   return points;
 }
 
+const MIN_SEGMENT_LENGTH_M = 10;
+
 function computeSpeeds(points) {
-  const speeds = [0]; // first point has no speed
+  const speeds = [0];
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const curr = points[i];
     if (prev.time != null && curr.time != null && curr.time > prev.time) {
       const dist = haversineDistance(prev.lat, prev.lon, curr.lat, curr.lon);
-      const dt = curr.time - prev.time;
-      speeds.push(dist / dt); // m/s
+      if (dist < MIN_SEGMENT_LENGTH_M) {
+        // Accumulate backward until we have enough distance for a reliable speed
+        let windowDist = dist;
+        let windowTime = curr.time - prev.time;
+        for (let j = i - 1; j > 0 && windowDist < MIN_SEGMENT_LENGTH_M; j--) {
+          const pj = points[j];
+          const pjPrev = points[j - 1];
+          if (pjPrev.time == null || pj.time == null) break;
+          windowDist += haversineDistance(pjPrev.lat, pjPrev.lon, pj.lat, pj.lon);
+          windowTime = curr.time - pjPrev.time;
+        }
+        speeds.push(windowTime > 0 ? windowDist / windowTime : 0);
+      } else {
+        speeds.push(dist / (curr.time - prev.time));
+      }
     } else {
       speeds.push(0);
     }
@@ -80,18 +93,19 @@ export function gpxToGeoJson(xmlString) {
   if (points.length < 2) return null;
 
   const speeds = computeSpeeds(points);
-  const p95 = percentile(speeds, 0.95);
+  const p1 = percentile(speeds, 0.01);
+  const p99 = percentile(speeds, 0.99);
+  const range = p99 - p1 || 1;
 
-  // Build line segments, each colored by speed
   const features = [];
   for (let i = 1; i < points.length; i++) {
     const speed = speeds[i];
-    const normalized = Math.min(speed / p95, 1);
+    const normalized = Math.max(0, Math.min(1, (speed - p1) / range));
     const [r, g, b] = turboColor(normalized);
     features.push({
       type: 'Feature',
       properties: {
-        speed: Math.round(speed * 3.6 * 10) / 10, // km/h
+        speed: Math.round(speed * 3.6 * 10) / 10,
         color: `rgb(${r},${g},${b})`,
       },
       geometry: {
@@ -104,7 +118,6 @@ export function gpxToGeoJson(xmlString) {
     });
   }
 
-  // Compute bounds
   const lngs = points.map((p) => p.lon);
   const lats = points.map((p) => p.lat);
   const bounds = [
@@ -118,7 +131,7 @@ export function gpxToGeoJson(xmlString) {
     stats: {
       points: points.length,
       maxSpeed: Math.round(Math.max(...speeds) * 3.6 * 10) / 10,
-      p95Speed: Math.round(p95 * 3.6 * 10) / 10,
+      p99Speed: Math.round(p99 * 3.6 * 10) / 10,
     },
   };
 }
@@ -134,16 +147,38 @@ export function addGpxToMap(map, xmlString) {
   map.addSource(id, {
     type: 'geojson',
     data: result.geojson,
+    tolerance: 0,
   });
 
+  // Outline layer (dark stroke behind colored line)
+  map.addLayer({
+    id: `${id}-stroke`,
+    type: 'line',
+    source: id,
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round',
+    },
+    paint: {
+      'line-color': '#000000',
+      'line-width': 8,
+      'line-opacity': 0.9,
+    },
+  });
+
+  // Colored speed line
   map.addLayer({
     id: `${id}-line`,
     type: 'line',
     source: id,
+    layout: {
+      'line-join': 'round',
+      'line-cap': 'round',
+    },
     paint: {
       'line-color': ['get', 'color'],
-      'line-width': 3,
-      'line-opacity': 0.9,
+      'line-width': 5,
+      'line-opacity': 0.95,
     },
   });
 
@@ -175,7 +210,7 @@ export function installGpxDragDrop(map) {
     reader.onload = () => {
       const stats = addGpxToMap(map, reader.result);
       if (stats) {
-        console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p95 ${stats.p95Speed} km/h`);
+        console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
       }
     };
     reader.readAsText(file);
