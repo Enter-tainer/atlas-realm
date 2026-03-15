@@ -336,9 +336,11 @@ async function init() {
       syncFullscreenState();
       document.addEventListener('fullscreenchange', syncFullscreenState, { passive: true });
       document.addEventListener('webkitfullscreenchange', syncFullscreenState, { passive: true });
-      map.on('moveend', () => updateLocationPath(map));
-      if (pos) updateLocationPath(map);
     });
+
+    // Register outside 'load' so URL updates work before tiles finish loading
+    map.on('moveend', () => updateLocationPath(map));
+    if (pos) updateLocationPath(map);
 
     map.on('error', (e) => console.error('MapLibre error:', e));
   } catch (error) {
