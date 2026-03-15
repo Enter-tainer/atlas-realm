@@ -283,7 +283,7 @@ async function init() {
       center: pos ? [pos.lng, pos.lat] : [105, 35],
       zoom: pos ? pos.zoom : 4,
       attributionControl: true,
-      renderWorldCopies: false,
+      renderWorldCopies: true,
       maxZoom: 20,
     });
 
