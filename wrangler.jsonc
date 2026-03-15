@@ -20,8 +20,8 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "og-images",
-      "database_id": ""
+      "database_name": "orm-og-images",
+      "database_id": "8e838119-f163-4e80-85a9-bf7d961790f0"
     }
   ]
 }
