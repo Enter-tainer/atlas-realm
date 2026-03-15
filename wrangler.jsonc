@@ -1,14 +1,23 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "orm-pmtiles-demo",
+  "main": "src/worker.js",
   "compatibility_date": "2025-09-27",
   "observability": {
     "enabled": true
   },
   "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
     "not_found_handling": "single-page-application"
   },
   "compatibility_flags": [
     "nodejs_compat"
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ORM_BUCKET",
+      "bucket_name": "orm"
+    }
   ]
 }
