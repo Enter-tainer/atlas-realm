@@ -24,7 +24,8 @@ export async function getCachedImage(db, pathKey, version) {
     return null;
   }
 
-  return row.image;
+  // D1 returns BLOB as ArrayBuffer; wrap in Uint8Array for Response compatibility
+  return new Uint8Array(row.image);
 }
 
 export async function setCachedImage(db, pathKey, imageBuffer, version) {

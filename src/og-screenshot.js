@@ -12,7 +12,8 @@ export async function takeScreenshot(browserBinding, pageUrl) {
     await page.goto(pageUrl, { waitUntil: 'load', timeout: WAIT_TIMEOUT_MS });
     await page.waitForFunction(() => window.__MAP_READY === true, { timeout: WAIT_TIMEOUT_MS });
     const screenshot = await page.screenshot({ type: 'png' });
-    return screenshot;
+    // Ensure we return a Uint8Array (not Buffer) for Workers Response compatibility
+    return new Uint8Array(screenshot);
   } finally {
     await browser.close();
   }
