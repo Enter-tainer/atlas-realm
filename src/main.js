@@ -292,6 +292,7 @@ async function init() {
         try { map.setGlobalStateProperty(key, value); } catch {}
       }
       installPopups(map);
+      map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.5 });
       let resizeFrame = 0;
       const scheduleResize = () => {
         if (resizeFrame) return;
