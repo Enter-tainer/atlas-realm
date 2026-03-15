@@ -144,10 +144,11 @@ function addMapterhornTerrain(style, demSource) {
       minzoom: 10,
       layout: {
         'symbol-placement': 'line',
-        'symbol-spacing': 120,
+        'symbol-spacing': 200,
         'text-size': 10,
         'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
         'text-font': ['Noto Sans Regular'],
+        'text-padding': 1,
       },
       paint: {
         'text-color': 'rgba(22, 31, 48, 0.6)',
