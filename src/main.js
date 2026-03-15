@@ -220,6 +220,100 @@ function installSpriteFallback(map, atlases) {
   });
 }
 
+const FOV_PRESETS = [16, 24, 28, 35, 50, 70, 85, 135, 200];
+
+function focalLengthToFov(mm) {
+  // Full-frame 36×24mm sensor, vertical FOV in radians
+  return 2 * Math.atan(24 / (2 * mm));
+}
+
+class FovControl {
+  constructor() {
+    this._map = null;
+    this._container = null;
+  }
+
+  onAdd(map) {
+    this._map = map;
+    this._container = document.createElement('div');
+    this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group fov-control';
+
+    const select = document.createElement('select');
+    select.className = 'fov-select';
+    select.title = 'Focal length (mm)';
+    for (const mm of FOV_PRESETS) {
+      const opt = document.createElement('option');
+      opt.value = mm;
+      opt.textContent = `${mm}mm`;
+      if (mm === 35) opt.selected = true;
+      select.appendChild(opt);
+    }
+    const customOpt = document.createElement('option');
+    customOpt.value = 'custom';
+    customOpt.textContent = 'Custom…';
+    select.appendChild(customOpt);
+
+    select.addEventListener('change', () => {
+      if (select.value === 'custom') {
+        input.style.display = 'block';
+        input.focus();
+        select.style.display = 'none';
+      } else {
+        this._applyFov(Number(select.value));
+      }
+    });
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'fov-input';
+    input.placeholder = 'mm';
+    input.min = '1';
+    input.max = '1200';
+    input.style.display = 'none';
+
+    const applyInput = () => {
+      const val = Number(input.value);
+      if (val >= 1 && val <= 1200) {
+        this._applyFov(val);
+        // Update select to show closest preset or custom
+        const match = FOV_PRESETS.find(p => p === val);
+        if (match) {
+          select.value = match;
+        } else {
+          customOpt.textContent = `${val}mm`;
+          select.value = 'custom';
+        }
+      }
+      input.style.display = 'none';
+      select.style.display = '';
+    };
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') applyInput();
+      if (e.key === 'Escape') {
+        input.style.display = 'none';
+        select.style.display = '';
+      }
+    });
+    input.addEventListener('blur', applyInput);
+
+    this._container.appendChild(select);
+    this._container.appendChild(input);
+    return this._container;
+  }
+
+  _applyFov(mm) {
+    if (!this._map) return;
+    this._map.transform.fov = focalLengthToFov(mm);
+    this._map.triggerRepaint();
+  }
+
+  onRemove() {
+    this._container.remove();
+    this._map = null;
+  }
+}
+
 function installPopups(map) {
   let popup = null;
   map.on('click', (e) => {
@@ -270,6 +364,7 @@ async function init() {
 
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
+    map.addControl(new FovControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
 
     installSpriteFallback(map, atlases);
