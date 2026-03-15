@@ -265,9 +265,10 @@ async function init() {
       attributionControl: true,
       renderWorldCopies: false,
       maxZoom: 20,
+      maxPitch: 85,
     });
 
-    map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
 
@@ -292,7 +293,7 @@ async function init() {
         try { map.setGlobalStateProperty(key, value); } catch {}
       }
       installPopups(map);
-      map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.5 });
+      map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
       let resizeFrame = 0;
       const scheduleResize = () => {
         if (resizeFrame) return;
