@@ -309,6 +309,9 @@ async function init() {
         try { map.setGlobalStateProperty(key, value); } catch {}
       }
       installPopups(map);
+      map.on('idle', () => {
+        window.__MAP_READY = true;
+      });
       let resizeFrame = 0;
       const scheduleResize = () => {
         if (resizeFrame) return;
