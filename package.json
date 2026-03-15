@@ -18,6 +18,7 @@
     "yaml": "^2.8.2"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.0.6",
     "@mapbox/vector-tile": "^2.0.4",
     "maplibre-contour": "^0.0.5",
     "maplibre-gl": "^5.18.0",
