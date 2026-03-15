@@ -244,6 +244,23 @@ function installPopups(map) {
   });
 }
 
+function parseLocationPath() {
+  const match = window.location.pathname.match(/^\/([\d.]+)\/([-\d.]+)\/([-\d.]+)$/);
+  if (match) {
+    return { zoom: parseFloat(match[1]), lat: parseFloat(match[2]), lng: parseFloat(match[3]) };
+  }
+  return null;
+}
+
+function updateLocationPath(map) {
+  const center = map.getCenter();
+  const zoom = Math.round(map.getZoom() * 100) / 100;
+  const lat = Math.round(center.lat * 100000) / 100000;
+  const lng = Math.round(center.lng * 100000) / 100000;
+  const path = `/${zoom}/${lat}/${lng}`;
+  window.history.replaceState(null, '', path);
+}
+
 async function init() {
   try {
     const demSource = new mlcontour.DemSource({
@@ -256,12 +273,12 @@ async function init() {
     const [style, atlases] = await Promise.all([loadStyle(demSource), loadSpriteAtlases()]);
 
 
+    const pos = parseLocationPath();
     const map = new maplibregl.Map({
       container: 'map',
       style,
-      center: [105, 35],
-      zoom: 4,
-      hash: true,
+      center: pos ? [pos.lng, pos.lat] : [105, 35],
+      zoom: pos ? pos.zoom : 4,
       attributionControl: true,
       renderWorldCopies: false,
       maxZoom: 20,
@@ -313,6 +330,8 @@ async function init() {
       syncFullscreenState();
       document.addEventListener('fullscreenchange', syncFullscreenState, { passive: true });
       document.addEventListener('webkitfullscreenchange', syncFullscreenState, { passive: true });
+      map.on('moveend', () => updateLocationPath(map));
+      if (pos) updateLocationPath(map);
     });
 
     map.on('error', (e) => console.error('MapLibre error:', e));
