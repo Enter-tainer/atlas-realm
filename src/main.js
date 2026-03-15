@@ -5,7 +5,7 @@ import mlcontour from 'maplibre-contour';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json`;
-const TILE_URL = '/tiles/openrailwaymap/{z}/{x}/{y}.mvt';
+const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
