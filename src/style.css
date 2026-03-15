@@ -91,33 +91,6 @@ html, body, #app {
   overflow: auto;
 }
 
-.fov-control {
-  background: #fff;
-  border-radius: 4px;
-}
-
-.fov-select {
-  display: block;
-  width: 100%;
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  font-size: 12px;
-  cursor: pointer;
-  outline: none;
-}
-
-.fov-input {
-  display: block;
-  width: 100%;
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  font-size: 12px;
-  outline: none;
-  box-sizing: border-box;
-}
-
 @media (max-width: 640px) {
   .panel {
     width: auto;
