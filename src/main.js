@@ -2,6 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
+import { installGpxDragDrop } from './gpx.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json`;
@@ -294,6 +295,7 @@ async function init() {
       }
       installPopups(map);
       map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
+      installGpxDragDrop(map);
       let resizeFrame = 0;
       const scheduleResize = () => {
         if (resizeFrame) return;
