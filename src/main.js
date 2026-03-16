@@ -112,7 +112,7 @@ function addMapterhornTerrain(style, demSource) {
     },
   };
 
-  const terrainLayers = [
+  const terrainBaseLayers = [
     {
       id: 'trip-hillshade',
       type: 'hillshade',
@@ -136,31 +136,38 @@ function addMapterhornTerrain(style, demSource) {
         'line-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.26, 11, 0.42, 14, 0.65],
       },
     },
-    {
-      id: 'trip-contour-labels',
-      type: 'symbol',
-      source: 'contourSource',
-      'source-layer': 'contours',
-      filter: ['>', ['get', 'level'], 0],
-      minzoom: 10,
-      layout: {
-        'symbol-placement': 'line',
-        'symbol-spacing': 120,
-        'text-size': 10,
-        'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
-        'text-font': ['Noto Sans Regular'],
-      },
-      paint: {
-        'text-color': 'rgba(22, 31, 48, 0.6)',
-        'text-halo-color': 'rgba(255, 255, 255, 0.82)',
-        'text-halo-width': 1.1,
-      },
-    },
   ];
 
+  const contourLabelLayer = {
+    id: 'trip-contour-labels',
+    type: 'symbol',
+    source: 'contourSource',
+    'source-layer': 'contours',
+    filter: ['>', ['get', 'level'], 0],
+    minzoom: 10,
+    layout: {
+      'symbol-placement': 'line',
+      'symbol-spacing': 200,
+      'text-size': 10,
+      'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
+      'text-font': ['Noto Sans Regular'],
+      'text-max-angle': 90,
+      'text-padding': 1,
+      'text-allow-overlap': true,
+    },
+    paint: {
+      'text-color': 'rgba(22, 31, 48, 0.6)',
+      'text-halo-color': 'rgba(255, 255, 255, 0.82)',
+      'text-halo-width': 1.1,
+    },
+  };
+
+  // Insert hillshade and contour lines before other symbol layers (they render underneath)
   const beforeId = getFirstSymbolLayerId(style);
   const insertIndex = beforeId ? style.layers.findIndex((layer) => layer.id === beforeId) : style.layers.length;
-  style.layers.splice(insertIndex === -1 ? style.layers.length : insertIndex, 0, ...terrainLayers);
+  style.layers.splice(insertIndex === -1 ? style.layers.length : insertIndex, 0, ...terrainBaseLayers);
+  // Append contour labels at the very end so they win collision detection against ORM labels
+  style.layers.push(contourLabelLayer);
   return style;
 }
 
@@ -257,6 +264,7 @@ async function init() {
     const [style, atlases] = await Promise.all([loadStyle(demSource), loadSpriteAtlases()]);
 
 
+    window._mlmap = null;
     const map = new maplibregl.Map({
       container: 'map',
       style,
@@ -269,6 +277,7 @@ async function init() {
       maxPitch: 85,
     });
 
+    window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
