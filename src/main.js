@@ -148,7 +148,7 @@ function addMapterhornTerrain(style, demSource) {
     layout: {
       'symbol-placement': 'line',
       'symbol-spacing': 200,
-      'text-size': 10,
+      'text-size': ['interpolate', ['linear'], ['zoom'], 10, 10, 14, 13, 16, 15],
       'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
       'text-font': ['Noto Sans Regular'],
       'text-max-angle': 90,
@@ -156,9 +156,9 @@ function addMapterhornTerrain(style, demSource) {
       'text-allow-overlap': true,
     },
     paint: {
-      'text-color': 'rgba(22, 31, 48, 0.6)',
-      'text-halo-color': 'rgba(255, 255, 255, 0.82)',
-      'text-halo-width': 1.1,
+      'text-color': 'rgba(22, 31, 48, 0.85)',
+      'text-halo-color': 'rgba(255, 255, 255, 0.95)',
+      'text-halo-width': 1.5,
     },
   };
 
