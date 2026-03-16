@@ -147,13 +147,14 @@ function addMapterhornTerrain(style, demSource) {
     minzoom: 10,
     layout: {
       'symbol-placement': 'line',
-      'symbol-spacing': 200,
+      'symbol-spacing': 150,
       'text-size': ['interpolate', ['linear'], ['zoom'], 10, 10, 14, 13, 16, 15],
       'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
       'text-font': ['Noto Sans Regular'],
       'text-max-angle': 90,
-      'text-padding': 1,
+      'text-padding': 0,
       'text-allow-overlap': true,
+      'text-ignore-placement': true,
     },
     paint: {
       'text-color': 'rgba(22, 31, 48, 0.85)',
