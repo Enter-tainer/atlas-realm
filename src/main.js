@@ -171,13 +171,37 @@ function addMapterhornTerrain(style, demSource) {
   return style;
 }
 
+const STATE_DEFAULTS = {
+  date: 2026,
+  allDates: false,
+  theme: 'light',
+  stationLowZoomLabel: 'label',
+  openHistoricalMap: true,
+  showAbandonedInfrastructure: false,
+  showRazedInfrastructure: false,
+  showConstructionInfrastructure: true,
+  showProposedInfrastructure: true,
+  hillshade: false,
+  electrificationRailwayLine: 'voltageFrequency',
+  trackRailwayLine: 'gauge',
+};
+
 function mergeBaseAndOrm(baseStyle, ormStyle) {
   const merged = structuredClone(baseStyle);
   merged.center = ormStyle.center || merged.center;
   merged.zoom = ormStyle.zoom || merged.zoom;
   merged.glyphs = ormStyle.glyphs || merged.glyphs;
   merged.sprite = ormStyle.sprite || merged.sprite;
-  merged.state = ormStyle.state || merged.state;
+  // Set state defaults before the style is applied to avoid initial render flash
+  const state = ormStyle.state || merged.state;
+  if (state) {
+    for (const [key, value] of Object.entries(STATE_DEFAULTS)) {
+      if (state[key]) {
+        state[key].default = value;
+      }
+    }
+  }
+  merged.state = state;
   merged.metadata = { ...(merged.metadata || {}), ...(ormStyle.metadata || {}) };
   merged.sources = { ...(merged.sources || {}), ...(ormStyle.sources || {}) };
   merged.layers = [...(merged.layers || []), ...(ormStyle.layers || [])];
@@ -285,23 +309,6 @@ async function init() {
     installSpriteFallback(map, atlases);
 
     map.on('load', () => {
-      const defaults = {
-        date: 2026,
-        allDates: false,
-        theme: 'light',
-        stationLowZoomLabel: 'label',
-        openHistoricalMap: true,
-        showAbandonedInfrastructure: false,
-        showRazedInfrastructure: false,
-        showConstructionInfrastructure: true,
-        showProposedInfrastructure: true,
-        hillshade: false,
-        electrificationRailwayLine: 'voltageFrequency',
-        trackRailwayLine: 'gauge',
-      };
-      for (const [key, value] of Object.entries(defaults)) {
-        try { map.setGlobalStateProperty(key, value); } catch {}
-      }
       installPopups(map);
       map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
       installGpxDragDrop(map);
