@@ -29,3 +29,13 @@ dist-ssr
 !.dev.vars.example
 .env*
 !.env.example
+.freeman
+
+# Generated style JSON (build artifacts from scripts/styles/styles.mjs)
+/standard.json
+/speed.json
+/signals.json
+/electrification.json
+/track.json
+/operator.json
+/route.json
