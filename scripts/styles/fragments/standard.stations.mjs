@@ -128,6 +128,9 @@ export const standardStationTextLowLayers = [
         ['==', ['get', 'state'], 'present'],
         ['!', ['in', ['get', 'station'], ['literal', ['light_rail', 'monorail', 'subway']]]],
         ['in', ['get', 'station_size'], ['literal', ['large', 'normal']]],
+        // Importance filter: only show major stations at low zoom
+        // Thresholds from 213000 * exp(-0.33 * z) - 18000
+        ['>', ['get', 'discr_iso'], 38899],
       ],
       paint: {
         'icon-color': colors.styles.standard.stationsText,
@@ -159,6 +162,14 @@ export const standardStationTextLowLayers = [
         ['==', ['get', 'state'], 'present'],
         ['!', ['in', ['get', 'station'], ['literal', ['light_rail', 'monorail', 'subway']]]],
         ['in', ['get', 'station_size'], ['literal', ['large', 'normal']]],
+        // Importance filter: progressive station density by zoom
+        // z5: discr_iso > 22906, z6: discr_iso > 11408
+        ['>', ['get', 'discr_iso'],
+          ['step', ['zoom'],
+            22906,    // z < 6: threshold 22906 (z5)
+            6, 11408, // z >= 6: threshold 11408 (z6)
+          ],
+        ],
       ],
       paint: {
         'text-color': colors.styles.standard.stationsText,
