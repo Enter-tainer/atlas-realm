@@ -217,6 +217,13 @@ export const standardStationTextLowLayers = [
         ['==', ['get', 'feature'], 'station'],
         ['==', ['get', 'state'], 'present'],
         ['!', ['in', ['get', 'station'], ['literal', ['light_rail', 'monorail', 'subway']]]],
+        // Importance filter: z7 threshold = 213000*exp(-0.33*7)-18000 ≈ 3142
+        ['>', ['get', 'discr_iso'],
+          ['step', ['zoom'],
+            3142,      // z7
+            8, -99999, // z8: show all (effectively no filter)
+          ],
+        ],
       ],
       paint: {
         'text-color': colors.styles.standard.stationsText,
