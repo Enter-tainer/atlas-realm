@@ -10,6 +10,7 @@ export const standardSymbolImageLayers = [
         minzoom: 12,
         source: 'openrailwaymap_standard',
         'source-layer': 'standard_railway_symbols',
+        filter: ['>=', ['zoom'], ['get', 'minzoom']],
         layout: {
           'symbol-z-order': 'source',
           'icon-overlap': 'always',
@@ -22,6 +23,7 @@ export const standardSymbolImageLayers = [
       minzoom: 12,
       source: 'openrailwaymap_standard',
       'source-layer': 'standard_railway_symbols',
+      filter: ['>=', ['zoom'], ['get', 'minzoom']],
       paint: {
         'text-color': colors.styles.standard.symbols,
         'text-halo-color': ['case',
