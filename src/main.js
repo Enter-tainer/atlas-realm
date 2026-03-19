@@ -278,9 +278,40 @@ async function init() {
 
     installSpriteFallback(map, atlases);
 
+    // Terrain toggle control
+    class TerrainToggleControl {
+      onAdd(map) {
+        this._map = map;
+        this._enabled = false;
+        this._container = document.createElement('div');
+        this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+        this._btn = document.createElement('button');
+        this._btn.type = 'button';
+        this._btn.title = '3D Terrain';
+        this._btn.setAttribute('aria-label', '3D Terrain');
+        this._btn.className = 'maplibregl-ctrl-terrain';
+        this._btn.textContent = '3D';
+        this._btn.addEventListener('click', () => {
+          this._enabled = !this._enabled;
+          if (this._enabled) {
+            map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
+          } else {
+            map.setTerrain(null);
+          }
+          this._btn.classList.toggle('maplibregl-ctrl-terrain-enabled', this._enabled);
+        });
+        this._container.appendChild(this._btn);
+        return this._container;
+      }
+      onRemove() {
+        this._container.parentNode?.removeChild(this._container);
+        this._map = undefined;
+      }
+    }
+    map.addControl(new TerrainToggleControl(), 'top-right');
+
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
-      map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
       installGpxDragDrop(map);
       let resizeFrame = 0;
       const scheduleResize = () => {
