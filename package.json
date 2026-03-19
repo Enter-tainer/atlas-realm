@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "npm run build && wrangler dev",
-    "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json && cp standard.json public/orm/style/standard.generated.json",
+    "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json",
     "verify:style-bitexact": "cp scripts/styles/styles.mjs /tmp/orm-styles.split.mjs && cp /tmp/style-refactor-backup/styles.mjs.orig scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cp standard.json /tmp/orm-standard.before.json && cp /tmp/orm-styles.split.mjs scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cmp -s standard.json /tmp/orm-standard.before.json",
     "deploy": "npm run build && wrangler deploy"
   },
