@@ -10,6 +10,7 @@ export const route_textsLayers = [
       maxzoom: 5,
       source: 'standard_railway_text_stations_low',
       'source-layer': 'standard_railway_text_stations_low',
+      filter: ['>', ['get', 'discr_iso'], 38899],
       paint: {
         'icon-color': colors.styles.standard.stationsText,
         'icon-halo-width': 1,
@@ -31,6 +32,12 @@ export const route_textsLayers = [
       maxzoom: 7,
       source: 'standard_railway_text_stations_low',
       'source-layer': 'standard_railway_text_stations_low',
+      filter: ['>', ['get', 'discr_iso'],
+        ['step', ['zoom'],
+          22906,    // z5
+          6, 11408, // z6
+        ],
+      ],
       paint: {
         'text-color': colors.styles.standard.stationsText,
         'text-halo-color': ['case',
