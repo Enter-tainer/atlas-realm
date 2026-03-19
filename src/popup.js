@@ -677,6 +677,117 @@ export function buildFeatureCatalog() {
 // Main popup content builder — mirrors ORM popupContent()
 // Builds DOM (not innerHTML) to avoid XSS, exactly like upstream.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Client-side Wikidata / Wikimedia Commons image fetching
+// (replaces ORM backend proxy endpoints /api/wikidata/ and /api/wikimedia/)
+// ---------------------------------------------------------------------------
+
+function renderImageData(linkEl, data, abortController) {
+  const img = el('img', 'orm-popup-image', linkEl);
+  img.style.display = 'none';
+  img.onload = () => (img.style.display = 'block');
+
+  const desc = `Image ${data.file_name}${data.description ? `: ${data.description}` : ''}`;
+  img.src = data.thumbnail_url;
+  img.title = desc;
+  img.alt = desc;
+  linkEl.href = data.view_url;
+  linkEl.title = desc;
+
+  if (data.license || data.attribution) {
+    const attr = el('span', 'orm-img-attribution collapsed', linkEl);
+    const copy = el('span', 'orm-img-copyright', attr);
+    copy.innerText = '\u00A9';
+    copy.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      attr.classList.toggle('collapsed');
+    };
+    if (data.license) {
+      const licEl = el(data.license_url ? 'a' : 'span', 'orm-hide-collapsed', attr);
+      if (data.license_url) {
+        licEl.href = data.license_url;
+        licEl.target = '_blank';
+      }
+      licEl.innerText = data.license;
+    }
+    if (data.attribution) {
+      const attrEl = el('span', 'orm-hide-collapsed', attr);
+      attrEl.innerText = data.attribution;
+    }
+  }
+}
+
+function fetchCommonsImageData(fileName, signal) {
+  const url =
+    'https://commons.wikimedia.org/w/api.php?action=query' +
+    `&titles=File:${encodeURIComponent(fileName)}` +
+    '&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=330&format=json&origin=*';
+  return fetch(url, { signal })
+    .then((r) => r.json())
+    .then((json) => {
+      const pages = json.query && json.query.pages;
+      if (!pages) return null;
+      const page = Object.values(pages)[0];
+      if (!page || !page.imageinfo || !page.imageinfo[0]) return null;
+      const info = page.imageinfo[0];
+      const meta = info.extmetadata || {};
+      const artist = meta.Artist ? meta.Artist.value.replace(/<[^>]*>/g, '') : '';
+      const license = meta.LicenseShortName ? meta.LicenseShortName.value : '';
+      const licenseUrl = meta.LicenseUrl ? meta.LicenseUrl.value : '';
+      const description = meta.ImageDescription
+        ? meta.ImageDescription.value.replace(/<[^>]*>/g, '').slice(0, 200)
+        : '';
+      return {
+        file_name: fileName,
+        thumbnail_url: info.thumburl || info.url,
+        view_url: info.descriptionurl || `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(fileName)}`,
+        description,
+        attribution: artist,
+        license,
+        license_url: licenseUrl,
+      };
+    });
+}
+
+function fetchWikidataImage(linkEl, wikidataId, abortController) {
+  const url =
+    'https://www.wikidata.org/w/api.php?action=wbgetclaims' +
+    `&entity=${encodeURIComponent(wikidataId)}` +
+    '&property=P18&format=json&origin=*';
+  fetch(url, { signal: abortController.signal })
+    .then((r) => r.json())
+    .then((json) => {
+      const claims = json.claims && json.claims.P18;
+      if (!claims || !claims[0]) return;
+      const fileName = claims[0].mainsnak.datavalue.value;
+      return fetchCommonsImageData(fileName, abortController.signal);
+    })
+    .then((data) => {
+      if (data) {
+        data.view_url = `https://www.wikidata.org/wiki/${wikidataId}#/media/File:${encodeURIComponent(data.file_name)}`;
+        renderImageData(linkEl, data, abortController);
+      }
+    })
+    .catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error('Error fetching Wikidata image', err);
+      }
+    });
+}
+
+function fetchCommonsImage(linkEl, commonsFile, abortController) {
+  fetchCommonsImageData(commonsFile, abortController.signal)
+    .then((data) => {
+      if (data) renderImageData(linkEl, data, abortController);
+    })
+    .catch((err) => {
+      if (!abortController.signal.aborted) {
+        console.error('Error fetching Commons image', err);
+      }
+    });
+}
+
 function popupContent(feature, featuresCatalog, abortController) {
   const properties = feature.properties;
   const layerSource = `${feature.source}${feature.sourceLayer ? `-${feature.sourceLayer}` : ''}`;
@@ -801,66 +912,15 @@ function popupContent(feature, featuresCatalog, abortController) {
   ) {
     const imgContainer = el('p', 'orm-popup-images', popupContainer);
 
-    const fetchAndRenderImage = (linkEl, metadataUrl) => {
-      const img = el('img', 'orm-popup-image', linkEl);
-      img.style.display = 'none';
-      img.onload = () => (img.style.display = 'block');
-
-      fetch(metadataUrl, { signal: abortController.signal })
-        .then((r) => r.json())
-        .then((data) => {
-          const desc = `Image ${data.file_name} from Wikidata ${properties.wikidata}${data.description ? `: ${data.description}` : ''}`;
-          img.src = data.thumbnail_url;
-          img.title = desc;
-          img.alt = desc;
-          linkEl.href = data.view_url;
-          linkEl.title = desc;
-
-          if (data.license || data.attribution) {
-            const attr = el('span', 'orm-img-attribution collapsed', linkEl);
-            const copy = el('span', 'orm-img-copyright', attr);
-            copy.innerText = '\u00A9';
-            copy.onclick = (e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              attr.classList.toggle('collapsed');
-            };
-            if (data.license) {
-              const licEl = el(data.license_url ? 'a' : 'span', 'orm-hide-collapsed', attr);
-              if (data.license_url) {
-                licEl.href = data.license_url;
-                licEl.target = '_blank';
-              }
-              licEl.innerText = data.license;
-            }
-            if (data.attribution) {
-              const attrEl = el('span', 'orm-hide-collapsed', attr);
-              attrEl.innerText = data.attribution;
-            }
-          }
-        })
-        .catch((err) => {
-          if (!abortController.signal.aborted) {
-            console.error('Error fetching popup image', err);
-          }
-        });
-    };
-
     if (properties.wikidata) {
       const link = el('a', 'orm-popup-image-link', imgContainer);
       link.target = '_blank';
-      fetchAndRenderImage(
-        link,
-        `/api/wikidata/${encodeURIComponent(properties.wikidata)}`,
-      );
+      fetchWikidataImage(link, properties.wikidata, abortController);
     }
     if (properties.wikimedia_commons_file) {
       const link = el('a', 'orm-popup-image-link', imgContainer);
       link.target = '_blank';
-      fetchAndRenderImage(
-        link,
-        `/api/wikimedia/${encodeURIComponent(properties.wikimedia_commons_file)}`,
-      );
+      fetchCommonsImage(link, properties.wikimedia_commons_file, abortController);
     }
     if (properties.image) {
       const link = el('a', undefined, imgContainer);
