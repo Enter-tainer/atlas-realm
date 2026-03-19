@@ -5,8 +5,8 @@ import mlcontour from 'maplibre-contour';
 import { installGpxDragDrop } from './gpx.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
-const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json`;
-const TILE_VERSION = '20260318';
+const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
+const TILE_VERSION = '20260318d';
 const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';

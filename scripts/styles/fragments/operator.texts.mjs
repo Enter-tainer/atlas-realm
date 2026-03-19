@@ -10,7 +10,10 @@ export const operator_textsLayers = [
       maxzoom: 5,
       source: 'standard_railway_text_stations_low',
       'source-layer': 'standard_railway_text_stations_low',
-      filter: ['!=', ['get', 'operator'], null],
+      filter: ['all',
+        ['!=', ['get', 'operator'], null],
+        ['>', ['get', 'discr_iso'], 38899],
+      ],
       paint: {
         'icon-color': ['get', 'operator_color'],
         'icon-halo-width': 1,
@@ -32,7 +35,15 @@ export const operator_textsLayers = [
       maxzoom: 7,
       source: 'standard_railway_text_stations_low',
       'source-layer': 'standard_railway_text_stations_low',
-      filter: ['!=', ['get', 'operator'], null],
+      filter: ['all',
+        ['!=', ['get', 'operator'], null],
+        ['>', ['get', 'discr_iso'],
+          ['step', ['zoom'],
+            22906,    // z5
+            6, 11408, // z6
+          ],
+        ],
+      ],
       paint: {
         'text-color': ['get', 'operator_color'],
         'text-halo-color': ['case',
