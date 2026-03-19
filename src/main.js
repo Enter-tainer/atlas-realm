@@ -3,6 +3,7 @@ import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
 import { installGpxDragDrop } from './gpx.js';
+import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -17,18 +18,10 @@ app.innerHTML = `
   <div id="map"></div>
 `;
 
-const statusEl = null;
-const layersEl = null;
-
+const featuresCatalog = buildFeatureCatalog();
 
 function absoluteUrl(path) {
   return `${window.location.origin}${path}`;
-}
-
-function popupHtml(properties = {}) {
-  const row = (label, value) => value === undefined || value === null || value === '' ? '' : `<div><strong>${label}：</strong>${value}</div>`;
-  const title = properties.localized_name || properties.name || properties.standard_label || properties.label || properties.ref || '铁路要素';
-  return `<div style="min-width:220px; font-size:13px; line-height:1.5;"><div style="font-weight:700; margin-bottom:6px;">${title}</div>${row('线路', properties.standard_label)}${row('编号', properties.ref || properties.label)}${row('类型', properties.feature || properties.station || properties.railway)}${row('状态', properties.state)}${row('用途', properties.usage)}${row('高速', properties.highspeed === true ? '是' : properties.highspeed === false ? '否' : '')}${row('桥梁', properties.bridge === true ? '是' : properties.bridge === false ? '否' : '')}${row('隧道', properties.tunnel === true ? '是' : properties.tunnel === false ? '否' : '')}${row('限速', properties.speed_label || properties.maxspeed)}${row('电化', properties.electrification_label || properties.electrification_state)}${row('电压', properties.voltage)}${row('频率', properties.frequency)}${row('轨距', properties.gauge_label)}${row('站点规模', properties.station_size)}${row('里程', properties.position)}</div>`;
 }
 
 async function loadJson(url) {
@@ -253,30 +246,6 @@ function installSpriteFallback(map, atlases) {
   });
 }
 
-function installPopups(map) {
-  let popup = null;
-  map.on('click', (e) => {
-    const features = map.queryRenderedFeatures(e.point).filter((f) => {
-      const src = f.source || '';
-      const layer = f.layer?.id || '';
-      return src.includes('openrailwaymap') || src.includes('railway') || layer.includes('railway') || layer.includes('station') || layer.includes('platform') || layer.includes('signal');
-    });
-    if (!features.length) return;
-    const feature = features[0];
-    popup?.remove();
-    popup = new maplibregl.Popup({ maxWidth: '320px' }).setLngLat(e.lngLat).setHTML(popupHtml(feature.properties || {})).addTo(map);
-  });
-
-  map.on('mousemove', (e) => {
-    const features = map.queryRenderedFeatures(e.point).filter((f) => {
-      const src = f.source || '';
-      const layer = f.layer?.id || '';
-      return src.includes('openrailwaymap') || src.includes('railway') || layer.includes('railway') || layer.includes('station') || layer.includes('platform') || layer.includes('signal');
-    });
-    map.getCanvas().style.cursor = features.length ? 'pointer' : '';
-  });
-}
-
 async function init() {
   try {
     const demSource = new mlcontour.DemSource({
@@ -310,7 +279,7 @@ async function init() {
     installSpriteFallback(map, atlases);
 
     map.on('load', () => {
-      installPopups(map);
+      installOrmPopups(map, maplibregl, featuresCatalog);
       map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
       installGpxDragDrop(map);
       let resizeFrame = 0;
@@ -338,7 +307,6 @@ async function init() {
 
     map.on('error', (e) => console.error('MapLibre error:', e));
   } catch (error) {
-    console.error(error);
     console.error(error);
   }
 }
