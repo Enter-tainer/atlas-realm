@@ -273,6 +273,11 @@ async function init() {
 
     window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
+    map.addControl(new maplibregl.GeolocateControl({
+      positionOptions: { enableHighAccuracy: true },
+      trackUserLocation: true,
+      showUserHeading: true,
+    }), 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
 
