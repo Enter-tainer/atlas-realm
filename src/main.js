@@ -40,6 +40,30 @@ async function loadImage(url) {
   });
 }
 
+/**
+ * Fetch with stale-while-revalidate caching.
+ * Serves cached responses instantly while revalidating in the background.
+ */
+const swrCache = new Map();
+async function fetchWithSwr(url, ttlMs = 3600_000) {
+  const cached = swrCache.get(url);
+  if (cached && Date.now() - cached.timestamp < ttlMs) {
+    // Still fresh — return directly
+    return cached.response.clone();
+  }
+  if (cached) {
+    // Stale — return cached version, revalidate in background
+    fetch(url).then((res) => {
+      if (res.ok) swrCache.set(url, { response: res, timestamp: Date.now() });
+    }).catch(() => {});
+    return cached.response.clone();
+  }
+  // No cache — fetch and store
+  const res = await fetch(url);
+  if (res.ok) swrCache.set(url, { response: res.clone(), timestamp: Date.now() });
+  return res;
+}
+
 function rewriteOrmStyle(style) {
   style.glyphs = absoluteUrl('/orm/font/{fontstack}/{range}');
 
@@ -291,7 +315,7 @@ async function init() {
     // Compatible with MapLibre's hash-based URL sync (hash and query string are independent)
     const gpxUrls = new URLSearchParams(window.location.search).getAll('gpx');
     for (const gpxUrl of gpxUrls) {
-      fetch(gpxUrl)
+      fetchWithSwr(gpxUrl)
         .then((res) => {
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           return res.text();
