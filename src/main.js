@@ -2,7 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { installGpxDragDrop } from './gpx.js';
+import { installGpxDragDrop, drainGpxQueue } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
@@ -283,6 +283,10 @@ async function init() {
 
     installSpriteFallback(map, atlases);
 
+    // Register GPX drag-drop immediately (map container exists now)
+    // Don't wait for 'load' — user may drag a file before tiles finish loading
+    installGpxDragDrop(map);
+
     // Terrain toggle control
     class TerrainToggleControl {
       onAdd(map) {
@@ -317,7 +321,7 @@ async function init() {
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
-      installGpxDragDrop(map);
+      drainGpxQueue(map);
       let resizeFrame = 0;
       const scheduleResize = () => {
         if (resizeFrame) return;
