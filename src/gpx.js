@@ -186,6 +186,34 @@ export function addGpxToMap(map, xmlString) {
   return result.stats;
 }
 
+let pendingGpxQueue = [];
+
+/**
+ * Defer GPX processing until map is loaded. If map is already loaded,
+ * process immediately; otherwise queue for later.
+ */
+function processOrQueueGpx(map, xmlString) {
+  if (map.loaded()) {
+    const stats = addGpxToMap(map, xmlString);
+    if (stats) {
+      console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
+    }
+  } else {
+    pendingGpxQueue.push(xmlString);
+    console.log('Map not yet loaded, queued GPX for after load');
+  }
+}
+
+export function drainGpxQueue(map) {
+  for (const xml of pendingGpxQueue) {
+    const stats = addGpxToMap(map, xml);
+    if (stats) {
+      console.log(`GPX loaded (deferred): ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
+    }
+  }
+  pendingGpxQueue = [];
+}
+
 export function installGpxDragDrop(map) {
   const container = map.getContainer();
 
@@ -207,12 +235,7 @@ export function installGpxDragDrop(map) {
     if (!file || !file.name.toLowerCase().endsWith('.gpx')) return;
 
     const reader = new FileReader();
-    reader.onload = () => {
-      const stats = addGpxToMap(map, reader.result);
-      if (stats) {
-        console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
-      }
-    };
+    reader.onload = () => processOrQueueGpx(map, reader.result);
     reader.readAsText(file);
   });
 }
