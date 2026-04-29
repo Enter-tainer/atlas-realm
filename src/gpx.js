@@ -186,7 +186,130 @@ export function addGpxToMap(map, xmlString) {
   return result.stats;
 }
 
+let geojsonLayerCount = 0;
+
+/**
+ * Add a GeoJSON FeatureCollection to the map.
+ * Supports:
+ *   - LineString features → rendered as colored tracks
+ *   - Point features → rendered as circle markers with name labels
+ */
+export function addGeoJsonToMap(map, geojson) {
+  if (!geojson || !geojson.features || geojson.features.length === 0) return;
+
+  const lineFeatures = geojson.features.filter((f) => f.geometry?.type === 'LineString');
+  const pointFeatures = geojson.features.filter((f) => f.geometry?.type === 'Point');
+
+  const id = `geojson-layer-${geojsonLayerCount++}`;
+
+  // Compute bounds across all features
+  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+  for (const f of geojson.features) {
+    const coords = f.geometry?.coordinates;
+    if (!coords) continue;
+    if (f.geometry.type === 'LineString') {
+      for (const [lng, lat] of coords) {
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+    } else if (f.geometry.type === 'Point') {
+      const [lng, lat] = coords;
+      if (lng < minLng) minLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lng > maxLng) maxLng = lng;
+      if (lat > maxLat) maxLat = lat;
+    }
+  }
+  const hasBounds = isFinite(minLng) && isFinite(maxLng);
+
+  // Build a single source with all features (so they share fitBounds)
+  map.addSource(id, {
+    type: 'geojson',
+    data: geojson,
+    tolerance: 0,
+  });
+
+  // LineString: track rendering
+  if (lineFeatures.length > 0) {
+    map.addLayer({
+      id: `${id}-line-stroke`,
+      type: 'line',
+      source: id,
+      filter: ['==', ['geometry-type'], 'LineString'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'stroke'], '#000000'],
+        'line-width': ['coalesce', ['get', 'stroke-width'], 8],
+        'line-opacity': 0.9,
+      },
+    });
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      filter: ['==', ['geometry-type'], 'LineString'],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'color'], ['get', 'stroke'], '#3b82f6'],
+        'line-width': ['coalesce', ['get', 'line-width'], 5],
+        'line-opacity': 0.95,
+      },
+    });
+  }
+
+  // Point: circle marker + name label
+  if (pointFeatures.length > 0) {
+    map.addLayer({
+      id: `${id}-point`,
+      type: 'circle',
+      source: id,
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {
+        'circle-radius': ['coalesce', ['get', 'icon-size'], 6],
+        'circle-color': ['coalesce', ['get', 'marker-color'], '#3b82f6'],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2,
+        'circle-opacity': 0.9,
+      },
+    });
+    map.addLayer({
+      id: `${id}-label`,
+      type: 'symbol',
+      source: id,
+      filter: ['==', ['geometry-type'], 'Point'],
+      layout: {
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 12,
+        'text-offset': [0, 1.5],
+        'text-anchor': 'top',
+      },
+      paint: {
+        'text-color': '#1e293b',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+      },
+    });
+  }
+
+  if (hasBounds) {
+    map.fitBounds(
+      [[minLng, minLat], [maxLng, maxLat]],
+      { padding: 60, maxZoom: 15 }
+    );
+  }
+
+  return {
+    lines: lineFeatures.length,
+    points: pointFeatures.length,
+    id,
+  };
+}
+
 let pendingGpxQueue = [];
+let pendingGeoJsonQueue = [];
 
 /**
  * Defer GPX processing until map is loaded. If map is already loaded,
@@ -204,6 +327,21 @@ export function processOrQueueGpx(map, xmlString) {
   }
 }
 
+/**
+ * Defer GeoJSON processing until map is loaded.
+ */
+export function processOrQueueGeoJson(map, geojson) {
+  if (map.loaded()) {
+    const result = addGeoJsonToMap(map, geojson);
+    if (result) {
+      console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points`);
+    }
+  } else {
+    pendingGeoJsonQueue.push(geojson);
+    console.log('Map not yet loaded, queued GeoJSON for after load');
+  }
+}
+
 export function drainGpxQueue(map) {
   for (const xml of pendingGpxQueue) {
     const stats = addGpxToMap(map, xml);
@@ -212,6 +350,13 @@ export function drainGpxQueue(map) {
     }
   }
   pendingGpxQueue = [];
+  for (const geojson of pendingGeoJsonQueue) {
+    const result = addGeoJsonToMap(map, geojson);
+    if (result) {
+      console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points`);
+    }
+  }
+  pendingGeoJsonQueue = [];
 }
 
 export function installGpxDragDrop(map) {
