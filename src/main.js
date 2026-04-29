@@ -2,7 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { installGpxDragDrop, drainGpxQueue } from './gpx.js';
+import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
@@ -286,6 +286,19 @@ async function init() {
     // Register GPX drag-drop immediately (map container exists now)
     // Don't wait for 'load' — user may drag a file before tiles finish loading
     installGpxDragDrop(map);
+
+    // Load GPX from URL parameter (?gpx=https://...)
+    const urlParams = new URLSearchParams(window.location.search);
+    const gpxUrl = urlParams.get('gpx');
+    if (gpxUrl) {
+      fetch(gpxUrl)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.text();
+        })
+        .then((xml) => processOrQueueGpx(map, xml))
+        .catch((err) => console.error('Failed to load GPX from URL:', err));
+    }
 
     // Terrain toggle control
     class TerrainToggleControl {
