@@ -192,7 +192,7 @@ let pendingGpxQueue = [];
  * Defer GPX processing until map is loaded. If map is already loaded,
  * process immediately; otherwise queue for later.
  */
-function processOrQueueGpx(map, xmlString) {
+export function processOrQueueGpx(map, xmlString) {
   if (map.loaded()) {
     const stats = addGpxToMap(map, xmlString);
     if (stats) {
