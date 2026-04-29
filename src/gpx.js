@@ -20,6 +20,7 @@ function parseGpx(xmlString) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlString, 'application/xml');
   const points = [];
+  const waypoints = [];
 
   const trkpts = doc.querySelectorAll('trkpt');
   for (const pt of trkpts) {
@@ -47,7 +48,25 @@ function parseGpx(xmlString) {
     }
   }
 
-  return points;
+  // Parse waypoints (<wpt>)
+  const wpts = doc.querySelectorAll('wpt');
+  for (const pt of wpts) {
+    const lat = parseFloat(pt.getAttribute('lat'));
+    const lon = parseFloat(pt.getAttribute('lon'));
+    const nameEl = pt.querySelector('name');
+    const eleEl = pt.querySelector('ele');
+    const name = nameEl?.textContent?.trim();
+    // Skip empty-name waypoints
+    if (!name) continue;
+    waypoints.push({
+      lat,
+      lon,
+      name,
+      ele: eleEl ? parseFloat(eleEl.textContent) : null,
+    });
+  }
+
+  return { points, waypoints };
 }
 
 const MIN_SEGMENT_LENGTH_M = 10;
@@ -89,8 +108,8 @@ function percentile(arr, p) {
 }
 
 export function gpxToGeoJson(xmlString) {
-  const points = parseGpx(xmlString);
-  if (points.length < 2) return null;
+  const { points, waypoints } = parseGpx(xmlString);
+  if (points.length < 2 && waypoints.length === 0) return null;
 
   const speeds = computeSpeeds(points);
   const p1 = percentile(speeds, 0.01);
@@ -118,8 +137,30 @@ export function gpxToGeoJson(xmlString) {
     });
   }
 
-  const lngs = points.map((p) => p.lon);
-  const lats = points.map((p) => p.lat);
+  // Add waypoints as Point features
+  for (const wp of waypoints) {
+    features.push({
+      type: 'Feature',
+      properties: {
+        name: wp.name,
+        'marker-color': '#3b82f6',
+      },
+      geometry: {
+        type: 'Point',
+        coordinates: [wp.lon, wp.lat],
+      },
+    });
+  }
+
+  // Compute bounds from track points, falling back to waypoints
+  let lngs, lats;
+  if (points.length > 0) {
+    lngs = points.map((p) => p.lon);
+    lats = points.map((p) => p.lat);
+  } else {
+    lngs = waypoints.map((p) => p.lon);
+    lats = waypoints.map((p) => p.lat);
+  }
   const bounds = [
     [Math.min(...lngs), Math.min(...lats)],
     [Math.max(...lngs), Math.max(...lats)],
@@ -150,37 +191,77 @@ export function addGpxToMap(map, xmlString) {
     tolerance: 0,
   });
 
-  // Outline layer (dark stroke behind colored line)
-  map.addLayer({
-    id: `${id}-stroke`,
-    type: 'line',
-    source: id,
-    layout: {
-      'line-join': 'round',
-      'line-cap': 'round',
-    },
-    paint: {
-      'line-color': '#000000',
-      'line-width': 8,
-      'line-opacity': 0.9,
-    },
-  });
+  // Track: outline + speed-colored line (skip if no track points)
+  const hasTrack = result.geojson.features.some((f) => f.geometry?.type === 'LineString');
+  if (hasTrack) {
+    map.addLayer({
+      id: `${id}-stroke`,
+      type: 'line',
+      source: id,
+      filter: ['==', ['geometry-type'], 'LineString'],
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+      },
+      paint: {
+        'line-color': '#000000',
+        'line-width': 8,
+        'line-opacity': 0.9,
+      },
+    });
 
-  // Colored speed line
-  map.addLayer({
-    id: `${id}-line`,
-    type: 'line',
-    source: id,
-    layout: {
-      'line-join': 'round',
-      'line-cap': 'round',
-    },
-    paint: {
-      'line-color': ['get', 'color'],
-      'line-width': 5,
-      'line-opacity': 0.95,
-    },
-  });
+    // Colored speed line
+    map.addLayer({
+      id: `${id}-line`,
+      type: 'line',
+      source: id,
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+      },
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-width': 5,
+        'line-opacity': 0.95,
+      },
+    });
+  }
+
+  // Waypoints: circle marker + name label
+  const hasWaypoints = result.geojson.features.some((f) => f.geometry?.type === 'Point');
+  if (hasWaypoints) {
+    map.addLayer({
+      id: `${id}-wpt`,
+      type: 'circle',
+      source: id,
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {
+        'circle-radius': 5,
+        'circle-color': ['coalesce', ['get', 'marker-color'], '#3b82f6'],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2,
+        'circle-opacity': 0.9,
+      },
+    });
+    map.addLayer({
+      id: `${id}-wpt-label`,
+      type: 'symbol',
+      source: id,
+      filter: ['==', ['geometry-type'], 'Point'],
+      layout: {
+        'text-field': '{name}',
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 11,
+        'text-offset': [0, 1.5],
+        'text-anchor': 'top',
+      },
+      paint: {
+        'text-color': '#1e293b',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+      },
+    });
+  }
 
   map.fitBounds(result.bounds, { padding: 60, maxZoom: 15 });
   return result.stats;
