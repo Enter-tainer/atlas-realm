@@ -2,7 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx } from './gpx.js';
+import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
@@ -322,6 +322,19 @@ async function init() {
         })
         .then((xml) => processOrQueueGpx(map, xml))
         .catch((err) => console.error('Failed to load GPX from URL:', gpxUrl, err));
+    }
+
+    // Load GeoJSON from URL parameters (?geojson=url1&geojson=url2)
+    // Supports both LineString (tracks) and Point (waypoints) features
+    const geojsonUrls = new URLSearchParams(window.location.search).getAll('geojson');
+    for (const geojsonUrl of geojsonUrls) {
+      fetchWithSwr(geojsonUrl)
+        .then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.json();
+        })
+        .then((data) => processOrQueueGeoJson(map, data))
+        .catch((err) => console.error('Failed to load GeoJSON from URL:', geojsonUrl, err));
     }
 
     // Terrain toggle control
