@@ -238,7 +238,7 @@ export function addGpxToMap(map, xmlString) {
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
         'icon-image': 'marker-dot-#3b82f6',
-        'icon-size': 0.6,
+        'icon-size': 0.5,
         'icon-allow-overlap': false,
         'text-field': '{name}',
         'text-font': ['Noto Sans Regular'],
@@ -342,7 +342,7 @@ export function addGeoJsonToMap(map, geojson) {
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
         'icon-image': 'marker-dot-#3b82f6',
-        'icon-size': 0.6,
+        'icon-size': 0.5,
         'icon-allow-overlap': false,
         'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
         'text-font': ['Noto Sans Regular'],
