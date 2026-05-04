@@ -116,25 +116,53 @@ export function gpxToGeoJson(xmlString) {
   const p99 = percentile(speeds, 0.99);
   const range = p99 - p1 || 1;
 
+  const GAP_TIME_THRESHOLD = 1800; // 30 minutes in seconds
+
   const features = [];
   for (let i = 1; i < points.length; i++) {
-    const speed = speeds[i];
-    const normalized = Math.max(0, Math.min(1, (speed - p1) / range));
-    const [r, g, b] = turboColor(normalized);
-    features.push({
-      type: 'Feature',
-      properties: {
-        speed: Math.round(speed * 3.6 * 10) / 10,
-        color: `rgb(${r},${g},${b})`,
-      },
-      geometry: {
-        type: 'LineString',
-        coordinates: [
-          [points[i - 1].lon, points[i - 1].lat],
-          [points[i].lon, points[i].lat],
-        ],
-      },
-    });
+    const prev = points[i - 1];
+    const curr = points[i];
+    const dt = (curr.time != null && prev.time != null) ? curr.time - prev.time : 0;
+
+    if (dt > GAP_TIME_THRESHOLD) {
+      // GPS signal lost — render a great circle arc + arrow instead of a straight line
+      const arcCoords = greatCircleInterpolate(prev.lon, prev.lat, curr.lon, curr.lat, 14);
+      features.push({
+        type: 'Feature',
+        properties: { gap: true },
+        geometry: { type: 'LineString', coordinates: arcCoords },
+      });
+      // Arrow at midpoint
+      const midIdx = Math.floor(arcCoords.length / 2);
+      const [midLon, midLat] = arcCoords[midIdx];
+      features.push({
+        type: 'Feature',
+        properties: {
+          arrow: true,
+          bearing: bearing(prev.lon, prev.lat, curr.lon, curr.lat),
+        },
+        geometry: { type: 'Point', coordinates: [midLon, midLat] },
+      });
+    } else {
+      // Normal speed-colored segment
+      const speed = speeds[i];
+      const normalized = Math.max(0, Math.min(1, (speed - p1) / range));
+      const [r, g, b] = turboColor(normalized);
+      features.push({
+        type: 'Feature',
+        properties: {
+          speed: Math.round(speed * 3.6 * 10) / 10,
+          color: `rgb(${r},${g},${b})`,
+        },
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [prev.lon, prev.lat],
+            [curr.lon, curr.lat],
+          ],
+        },
+      });
+    }
   }
 
   // Add waypoints as Point features
@@ -192,13 +220,13 @@ export function addGpxToMap(map, xmlString) {
   });
 
   // Track: outline + speed-colored line (skip if no track points)
-  const hasTrack = result.geojson.features.some((f) => f.geometry?.type === 'LineString');
+  const hasTrack = result.geojson.features.some((f) => f.geometry?.type === 'LineString' && !f.properties?.gap);
   if (hasTrack) {
     map.addLayer({
       id: `${id}-stroke`,
       type: 'line',
       source: id,
-      filter: ['==', ['geometry-type'], 'LineString'],
+      filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'gap'], true]],
       layout: {
         'line-join': 'round',
         'line-cap': 'round',
@@ -215,6 +243,7 @@ export function addGpxToMap(map, xmlString) {
       id: `${id}-line`,
       type: 'line',
       source: id,
+      filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'gap'], true]],
       layout: {
         'line-join': 'round',
         'line-cap': 'round',
@@ -227,6 +256,48 @@ export function addGpxToMap(map, xmlString) {
     });
   }
 
+  // Gap arcs: thin gray line for lost-signal segments
+  const hasGaps = result.geojson.features.some((f) => f.properties?.gap);
+  if (hasGaps) {
+    map.addLayer({
+      id: `${id}-gap-arc`,
+      type: 'line',
+      source: id,
+      filter: ['==', ['get', 'gap'], true],
+      layout: {
+        'line-join': 'round',
+        'line-cap': 'round',
+      },
+      paint: {
+        'line-color': 'rgba(100, 110, 140, 0.45)',
+        'line-width': 2,
+        'line-opacity': 0.5,
+      },
+    });
+  }
+
+  // Gap arrows: direction indicator at midpoint of each lost-signal segment
+  const hasArrows = result.geojson.features.some((f) => f.properties?.arrow);
+  if (hasArrows) {
+    ensureGapArrowIcon(map);
+    map.addLayer({
+      id: `${id}-gap-arrow`,
+      type: 'symbol',
+      source: id,
+      filter: ['==', ['get', 'arrow'], true],
+      layout: {
+        'icon-image': 'gap-arrow',
+        'icon-size': 0.35,
+        'icon-rotate': ['get', 'bearing'],
+        'icon-rotation-alignment': 'map',
+        'icon-allow-overlap': true,
+      },
+      paint: {
+        'icon-opacity': 0.5,
+      },
+    });
+  }
+
   // Waypoints: symbol layer with collision detection (icon + text)
   const hasWaypoints = result.geojson.features.some((f) => f.geometry?.type === 'Point');
   if (hasWaypoints) {
@@ -235,7 +306,7 @@ export function addGpxToMap(map, xmlString) {
       id: `${id}-wpt`,
       type: 'symbol',
       source: id,
-      filter: ['==', ['geometry-type'], 'Point'],
+      filter: ['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'arrow'], true]],
       layout: {
         'icon-image': 'marker-dot-#3b82f6',
         'icon-size': 0.5,
@@ -452,6 +523,99 @@ function ensureMarkerIcon(map, color = '#3b82f6') {
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   map.addImage(imageName, imageData, { pixelRatio: 2 });
+}
+
+/**
+ * Generate a small triangular arrow icon pointing upward (north).
+ * Used as a direction indicator on lost-signal gap arcs.
+ */
+function ensureGapArrowIcon(map) {
+  if (map.hasImage('gap-arrow')) return;
+
+  const size = 14;
+  const canvas = document.createElement('canvas');
+  canvas.width = size * 4;
+  canvas.height = size * 4;
+  const ctx = canvas.getContext('2d');
+
+  const cx = size * 2;
+  const cy = size * 2;
+  const r = size;
+
+  // Arrowhead pointing up
+  ctx.beginPath();
+  ctx.moveTo(cx, cy - r);          // top tip
+  ctx.lineTo(cx + r * 0.6, cy + r * 0.2);  // right bottom
+  ctx.lineTo(cx + r * 0.15, cy + r * 0.1);  // inner right
+  ctx.lineTo(cx + r * 0.15, cy + r);        // right tail
+  ctx.lineTo(cx - r * 0.15, cy + r);        // left tail
+  ctx.lineTo(cx - r * 0.15, cy + r * 0.1);  // inner left
+  ctx.lineTo(cx - r * 0.6, cy + r * 0.2);   // left bottom
+  ctx.closePath();
+  ctx.fillStyle = 'rgba(100, 110, 140, 0.6)';
+  ctx.fill();
+
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  map.addImage('gap-arrow', imageData, { pixelRatio: 2 });
+}
+
+/**
+ * Interpolate points along a great circle arc between two coordinates.
+ * Uses spherical linear interpolation (SLERP) for a natural curved path
+ * on the Mercator projection.
+ */
+function greatCircleInterpolate(lon1, lat1, lon2, lat2, numPoints) {
+  const toRad = (x) => (x * Math.PI) / 180;
+  const toDeg = (x) => (x * 180) / Math.PI;
+
+  const phi1 = toRad(lat1);
+  const lambda1 = toRad(lon1);
+  const phi2 = toRad(lat2);
+  const lambda2 = toRad(lon2);
+
+  // Convert to 3D Cartesian
+  const x1 = Math.cos(phi1) * Math.cos(lambda1);
+  const y1 = Math.cos(phi1) * Math.sin(lambda1);
+  const z1 = Math.sin(phi1);
+
+  const x2 = Math.cos(phi2) * Math.cos(lambda2);
+  const y2 = Math.cos(phi2) * Math.sin(lambda2);
+  const z2 = Math.sin(phi2);
+
+  const dot = Math.max(-1, Math.min(1, x1 * x2 + y1 * y2 + z1 * z2));
+  const omega = Math.acos(dot);
+
+  const result = [];
+  if (omega < 1e-10) {
+    // Nearly identical points — return straight line
+    result.push([lon1, lat1], [lon2, lat2]);
+    return result;
+  }
+
+  const sinOmega = Math.sin(omega);
+  for (let i = 0; i <= numPoints; i++) {
+    const t = i / numPoints;
+    const a = Math.sin((1 - t) * omega) / sinOmega;
+    const b = Math.sin(t * omega) / sinOmega;
+    const x = a * x1 + b * x2;
+    const y = a * y1 + b * y2;
+    const z = a * z1 + b * z2;
+    result.push([toDeg(Math.atan2(y, x)), toDeg(Math.asin(z))]);
+  }
+  return result;
+}
+
+/**
+ * Calculate initial bearing (in degrees clockwise from north) from point A to B.
+ */
+function bearing(lon1, lat1, lon2, lat2) {
+  const toRad = (x) => (x * Math.PI) / 180;
+  const toDeg = (x) => (x * 180) / Math.PI;
+
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
 export function installGpxDragDrop(map) {
