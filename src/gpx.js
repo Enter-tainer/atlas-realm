@@ -269,9 +269,8 @@ export function addGpxToMap(map, xmlString) {
         'line-cap': 'round',
       },
       paint: {
-        'line-color': 'rgba(100, 110, 140, 0.45)',
-        'line-width': 2,
-        'line-opacity': 0.5,
+        'line-color': 'rgba(80, 90, 120, 0.7)',
+        'line-width': 2.5,
       },
     });
   }
@@ -287,13 +286,13 @@ export function addGpxToMap(map, xmlString) {
       filter: ['==', ['get', 'arrow'], true],
       layout: {
         'icon-image': 'gap-arrow',
-        'icon-size': 0.35,
+        'icon-size': 0.7,
         'icon-rotate': ['get', 'bearing'],
         'icon-rotation-alignment': 'map',
         'icon-allow-overlap': true,
       },
       paint: {
-        'icon-opacity': 0.5,
+        'icon-opacity': 0.85,
       },
     });
   }
@@ -552,7 +551,7 @@ function ensureGapArrowIcon(map) {
   ctx.lineTo(cx - r * 0.15, cy + r * 0.1);  // inner left
   ctx.lineTo(cx - r * 0.6, cy + r * 0.2);   // left bottom
   ctx.closePath();
-  ctx.fillStyle = 'rgba(100, 110, 140, 0.6)';
+  ctx.fillStyle = 'rgba(60, 70, 100, 0.85)';
   ctx.fill();
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
