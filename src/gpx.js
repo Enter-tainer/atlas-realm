@@ -238,7 +238,7 @@ export function addGpxToMap(map, xmlString) {
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
         'icon-image': 'marker-dot-#3b82f6',
-        'icon-size': 1.5,
+        'icon-size': 0.6,
         'icon-allow-overlap': false,
         'text-field': '{name}',
         'text-font': ['Noto Sans Regular'],
@@ -342,7 +342,7 @@ export function addGeoJsonToMap(map, geojson) {
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
         'icon-image': 'marker-dot-#3b82f6',
-        'icon-size': 1.5,
+        'icon-size': 0.6,
         'icon-allow-overlap': false,
         'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
         'text-font': ['Noto Sans Regular'],
@@ -432,7 +432,7 @@ function ensureMarkerIcon(map, color = '#3b82f6') {
   const imageName = `marker-dot-${color}`;
   if (map.hasImage(imageName)) return;
 
-  const size = 8;
+  const size = 20;
   const canvas = document.createElement('canvas');
   canvas.width = size * 4;
   canvas.height = size * 4;
@@ -443,11 +443,11 @@ function ensureMarkerIcon(map, color = '#3b82f6') {
   const b = parseInt(color.slice(5, 7), 16);
 
   ctx.beginPath();
-  ctx.arc(size * 2, size * 2, size - 1, 0, Math.PI * 2);
+  ctx.arc(size * 2, size * 2, size - 2, 0, Math.PI * 2);
   ctx.fillStyle = `rgb(${r},${g},${b})`;
   ctx.fill();
   ctx.strokeStyle = '#ffffff';
-  ctx.lineWidth = 2.5;
+  ctx.lineWidth = 3;
   ctx.stroke();
 
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
