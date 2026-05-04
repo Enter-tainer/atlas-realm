@@ -450,7 +450,8 @@ function ensureMarkerIcon(map, color = '#3b82f6') {
   ctx.lineWidth = 2.5;
   ctx.stroke();
 
-  map.addImage(imageName, canvas, { pixelRatio: 2 });
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  map.addImage(imageName, imageData, { pixelRatio: 2 });
 }
 
 export function installGpxDragDrop(map) {
