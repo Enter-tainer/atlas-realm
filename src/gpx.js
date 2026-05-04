@@ -286,7 +286,7 @@ export function addGpxToMap(map, xmlString) {
       filter: ['==', ['get', 'arrow'], true],
       layout: {
         'icon-image': 'gap-arrow',
-        'icon-size': 0.7,
+        'icon-size': 1.2,
         'icon-rotate': ['get', 'bearing'],
         'icon-rotation-alignment': 'map',
         'icon-allow-overlap': true,
