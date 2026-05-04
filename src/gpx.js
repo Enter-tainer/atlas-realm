@@ -227,33 +227,25 @@ export function addGpxToMap(map, xmlString) {
     });
   }
 
-  // Waypoints: circle marker + name label
+  // Waypoints: symbol layer with collision detection (icon + text)
   const hasWaypoints = result.geojson.features.some((f) => f.geometry?.type === 'Point');
   if (hasWaypoints) {
+    ensureMarkerIcon(map, '#3b82f6');
     map.addLayer({
       id: `${id}-wpt`,
-      type: 'circle',
-      source: id,
-      filter: ['==', ['geometry-type'], 'Point'],
-      paint: {
-        'circle-radius': 5,
-        'circle-color': ['coalesce', ['get', 'marker-color'], '#3b82f6'],
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2,
-        'circle-opacity': 0.9,
-      },
-    });
-    map.addLayer({
-      id: `${id}-wpt-label`,
       type: 'symbol',
       source: id,
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
+        'icon-image': 'marker-dot-#3b82f6',
+        'icon-size': 0.5,
+        'icon-allow-overlap': false,
         'text-field': '{name}',
         'text-font': ['Noto Sans Regular'],
         'text-size': 11,
-        'text-offset': [0, 1.5],
+        'text-offset': [0, 1.8],
         'text-anchor': 'top',
+        'text-allow-overlap': false,
       },
       paint: {
         'text-color': '#1e293b',
@@ -340,32 +332,24 @@ export function addGeoJsonToMap(map, geojson) {
     });
   }
 
-  // Point: circle marker + name label
+  // Point: symbol layer with collision detection (icon + text)
   if (pointFeatures.length > 0) {
+    ensureMarkerIcon(map, '#3b82f6');
     map.addLayer({
       id: `${id}-point`,
-      type: 'circle',
-      source: id,
-      filter: ['==', ['geometry-type'], 'Point'],
-      paint: {
-        'circle-radius': ['coalesce', ['get', 'icon-size'], 6],
-        'circle-color': ['coalesce', ['get', 'marker-color'], '#3b82f6'],
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2,
-        'circle-opacity': 0.9,
-      },
-    });
-    map.addLayer({
-      id: `${id}-label`,
       type: 'symbol',
       source: id,
       filter: ['==', ['geometry-type'], 'Point'],
       layout: {
+        'icon-image': 'marker-dot-#3b82f6',
+        'icon-size': 0.5,
+        'icon-allow-overlap': false,
         'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
         'text-font': ['Noto Sans Regular'],
         'text-size': 12,
-        'text-offset': [0, 1.5],
+        'text-offset': [0, 1.8],
         'text-anchor': 'top',
+        'text-allow-overlap': false,
       },
       paint: {
         'text-color': '#1e293b',
@@ -438,6 +422,35 @@ export function drainGpxQueue(map) {
     }
   }
   pendingGeoJsonQueue = [];
+}
+
+/**
+ * Generate a colored circle marker image and register it on the map.
+ * The image is cached by color — subsequent calls with the same color are no-ops.
+ */
+function ensureMarkerIcon(map, color = '#3b82f6') {
+  const imageName = `marker-dot-${color}`;
+  if (map.hasImage(imageName)) return;
+
+  const size = 8;
+  const canvas = document.createElement('canvas');
+  canvas.width = size * 4;
+  canvas.height = size * 4;
+  const ctx = canvas.getContext('2d');
+
+  const r = parseInt(color.slice(1, 3), 16);
+  const g = parseInt(color.slice(3, 5), 16);
+  const b = parseInt(color.slice(5, 7), 16);
+
+  ctx.beginPath();
+  ctx.arc(size * 2, size * 2, size - 1, 0, Math.PI * 2);
+  ctx.fillStyle = `rgb(${r},${g},${b})`;
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  map.addImage(imageName, canvas, { pixelRatio: 2 });
 }
 
 export function installGpxDragDrop(map) {
