@@ -269,7 +269,7 @@ export function addGpxToMap(map, xmlString) {
         'line-cap': 'round',
       },
       paint: {
-        'line-color': 'rgba(80, 90, 120, 0.7)',
+        'line-color': 'rgba(80, 90, 120, 0.5)',
         'line-width': 2.5,
       },
     });
