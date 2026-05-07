@@ -64,7 +64,8 @@ class PhotonSearch {
 
   async _search(q) {
     this._abortController = new AbortController();
-    const url = `${PHOTON_API}?q=${encodeURIComponent(q)}&limit=8`;
+    const center = this._map.getCenter();
+    const url = `${PHOTON_API}?q=${encodeURIComponent(q)}&limit=8&lon=${center.lng}&lat=${center.lat}`;
     try {
       const res = await fetch(url, { signal: this._abortController.signal });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
