@@ -448,6 +448,9 @@ html, body, #app {
 
 @media (max-width: 640px) {
   .photon-search {
-    width: calc(100vw - 24px);
+    left: 12px;
+    right: 160px;
+    width: auto;
+    transform: none;
   }
 }

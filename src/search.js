@@ -5,15 +5,16 @@
 
 const PHOTON_API = 'https://photon.komoot.io/api/';
 
-export function installPhotonSearch(map) {
-  const search = new PhotonSearch(map);
+export function installPhotonSearch(map, maplibregl) {
+  const search = new PhotonSearch(map, maplibregl);
   map.getContainer().appendChild(search.container);
   return search;
 }
 
 class PhotonSearch {
-  constructor(map) {
+  constructor(map, maplibregl) {
     this._map = map;
+    this._maplibregl = maplibregl;
     this._marker = null;
     this._abortController = null;
 
@@ -148,9 +149,9 @@ class PhotonSearch {
       </svg>
     `;
 
-    this._marker = new maplibregl.Marker({ element: el, anchor: 'bottom' })
+    this._marker = new this._maplibregl.Marker({ element: el, anchor: 'bottom' })
       .setLngLat([lon, lat])
-      .setPopup(new maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: true })
+      .setPopup(new this._maplibregl.Popup({ offset: 25, closeButton: true, closeOnClick: true })
         .setHTML(`<strong>${this._escape(name)}</strong>${sublabel ? '<br>' + this._escape(sublabel) : ''}`))
       .addTo(this._map);
 

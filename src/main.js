@@ -457,7 +457,7 @@ async function init() {
     map.addControl(new SatelliteToggleControl(), 'top-right');
 
     // Photon POI search
-    installPhotonSearch(map);
+    installPhotonSearch(map, maplibregl);
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
