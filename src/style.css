@@ -52,6 +52,207 @@ html, body, #app {
   color: #33b5e5;
 }
 
+.poi-search {
+  width: min(360px, calc(100vw - 76px));
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(10px);
+}
+
+.poi-search-form {
+  display: grid;
+  grid-template-columns: 1fr 34px;
+  align-items: center;
+  min-height: 38px;
+}
+
+.poi-search-input {
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px 0 12px;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: #111827;
+  font: 500 14px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.poi-search-input::placeholder {
+  color: #6b7280;
+}
+
+.poi-search-input:focus {
+  box-shadow: inset 0 0 0 2px #2563eb;
+}
+
+.poi-search-clear {
+  display: none;
+  width: 28px;
+  height: 28px;
+  margin-right: 4px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #4b5563;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 28px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.poi-search-clear.visible {
+  display: block;
+}
+
+.poi-search-clear:hover,
+.poi-search-clear:focus {
+  background: #f3f4f6;
+  color: #111827;
+  outline: none;
+}
+
+.poi-search-status {
+  display: none;
+  padding: 8px 12px 10px;
+  border-top: 1px solid #e5e7eb;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.poi-search-status.visible {
+  display: block;
+}
+
+.poi-search-results-toggle {
+  display: none;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-top: 1px solid #e5e7eb;
+  background: #f9fafb;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.poi-search-results-toggle:hover,
+.poi-search-results-toggle:focus {
+  background: #eef6ff;
+  outline: none;
+}
+
+.poi-search-results {
+  display: none;
+  max-height: min(360px, calc(100vh - 92px));
+  overflow: auto;
+  border-top: 1px solid #e5e7eb;
+}
+
+.poi-search-results.visible {
+  display: block;
+}
+
+.poi-search-result {
+  display: block;
+  width: 100%;
+  padding: 9px 12px 10px;
+  border: 0;
+  border-bottom: 1px solid #edf0f3;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.poi-search-result:last-child {
+  border-bottom: 0;
+}
+
+.poi-search-result:hover,
+.poi-search-result:focus {
+  background: #eef6ff;
+  outline: none;
+}
+
+.poi-search-result.selected {
+  background: #dbeafe;
+  box-shadow: inset 3px 0 0 #2563eb;
+}
+
+.poi-search-result-name,
+.poi-search-result-meta,
+.poi-search-result-address {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.poi-search-result-name {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.poi-search-result-meta {
+  margin-top: 2px;
+  color: #2563eb;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.poi-search-result-address {
+  margin-top: 2px;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.3;
+}
+
+.poi-search-popup {
+  max-width: 280px;
+  color: #111827;
+}
+
+.poi-search-popup-title {
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.poi-search-popup-category {
+  margin-top: 3px;
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.poi-search-popup-address {
+  margin-top: 5px;
+  color: #4b5563;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+@media (max-width: 640px) {
+  .poi-search-results-toggle.visible {
+    display: block;
+  }
+
+  .poi-search-results {
+    max-height: min(230px, calc(45vh - 64px));
+  }
+}
+
 .panel {
   position: absolute;
   top: 12px;
