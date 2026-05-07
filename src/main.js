@@ -197,6 +197,8 @@ function addSatelliteSourceAndLayer(style) {
       type: 'raster',
       tiles: [SATELLITE_URL],
       tileSize: 256,
+      minzoom: 0,
+      maxzoom: 19,
       attribution: '&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
     },
   };
