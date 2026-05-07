@@ -11,6 +11,7 @@ const TILE_VERSION = '20260318d';
 const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
+const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
 
 const app = document.querySelector('#app');
@@ -189,6 +190,37 @@ function addMapterhornTerrain(style, demSource) {
   return style;
 }
 
+function addSatelliteSourceAndLayer(style) {
+  style.sources = {
+    ...(style.sources || {}),
+    satellite: {
+      type: 'raster',
+      tiles: [SATELLITE_URL],
+      tileSize: 256,
+      minzoom: 0,
+      maxzoom: 17,
+      attribution: '&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    },
+  };
+
+  const insertIdx = style.layers.findIndex((l) => l.id === 'trip-hillshade');
+  const satelliteLayer = {
+    id: 'satellite-layer',
+    type: 'raster',
+    source: 'satellite',
+    layout: { visibility: 'none' },
+    paint: { 'raster-opacity': 1 },
+  };
+
+  if (insertIdx !== -1) {
+    style.layers.splice(insertIdx, 0, satelliteLayer);
+  } else {
+    style.layers.push(satelliteLayer);
+  }
+
+  return style;
+}
+
 const STATE_DEFAULTS = {
   date: 2026,
   allDates: false,
@@ -232,7 +264,8 @@ async function loadStyle(demSource) {
     loadJson(STYLE_URL),
   ]);
   const merged = mergeBaseAndOrm(baseStyle, rewriteOrmStyle(ormStyleRaw));
-  return addMapterhornTerrain(merged, demSource);
+  const withTerrain = addMapterhornTerrain(merged, demSource);
+  return addSatelliteSourceAndLayer(withTerrain);
 }
 
 async function loadSpriteAtlases() {
@@ -368,6 +401,59 @@ async function init() {
       }
     }
     map.addControl(new TerrainToggleControl(), 'top-right');
+
+    // Satellite imagery toggle control
+    class SatelliteToggleControl {
+      onAdd(map) {
+        this._map = map;
+        this._enabled = false;
+        this._container = document.createElement('div');
+        this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+        this._btn = document.createElement('button');
+        this._btn.type = 'button';
+        this._btn.title = 'Satellite Imagery';
+        this._btn.setAttribute('aria-label', 'Satellite Imagery');
+        this._btn.className = 'maplibregl-ctrl-satellite';
+        this._btn.textContent = 'Sat';
+        this._btn.addEventListener('click', () => this._toggle());
+        this._container.appendChild(this._btn);
+        return this._container;
+      }
+      _toggle() {
+        this._enabled = !this._enabled;
+        const map = this._map;
+        const layers = map.getStyle().layers;
+        // Everything before trip-hillshade is OpenFreeMap base map layers
+        const splitIdx = layers.findIndex((l) => l.id === 'trip-hillshade');
+        const baseLayers = splitIdx !== -1 ? layers.slice(0, splitIdx) : [];
+
+        if (this._enabled) {
+          this._enable(baseLayers);
+        } else {
+          this._disable(baseLayers);
+        }
+        this._btn.classList.toggle('maplibregl-ctrl-satellite-enabled', this._enabled);
+      }
+      _enable(baseLayers) {
+        for (const layer of baseLayers) {
+          if (layer.id === 'satellite-layer') continue;
+          this._map.setLayoutProperty(layer.id, 'visibility', 'none');
+        }
+        this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
+      }
+      _disable(baseLayers) {
+        for (const layer of baseLayers) {
+          if (layer.id === 'satellite-layer') continue;
+          this._map.setLayoutProperty(layer.id, 'visibility', 'visible');
+        }
+        this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
+      }
+      onRemove() {
+        this._container.parentNode?.removeChild(this._container);
+        this._map = undefined;
+      }
+    }
+    map.addControl(new SatelliteToggleControl(), 'top-right');
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
