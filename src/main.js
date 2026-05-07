@@ -4,6 +4,7 @@ import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
+import { installPhotonSearch } from './search.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -454,6 +455,9 @@ async function init() {
       }
     }
     map.addControl(new SatelliteToggleControl(), 'top-right');
+
+    // Photon POI search
+    installPhotonSearch(map);
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
