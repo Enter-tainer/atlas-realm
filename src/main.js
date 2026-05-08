@@ -52,7 +52,29 @@ const SATELLITE_SOURCES = [
     attribution: '&copy; Google',
     tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
   },
+  {
+    id: 'bing',
+    name: 'Bing',
+    tileSize: 256,
+    minzoom: 0,
+    maxzoom: 19,
+    attribution: '&copy; Microsoft',
+    tiles: ['bing://tile/{z}/{x}/{y}'],
+  },
 ];
+
+/** Convert tile x/y/z to Bing quadkey */
+function quadkey(x, y, z) {
+  let qk = '';
+  for (let i = z; i > 0; i--) {
+    let digit = 0;
+    const mask = 1 << (i - 1);
+    if ((x & mask) !== 0) digit += 1;
+    if ((y & mask) !== 0) digit += 2;
+    qk += digit;
+  }
+  return qk;
+}
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -504,6 +526,24 @@ async function init() {
 
         const cfg = SATELLITE_SOURCES.find((s) => s.id === id);
         if (!cfg) return;
+
+        // Clean up Bing transformRequest if switching away from Bing
+        if (this._bingTransformInstalled) {
+          delete this._map.transformRequest;
+          this._bingTransformInstalled = false;
+        }
+
+        // For Bing, set up transformRequest to rewrite bing:// URLs to quadkey format
+        if (id === 'bing') {
+          this._map.transformRequest = (url, resourceType) => {
+            const m = url.match(/^bing:\/\/tile\/(\d+)\/(\d+)\/(\d+)/);
+            if (m && resourceType === 'Tile') {
+              const z = parseInt(m[1]), x = parseInt(m[2]), y = parseInt(m[3]);
+              return { url: `https://ecn.t3.tiles.virtualearth.net/tiles/a${quadkey(x, y, z)}.jpeg?g=1` };
+            }
+          };
+          this._bingTransformInstalled = true;
+        }
 
         // Switch satellite source by removing and re-adding
         if (map.getLayer('satellite-layer')) map.removeLayer('satellite-layer');
