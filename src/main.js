@@ -380,20 +380,20 @@ async function init() {
       renderWorldCopies: false,
       maxZoom: 20,
       maxPitch: 85,
+      transformRequest: (url, resourceType) => {
+        if (satellitePicker?.activeId === 'bing' && resourceType === 'Tile') {
+          const m = url.match(/^bing:\/\/tile\/(\d+)\/(\d+)\/(\d+)/);
+          if (m) {
+            const z = parseInt(m[1]), x = parseInt(m[2]), y = parseInt(m[3]);
+            return { url: `https://ecn.t3.tiles.virtualearth.net/tiles/a${quadkey(x, y, z)}.jpeg?g=1` };
+          }
+        }
+      },
     });
 
     window._mlmap = map;
     // Shared flag for Bing tile URL rewriting (set by SatellitePickerControl)
     let satellitePicker = null;
-    map.transformRequest = (url, resourceType) => {
-      if (satellitePicker?.activeId === 'bing' && resourceType === 'Tile') {
-        const m = url.match(/^bing:\/\/tile\/(\d+)\/(\d+)\/(\d+)/);
-        if (m) {
-          const z = parseInt(m[1]), x = parseInt(m[2]), y = parseInt(m[3]);
-          return { url: `https://ecn.t3.tiles.virtualearth.net/tiles/a${quadkey(x, y, z)}.jpeg?g=1` };
-        }
-      }
-    };
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new maplibregl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
