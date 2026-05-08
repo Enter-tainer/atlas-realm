@@ -291,8 +291,6 @@ async function buildGlb(mesh, textureImageData) {
   let offset = 0;
   const vertexBv = { buffer: 0, byteOffset: offset, byteLength: vertexData.byteLength, byteStride: vertexStride, target: 34962 };
   offset += vertexData.byteLength;
-
-  // Align to 4 bytes
   if (offset % 4 !== 0) offset += 4 - (offset % 4);
   const indexBv = { buffer: 0, byteOffset: offset, byteLength: indexBuffer.byteLength, target: 34963 };
   offset += indexBuffer.byteLength;
@@ -304,8 +302,9 @@ async function buildGlb(mesh, textureImageData) {
     offset += textureData.byteLength;
   }
 
-  // Total bin size
-  const binSize = offset;
+  // BIN chunk data must be 4-byte aligned at both start AND end
+  const binPad = (4 - (offset % 4)) % 4;
+  const binSize = offset + binPad;
 
   // Build the GLTF JSON
   const gltf = {
@@ -395,6 +394,9 @@ async function buildGlb(mesh, textureImageData) {
     new Uint8Array(glb).set(new Uint8Array(textureData), wOff);
     wOff += textureData.byteLength;
   }
+
+  // Trailing pad to 4 bytes (BIN chunk length must be multiple of 4)
+  while (wOff % 4 !== 0) { dw.setUint8(wOff, 0); wOff++; }
 
   return glb;
 }
