@@ -205,6 +205,24 @@ export function gpxToGeoJson(xmlString) {
   };
 }
 
+// ── SHA-256 dedup ─────────────────────────────────────────
+const loadedGpxHashes = new Set();
+
+async function sha256(text) {
+  const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Merge two [[sw],[ne]] bounds into one, returns first if second is null */
+export function mergeBounds(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return [
+    [Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],
+    [Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])],
+  ];
+}
+
 let gpxLayerCount = 0;
 
 export function addGpxToMap(map, xmlString) {
@@ -325,8 +343,10 @@ export function addGpxToMap(map, xmlString) {
     });
   }
 
-  map.fitBounds(result.bounds, { padding: 60, maxZoom: 15 });
-  return result.stats;
+  return {
+    ...result.stats,
+    bounds: result.bounds,
+  };
 }
 
 let geojsonLayerCount = 0;
@@ -429,17 +449,11 @@ export function addGeoJsonToMap(map, geojson) {
     });
   }
 
-  if (hasBounds) {
-    map.fitBounds(
-      [[minLng, minLat], [maxLng, maxLat]],
-      { padding: 60, maxZoom: 15 }
-    );
-  }
-
   return {
     lines: lineFeatures.length,
     points: pointFeatures.length,
     id,
+    bounds: hasBounds ? [[minLng, minLat], [maxLng, maxLat]] : null,
   };
 }
 
@@ -449,16 +463,27 @@ let pendingGeoJsonQueue = [];
 /**
  * Defer GPX processing until map is loaded. If map is already loaded,
  * process immediately; otherwise queue for later.
+ * Returns the stats or null if skipped (duplicate).
  */
-export function processOrQueueGpx(map, xmlString) {
+export async function processOrQueueGpx(map, xmlString) {
+  // SHA-256 dedup — skip if we've seen identical content before
+  const hash = await sha256(xmlString);
+  if (loadedGpxHashes.has(hash)) {
+    console.log('GPX skipped: duplicate content (SHA-256 match)');
+    return null;
+  }
+  loadedGpxHashes.add(hash);
+
   if (map.loaded()) {
     const stats = addGpxToMap(map, xmlString);
     if (stats) {
       console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
     }
+    return stats || null;
   } else {
-    pendingGpxQueue.push(xmlString);
+    pendingGpxQueue.push({ xml: xmlString, hash });
     console.log('Map not yet loaded, queued GPX for after load');
+    return null;
   }
 }
 
@@ -478,10 +503,12 @@ export function processOrQueueGeoJson(map, geojson) {
 }
 
 export function drainGpxQueue(map) {
-  for (const xml of pendingGpxQueue) {
-    const stats = addGpxToMap(map, xml);
+  let bounds = null;
+  for (const item of pendingGpxQueue) {
+    const stats = addGpxToMap(map, item.xml);
     if (stats) {
       console.log(`GPX loaded (deferred): ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
+      bounds = mergeBounds(bounds, stats.bounds);
     }
   }
   pendingGpxQueue = [];
@@ -489,9 +516,11 @@ export function drainGpxQueue(map) {
     const result = addGeoJsonToMap(map, geojson);
     if (result) {
       console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points`);
+      bounds = mergeBounds(bounds, result.bounds);
     }
   }
   pendingGeoJsonQueue = [];
+  if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
 }
 
 /**
@@ -630,15 +659,32 @@ export function installGpxDragDrop(map) {
     container.style.outline = '';
   });
 
-  container.addEventListener('drop', (e) => {
+  container.addEventListener('drop', async (e) => {
     e.preventDefault();
     container.style.outline = '';
 
-    const file = e.dataTransfer.files[0];
-    if (!file || !file.name.toLowerCase().endsWith('.gpx')) return;
+    const gpxFiles = Array.from(e.dataTransfer.files)
+      .filter((f) => f.name.toLowerCase().endsWith('.gpx'));
+    if (gpxFiles.length === 0) return;
 
-    const reader = new FileReader();
-    reader.onload = () => processOrQueueGpx(map, reader.result);
-    reader.readAsText(file);
+    let bounds = null;
+    let loaded = 0;
+    for (const file of gpxFiles) {
+      const text = await file.text();
+      const hash = await sha256(text);
+      if (loadedGpxHashes.has(hash)) {
+        console.log(`GPX skipped (duplicate): ${file.name}`);
+        continue;
+      }
+      loadedGpxHashes.add(hash);
+      const stats = addGpxToMap(map, text);
+      if (stats) {
+        loaded++;
+        console.log(`GPX loaded: ${file.name} — ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
+        bounds = mergeBounds(bounds, stats.bounds);
+      }
+    }
+    if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
+    if (loaded === 0) console.log('No new GPX files loaded (all were duplicates)');
   });
 }

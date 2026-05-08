@@ -2,7 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
-import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson } from './gpx.js';
+import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson, mergeBounds } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
 
@@ -349,14 +349,22 @@ async function init() {
     // Load GPX from URL parameters (?gpx=url1&gpx=url2)
     // Compatible with MapLibre's hash-based URL sync (hash and query string are independent)
     const gpxUrls = new URLSearchParams(window.location.search).getAll('gpx');
-    for (const gpxUrl of gpxUrls) {
-      fetchWithSwr(gpxUrl)
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.text();
-        })
-        .then((xml) => processOrQueueGpx(map, xml))
-        .catch((err) => console.error('Failed to load GPX from URL:', gpxUrl, err));
+    if (gpxUrls.length > 0) {
+      (async () => {
+        let bounds = null;
+        await Promise.allSettled(gpxUrls.map(async (gpxUrl) => {
+          try {
+            const res = await fetchWithSwr(gpxUrl);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const xml = await res.text();
+            const stats = await processOrQueueGpx(map, xml);
+            if (stats?.bounds) bounds = mergeBounds(bounds, stats.bounds);
+          } catch (err) {
+            console.error('Failed to load GPX from URL:', gpxUrl, err);
+          }
+        }));
+        if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
+      })();
     }
 
     // Load GeoJSON from URL parameters (?geojson=url1&geojson=url2)
