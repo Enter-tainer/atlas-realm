@@ -12,7 +12,7 @@ const TILE_VERSION = '20260318d';
 const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
-const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
+const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
 
 const app = document.querySelector('#app');
@@ -199,8 +199,8 @@ function addSatelliteSourceAndLayer(style) {
       tiles: [SATELLITE_URL],
       tileSize: 256,
       minzoom: 0,
-      maxzoom: 17,
-      attribution: '&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+      maxzoom: 20,
+      attribution: '&copy; Google',
     },
   };
 
