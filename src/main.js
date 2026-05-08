@@ -35,15 +35,6 @@ const SATELLITE_SOURCES = [
     tiles: ['https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
   },
   {
-    id: 'yandex',
-    name: 'Yandex',
-    tileSize: 256,
-    minzoom: 0,
-    maxzoom: 19,
-    attribution: '&copy; Yandex',
-    tiles: ['https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1&lang=zh_CN'],
-  },
-  {
     id: 'google',
     name: 'Google',
     tileSize: 256,
@@ -392,6 +383,17 @@ async function init() {
     });
 
     window._mlmap = map;
+    // Shared flag for Bing tile URL rewriting (set by SatellitePickerControl)
+    let satellitePicker = null;
+    map.transformRequest = (url, resourceType) => {
+      if (satellitePicker?.activeId === 'bing' && resourceType === 'Tile') {
+        const m = url.match(/^bing:\/\/tile\/(\d+)\/(\d+)\/(\d+)/);
+        if (m) {
+          const z = parseInt(m[1]), x = parseInt(m[2]), y = parseInt(m[3]);
+          return { url: `https://ecn.t3.tiles.virtualearth.net/tiles/a${quadkey(x, y, z)}.jpeg?g=1` };
+        }
+      }
+    };
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
     map.addControl(new maplibregl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
@@ -471,6 +473,7 @@ async function init() {
       onAdd(map) {
         this._map = map;
         this._activeId = null;
+        satellitePicker = this;
         this._container = document.createElement('div');
         this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group satellite-picker';
 
@@ -526,24 +529,6 @@ async function init() {
 
         const cfg = SATELLITE_SOURCES.find((s) => s.id === id);
         if (!cfg) return;
-
-        // Clean up Bing transformRequest if switching away from Bing
-        if (this._bingTransformInstalled) {
-          delete this._map.transformRequest;
-          this._bingTransformInstalled = false;
-        }
-
-        // For Bing, set up transformRequest to rewrite bing:// URLs to quadkey format
-        if (id === 'bing') {
-          this._map.transformRequest = (url, resourceType) => {
-            const m = url.match(/^bing:\/\/tile\/(\d+)\/(\d+)\/(\d+)/);
-            if (m && resourceType === 'Tile') {
-              const z = parseInt(m[1]), x = parseInt(m[2]), y = parseInt(m[3]);
-              return { url: `https://ecn.t3.tiles.virtualearth.net/tiles/a${quadkey(x, y, z)}.jpeg?g=1` };
-            }
-          };
-          this._bingTransformInstalled = true;
-        }
 
         // Switch satellite source by removing and re-adding
         if (map.getLayer('satellite-layer')) map.removeLayer('satellite-layer');
