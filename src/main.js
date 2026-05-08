@@ -5,6 +5,7 @@ import mlcontour from 'maplibre-contour';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
+import { installExport3d } from './export3d.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -338,7 +339,12 @@ async function init() {
     }), 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
+
+    // Photon POI search
     installPhotonSearch(map, maplibregl);
+
+    // 3D terrain export
+    installExport3d(map, maplibregl);
 
     installSpriteFallback(map, atlases);
 

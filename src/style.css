@@ -542,3 +542,139 @@ html, body, #app {
 .orm-popup-images {
   margin: 6px 0;
 }
+
+/* ==========================================================================
+   3D Export dialog
+   ========================================================================== */
+
+.maplibregl-ctrl-export3d {
+  width: 29px;
+  height: 29px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 29px;
+  text-align: center;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  color: #333;
+}
+.maplibregl-ctrl-export3d:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.export3d-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.25);
+}
+
+.export3d-dialog {
+  width: min(400px, calc(100vw - 32px));
+  background: #fff;
+  border-radius: 14px;
+  padding: 20px 24px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  font-size: 14px;
+}
+.export3d-dialog h3 {
+  margin: 0 0 12px;
+  font-size: 16px;
+}
+.export3d-info {
+  font-size: 13px;
+  color: #6b7280;
+  margin-bottom: 14px;
+  line-height: 1.5;
+}
+.export3d-field {
+  margin-bottom: 14px;
+}
+.export3d-field label {
+  display: block;
+  font-weight: 600;
+  color: #374151;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+.export3d-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.export3d-zoom-slider {
+  flex: 1;
+  accent-color: #3b82f6;
+}
+.export3d-zoom-value {
+  font-weight: 700;
+  font-size: 13px;
+  color: #3b82f6;
+  min-width: 30px;
+}
+.export3d-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  margin-top: 4px;
+}
+.export3d-check-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400 !important;
+  cursor: pointer;
+}
+.export3d-check-label input {
+  accent-color: #3b82f6;
+}
+.export3d-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 16px;
+}
+.export3d-btn {
+  padding: 8px 18px;
+  border-radius: 8px;
+  border: 1px solid #d1d5db;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: #fff;
+  color: #374151;
+  transition: background 0.1s;
+}
+.export3d-btn:hover { background: #f3f4f6; }
+.export3d-btn:disabled { opacity: 0.5; cursor: default; }
+.export3d-export {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.export3d-export:hover { background: #2563eb; }
+
+.export3d-progress {
+  margin-top: 14px;
+}
+.export3d-progress-bar {
+  height: 6px;
+  background: #e5e7eb;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.export3d-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: #3b82f6;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+.export3d-progress-text {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 6px;
+}
