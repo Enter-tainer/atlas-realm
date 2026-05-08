@@ -52,6 +52,56 @@ html, body, #app {
   color: #33b5e5;
 }
 
+.satellite-picker {
+  position: relative;
+}
+
+.satellite-picker-menu {
+  display: none;
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 4px;
+  min-width: 100px;
+  background: rgba(255, 255, 255, 0.97);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  overflow: hidden;
+  z-index: 30;
+}
+
+.satellite-picker-menu-open {
+  display: block;
+}
+
+.satellite-picker-item {
+  display: block;
+  width: 100%;
+  padding: 8px 14px;
+  border: 0;
+  border-bottom: 1px solid #f0f0f0;
+  background: transparent;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.satellite-picker-item:last-child {
+  border-bottom: none;
+}
+
+.satellite-picker-item:hover {
+  background: #eef2ff;
+}
+
+.satellite-picker-off {
+  color: #ef4444;
+}
+
 .poi-search {
   width: min(360px, calc(100vw - 76px));
   overflow: hidden;

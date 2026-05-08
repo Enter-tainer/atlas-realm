@@ -15,6 +15,45 @@ const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const SATELLITE_URL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
 
+const SATELLITE_SOURCES = [
+  {
+    id: 'arcgis',
+    name: 'ArcGIS',
+    tileSize: 256,
+    minzoom: 0,
+    maxzoom: 19,
+    attribution: '&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    tiles: [SATELLITE_URL],
+  },
+  {
+    id: 'arcgis-clarity',
+    name: 'Clarity',
+    tileSize: 256,
+    minzoom: 0,
+    maxzoom: 19,
+    attribution: '&copy; Esri Clarity',
+    tiles: ['https://clarity.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+  },
+  {
+    id: 'yandex',
+    name: 'Yandex',
+    tileSize: 256,
+    minzoom: 0,
+    maxzoom: 19,
+    attribution: '&copy; Yandex',
+    tiles: ['https://core-sat.maps.yandex.net/tiles?l=sat&x={x}&y={y}&z={z}&scale=1&lang=zh_CN'],
+  },
+  {
+    id: 'google',
+    name: 'Google',
+    tileSize: 256,
+    minzoom: 0,
+    maxzoom: 19,
+    attribution: '&copy; Google',
+    tiles: ['https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}'],
+  },
+];
+
 const app = document.querySelector('#app');
 app.innerHTML = `
   <div id="map"></div>
@@ -191,16 +230,17 @@ function addMapterhornTerrain(style, demSource) {
   return style;
 }
 
-function addSatelliteSourceAndLayer(style) {
+function addSatelliteSourceAndLayer(style, sourceCfg) {
+  const cfg = sourceCfg || SATELLITE_SOURCES[0];
   style.sources = {
     ...(style.sources || {}),
     satellite: {
       type: 'raster',
-      tiles: [SATELLITE_URL],
-      tileSize: 256,
-      minzoom: 0,
-      maxzoom: 17,
-      attribution: '&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+      tiles: cfg.tiles,
+      tileSize: cfg.tileSize,
+      minzoom: cfg.minzoom,
+      maxzoom: cfg.maxzoom,
+      attribution: cfg.attribution,
     },
   };
 
@@ -404,58 +444,104 @@ async function init() {
     }
     map.addControl(new TerrainToggleControl(), 'top-right');
 
-    // Satellite imagery toggle control
-    class SatelliteToggleControl {
+    // Satellite imagery picker control
+    class SatellitePickerControl {
       onAdd(map) {
         this._map = map;
-        this._enabled = false;
+        this._activeId = null;
         this._container = document.createElement('div');
-        this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+        this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group satellite-picker';
+
         this._btn = document.createElement('button');
         this._btn.type = 'button';
         this._btn.title = 'Satellite Imagery';
         this._btn.setAttribute('aria-label', 'Satellite Imagery');
         this._btn.className = 'maplibregl-ctrl-satellite';
         this._btn.textContent = 'Sat';
-        this._btn.addEventListener('click', () => this._toggle());
+        this._btn.addEventListener('click', () => this._toggleMenu());
         this._container.appendChild(this._btn);
+
+        this._menu = document.createElement('div');
+        this._menu.className = 'satellite-picker-menu';
+        this._menu.innerHTML = SATELLITE_SOURCES.map((s) =>
+          `<button class="satellite-picker-item" data-id="${s.id}">${s.name}</button>`
+        ).join('') + '<button class="satellite-picker-item satellite-picker-off" data-id="">关闭</button>';
+        this._menu.addEventListener('click', (e) => {
+          const item = e.target.closest('.satellite-picker-item');
+          if (!item) return;
+          const id = item.dataset.id;
+          this._selectSource(id);
+          this._closeMenu();
+        });
+        this._container.appendChild(this._menu);
+
         return this._container;
       }
-      _toggle() {
-        this._enabled = !this._enabled;
+      _toggleMenu() {
+        this._menu.classList.toggle('satellite-picker-menu-open');
+      }
+      _closeMenu() {
+        this._menu.classList.remove('satellite-picker-menu-open');
+      }
+      _selectSource(id) {
         const map = this._map;
         const layers = map.getStyle().layers;
-        // Everything before trip-hillshade is OpenFreeMap base map layers
         const splitIdx = layers.findIndex((l) => l.id === 'trip-hillshade');
         const baseLayers = splitIdx !== -1 ? layers.slice(0, splitIdx) : [];
 
-        if (this._enabled) {
-          this._enable(baseLayers);
-        } else {
-          this._disable(baseLayers);
+        if (!id || id === this._activeId) {
+          // Disable
+          this._activeId = null;
+          this._btn.classList.remove('maplibregl-ctrl-satellite-enabled');
+          this._btn.textContent = 'Sat';
+          for (const layer of baseLayers) {
+            if (layer.id === 'satellite-layer') continue;
+            map.setLayoutProperty(layer.id, 'visibility', 'visible');
+          }
+          map.setLayoutProperty('satellite-layer', 'visibility', 'none');
+          return;
         }
-        this._btn.classList.toggle('maplibregl-ctrl-satellite-enabled', this._enabled);
-      }
-      _enable(baseLayers) {
+
+        const cfg = SATELLITE_SOURCES.find((s) => s.id === id);
+        if (!cfg) return;
+
+        // Switch satellite source by removing and re-adding
+        if (map.getLayer('satellite-layer')) map.removeLayer('satellite-layer');
+        if (map.getSource('satellite')) map.removeSource('satellite');
+
+        map.addSource('satellite', {
+          type: 'raster',
+          tiles: cfg.tiles,
+          tileSize: cfg.tileSize,
+          minzoom: cfg.minzoom,
+          maxzoom: cfg.maxzoom,
+          attribution: cfg.attribution,
+        });
+
+        const insertBefore = map.getLayer('trip-hillshade')?.id;
+        map.addLayer({
+          id: 'satellite-layer',
+          type: 'raster',
+          source: 'satellite',
+          layout: { visibility: 'visible' },
+          paint: { 'raster-opacity': 1 },
+        }, insertBefore);
+
         for (const layer of baseLayers) {
           if (layer.id === 'satellite-layer') continue;
-          this._map.setLayoutProperty(layer.id, 'visibility', 'none');
+          map.setLayoutProperty(layer.id, 'visibility', 'none');
         }
-        this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
-      }
-      _disable(baseLayers) {
-        for (const layer of baseLayers) {
-          if (layer.id === 'satellite-layer') continue;
-          this._map.setLayoutProperty(layer.id, 'visibility', 'visible');
-        }
-        this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
+
+        this._activeId = id;
+        this._btn.classList.add('maplibregl-ctrl-satellite-enabled');
+        this._btn.textContent = cfg.name;
       }
       onRemove() {
         this._container.parentNode?.removeChild(this._container);
         this._map = undefined;
       }
     }
-    map.addControl(new SatelliteToggleControl(), 'top-right');
+    map.addControl(new SatellitePickerControl(), 'top-right');
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);
