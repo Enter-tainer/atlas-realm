@@ -584,7 +584,8 @@ async function doExport(map, zoom, bbox, useTexture, progressFill, progressText)
 
 /** Convert lat/lng to Mercator meters */
 function latLngToMercator(lat, lng) {
-  const mx = (lng / 180 + 1) * HALF_CIRCUMFERENCE;
-  const my = HALF_CIRCUMFERENCE - (Math.log(Math.tan((90 + lat) * Math.PI / 360)) / (Math.PI / 180) / 180) * HALF_CIRCUMFERENCE;
+  const mx = (lng / 180) * HALF_CIRCUMFERENCE;
+  const latRad = lat * Math.PI / 180;
+  const my = EARTH_RADIUS * Math.log(Math.tan(Math.PI / 4 + latRad / 2));
   return { mx, my };
 }
