@@ -678,3 +678,31 @@ html, body, #app {
   color: #6b7280;
   margin-top: 6px;
 }
+
+.export3d-stride-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.export3d-stride-option {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid #d1d5db;
+  background: #f9fafb;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  color: #4b5563;
+  transition: all 0.1s;
+}
+.export3d-stride-option:has(input:checked) {
+  background: #eff6ff;
+  border-color: #3b82f6;
+  color: #2563eb;
+}
+.export3d-stride-option input {
+  accent-color: #3b82f6;
+}

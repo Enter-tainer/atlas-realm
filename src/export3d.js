@@ -130,7 +130,8 @@ async function fetchCompositeSatellite(tiles, z) {
 //  Mesh generation
 // ---------------------------------------------------------------------------
 
-function generateMesh(tiles, demData, centerMx, centerMz) {
+function generateMesh(tiles, demData, centerMx, centerMz, stride) {
+  stride = stride || 1;
   // demData[i] = Float32Array for tiles[i]
   // Layout: tiles are in row-major order
   let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -143,11 +144,10 @@ function generateMesh(tiles, demData, centerMx, centerMz) {
   const cols = maxX - minX + 1;
   const rows = maxY - minY + 1;
 
-  // Build a flat vertex grid. Each tile is TILE_SIZE × TILE_SIZE.
-  // Total vertices per tile: (TILE_SIZE+1 if adjacent, but tiles share edges)
-  // Strategy: create a single grid for the whole area.
-  const gx = cols * (TILE_SIZE - 1) + 1;    // total grid points in x direction
-  const gy = rows * (TILE_SIZE - 1) + 1;    // total grid points in y direction
+  // Each tile: sample every `stride` pixels → (TILE_SIZE-1)/stride + 1 points per dimension
+  const ptsPerTile = Math.floor((TILE_SIZE - 1) / stride) + 1;
+  const gx = cols * (ptsPerTile - 1) + 1;
+  const gy = rows * (ptsPerTile - 1) + 1;
 
   const positions = new Float32Array(gx * gy * 3);
   const uvs = new Float32Array(gx * gy * 2);
@@ -158,24 +158,25 @@ function generateMesh(tiles, demData, centerMx, centerMz) {
       const tileIdx = row * cols + col;
       const elev = demData[tileIdx];
       const tile = tiles[tileIdx];
-      for (let py = 0; py < TILE_SIZE; py++) {
-        for (let px = 0; px < TILE_SIZE; px++) {
-          const gix = col * (TILE_SIZE - 1) + px;
-          const giy = row * (TILE_SIZE - 1) + py;
-          const gi = (giy * gx + gix);
+      for (let pi = 0; pi < ptsPerTile; pi++) {
+        const py = pi * stride;
+        for (let pj = 0; pj < ptsPerTile; pj++) {
+          const px = pj * stride;
+          const gix = col * (ptsPerTile - 1) + pj;
+          const giy = row * (ptsPerTile - 1) + pi;
+          const gi = giy * gx + gix;
 
-          // Mercator coordinates → local meters
           const { mx, my } = tilePixelToMercator(tile.z, tile.x, tile.y, px, py);
-          positions[gi * 3]     = mx - centerMx;          // X: easting
-          positions[gi * 3 + 1] = elev[py * TILE_SIZE + px]; // Y: elevation
-          positions[gi * 3 + 2] = my - centerMz;          // Z: northing
+          positions[gi * 3]     = mx - centerMx;
+          positions[gi * 3 + 1] = elev[py * TILE_SIZE + px];
+          positions[gi * 3 + 2] = my - centerMz;
 
-          // UV for full composite texture
-          uvs[gi * 2]     = (gix) / (gx - 1);
-          uvs[gi * 2 + 1] = (giy) / (gy - 1);
+          uvs[gi * 2]     = gix / (gx - 1);
+          uvs[gi * 2 + 1] = giy / (gy - 1);
 
-          if (elev[py * TILE_SIZE + px] < minElev) minElev = elev[py * TILE_SIZE + px];
-          if (elev[py * TILE_SIZE + px] > maxElev) maxElev = elev[py * TILE_SIZE + px];
+          const e = elev[py * TILE_SIZE + px];
+          if (e < minElev) minElev = e;
+          if (e > maxElev) maxElev = e;
         }
       }
     }
@@ -452,6 +453,15 @@ function showExportDialog(map, triggerBtn) {
         <div class="export3d-hint" id="export3d-tile-count"></div>
       </div>
       <div class="export3d-field">
+        <label>顶点降采样</label>
+        <div class="export3d-stride-row">
+          <label class="export3d-stride-option"><input type="radio" name="stride" value="1" /> 原生 (512×512)</label>
+          <label class="export3d-stride-option"><input type="radio" name="stride" value="2" checked /> 1/4 (256×256)</label>
+          <label class="export3d-stride-option"><input type="radio" name="stride" value="4" /> 1/16 (128×128)</label>
+          <label class="export3d-stride-option"><input type="radio" name="stride" value="8" /> 1/64 (64×64)</label>
+        </div>
+      </div>
+      <div class="export3d-field">
         <label class="export3d-check-label">
           <input type="checkbox" class="export3d-texture-toggle" checked />
           卫星纹理（ArcGIS World Imagery）
@@ -479,16 +489,27 @@ function showExportDialog(map, triggerBtn) {
   const exportBtn = overlay.querySelector('.export3d-export');
   const cancelBtn = overlay.querySelector('.export3d-cancel');
 
+  function getStride() {
+    const checked = overlay.querySelector('input[name="stride"]:checked');
+    return checked ? parseInt(checked.value) : 2;
+  }
+
   function updateTileCount() {
     const zoom = parseInt(zoomSlider.value);
+    const stride = getStride();
     zoomValueEl.textContent = `z${zoom}`;
     const tiles = getTilesInBounds(zoom, bbox.minX, bbox.minY, bbox.maxX, bbox.maxY);
     const n = tiles.length;
-    const verts = n * TILE_SIZE * TILE_SIZE;
-    const tris = n * (TILE_SIZE - 1) * (TILE_SIZE - 1) * 2;
-    tileCountEl.textContent = `${n} 瓦片 · ${(verts/1000).toFixed(0)}k 顶点 · ${(tris/1000).toFixed(0)}k 三角面`;
+    const ptsPerTile = Math.floor((TILE_SIZE - 1) / stride) + 1;
+    const verts = n * ptsPerTile * ptsPerTile;
+    const tris = n * (ptsPerTile - 1) * (ptsPerTile - 1) * 2;
+    const estMb = ((verts * 32 + tris * 4) / (1024 * 1024)).toFixed(1);
+    tileCountEl.textContent = `${n} 瓦片 · ${(verts/1000).toFixed(0)}k 顶点 · ${(tris/1000).toFixed(0)}k 三角面 · ~${estMb}MB`;
   }
   zoomSlider.addEventListener('input', updateTileCount);
+  for (const rb of overlay.querySelectorAll('input[name="stride"]')) {
+    rb.addEventListener('change', updateTileCount);
+  }
   updateTileCount();
 
   cancelBtn.addEventListener('click', () => overlay.remove());
@@ -499,13 +520,14 @@ function showExportDialog(map, triggerBtn) {
 
   exportBtn.addEventListener('click', async () => {
     const zoom = parseInt(zoomSlider.value);
+    const stride = getStride();
     const useTexture = textureToggle.checked;
     exportBtn.disabled = true;
     cancelBtn.disabled = true;
     progressEl.style.display = 'block';
 
     try {
-      await doExport(map, zoom, bbox, useTexture, progressFill, progressText);
+      await doExport(map, zoom, stride, bbox, useTexture, progressFill, progressText);
       progressFill.style.width = '100%';
       progressText.textContent = '✅ 下载中…';
       setTimeout(() => overlay.remove(), 1500);
@@ -518,7 +540,7 @@ function showExportDialog(map, triggerBtn) {
   });
 }
 
-async function doExport(map, zoom, bbox, useTexture, progressFill, progressText) {
+async function doExport(map, zoom, stride, bbox, useTexture, progressFill, progressText) {
   const tiles = getTilesInBounds(zoom, bbox.minX, bbox.minY, bbox.maxX, bbox.maxY);
   const n = tiles.length;
   if (n === 0) throw new Error('No tiles in current viewport');
@@ -560,7 +582,7 @@ async function doExport(map, zoom, bbox, useTexture, progressFill, progressText)
 
   // Generate mesh
   progressText.textContent = '生成网格…';
-  const mesh = generateMesh(tiles, demData, centerMx, centerMz);
+  const mesh = generateMesh(tiles, demData, centerMx, centerMz, stride);
   progressFill.style.width = '85%';
   progressText.textContent = '网格生成完成';
 
