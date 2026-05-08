@@ -199,7 +199,7 @@ function addSatelliteSourceAndLayer(style) {
       tiles: [SATELLITE_URL],
       tileSize: 256,
       minzoom: 0,
-      maxzoom: 20,
+      maxzoom: 22,
       attribution: '&copy; Google',
     },
   };
