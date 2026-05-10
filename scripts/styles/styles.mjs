@@ -12,7 +12,7 @@ import { routeLayers } from './fragments/route.layers.mjs'
 
 const layers = { standard: standardLayers, speed: speedLayers, signals: signalsLayers, electrification: electrificationLayers, track: trackLayers, operator: operatorLayers, route: routeLayers };
 
-const DATA_MAX_ZOOM = 14;
+const DATA_MAX_ZOOM = 16;
 
 const capSourcesForDataMaxZoom = originalSources =>
   Object.fromEntries(
@@ -48,7 +48,7 @@ const makeStyle = selectedStyle => ({
   glyphs: '/font/{fontstack}/{range}',
   metadata: {
     dataMaxZoom: DATA_MAX_ZOOM,
-    z14Capped: true,
+    z16Capped: true,
   },
   name: `OpenRailwayMap ${selectedStyle}`,
   sources: capSourcesForDataMaxZoom(sources),
