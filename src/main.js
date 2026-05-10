@@ -14,6 +14,7 @@ const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
+const SHOW_BASE_MAP_STATE = 'showBaseMap';
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -222,6 +223,21 @@ function addSatelliteSourceAndLayer(style) {
   return style;
 }
 
+function withGlobalStateVisibility(layer, stateName) {
+  const layout = { ...(layer.layout || {}) };
+  const originalVisibility = structuredClone(layout.visibility ?? 'visible');
+  layout.visibility = ['case', ['global-state', stateName], originalVisibility, 'none'];
+  return { ...layer, layout };
+}
+
+function setGlobalStatePropertyWhenReady(map, propertyName, value) {
+  if (map.isStyleLoaded()) {
+    map.setGlobalStateProperty(propertyName, value);
+    return;
+  }
+  map.once('load', () => map.setGlobalStateProperty(propertyName, value));
+}
+
 const STATE_DEFAULTS = {
   date: 2026,
   allDates: false,
@@ -233,29 +249,30 @@ const STATE_DEFAULTS = {
   showConstructionInfrastructure: true,
   showProposedInfrastructure: true,
   hillshade: false,
+  [SHOW_BASE_MAP_STATE]: true,
   electrificationRailwayLine: 'voltageFrequency',
   trackRailwayLine: 'gauge',
 };
 
 function mergeBaseAndOrm(baseStyle, ormStyle) {
   const merged = structuredClone(baseStyle);
+  const baseLayers = (baseStyle.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
   merged.center = ormStyle.center || merged.center;
   merged.zoom = ormStyle.zoom || merged.zoom;
   merged.glyphs = ormStyle.glyphs || merged.glyphs;
   merged.sprite = ormStyle.sprite || merged.sprite;
   // Set state defaults before the style is applied to avoid initial render flash
-  const state = ormStyle.state || merged.state;
-  if (state) {
-    for (const [key, value] of Object.entries(STATE_DEFAULTS)) {
-      if (state[key]) {
-        state[key].default = value;
-      }
-    }
+  const state = { ...(merged.state || {}), ...(ormStyle.state || {}) };
+  for (const [key, value] of Object.entries(STATE_DEFAULTS)) {
+    state[key] = {
+      ...(state[key] || {}),
+      default: value,
+    };
   }
   merged.state = state;
   merged.metadata = { ...(merged.metadata || {}), ...(ormStyle.metadata || {}) };
   merged.sources = { ...(merged.sources || {}), ...(ormStyle.sources || {}) };
-  merged.layers = [...(merged.layers || []), ...(ormStyle.layers || [])];
+  merged.layers = [...baseLayers, ...(ormStyle.layers || [])];
   return merged;
 }
 
@@ -431,32 +448,21 @@ async function init() {
       }
       _toggle() {
         this._enabled = !this._enabled;
-        const map = this._map;
-        const layers = map.getStyle().layers;
-        // Everything before trip-hillshade is OpenFreeMap base map layers
-        const splitIdx = layers.findIndex((l) => l.id === 'trip-hillshade');
-        const baseLayers = splitIdx !== -1 ? layers.slice(0, splitIdx) : [];
 
         if (this._enabled) {
-          this._enable(baseLayers);
+          this._enable();
         } else {
-          this._disable(baseLayers);
+          this._disable();
         }
         this._btn.classList.toggle('maplibregl-ctrl-satellite-enabled', this._enabled);
       }
-      _enable(baseLayers) {
-        for (const layer of baseLayers) {
-          if (layer.id === 'satellite-layer') continue;
-          this._map.setLayoutProperty(layer.id, 'visibility', 'none');
-        }
+      _enable() {
+        setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, false);
         this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
       }
-      _disable(baseLayers) {
-        for (const layer of baseLayers) {
-          if (layer.id === 'satellite-layer') continue;
-          this._map.setLayoutProperty(layer.id, 'visibility', 'visible');
-        }
+      _disable() {
         this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
+        setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, true);
       }
       onRemove() {
         this._container.parentNode?.removeChild(this._container);
