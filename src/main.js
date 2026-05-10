@@ -8,7 +8,7 @@ import { installPhotonSearch } from './search.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
-const TILE_VERSION = '20260318d';
+const TILE_VERSION = '20260510a';
 const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -87,7 +87,7 @@ function rewriteOrmStyle(style) {
         bounds: source.bounds,
         scheme: source.scheme,
         metadata: source.metadata,
-        maxzoom: 15,
+        maxzoom: 16,
       }];
     }
     return [name, source];

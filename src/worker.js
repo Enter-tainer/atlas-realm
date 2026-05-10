@@ -1,6 +1,5 @@
 import {
   PMTiles,
-  RangeResponse,
   ResolvedValueCache,
   TileType,
 } from 'pmtiles';

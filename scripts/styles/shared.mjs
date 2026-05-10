@@ -1714,7 +1714,7 @@ export const routeStops = {
  */
 
 
-export const DATA_MAX_ZOOM = 14;
+export const DATA_MAX_ZOOM = 16;
 
 export const capSourcesForDataMaxZoom = originalSources =>
   Object.fromEntries(
@@ -1750,7 +1750,7 @@ export const makeStyle = selectedStyle => ({
   glyphs: '/font/{fontstack}/{range}',
   metadata: {
     dataMaxZoom: DATA_MAX_ZOOM,
-    z14Capped: true,
+    z16Capped: true,
   },
   name: `OpenRailwayMap ${selectedStyle}`,
   sources: capSourcesForDataMaxZoom(sources),
@@ -1805,4 +1805,3 @@ export const makeStyle = selectedStyle => ({
     },
   },
 });
-
