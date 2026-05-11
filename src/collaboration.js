@@ -189,7 +189,7 @@ export function installMapCollaboration(map) {
   let followTimer = 0;
   let lastFollowAt = 0;
   let shareResetTimer = 0;
-  let compactExpanded = true;
+  let compactExpanded = window.innerWidth > 760;
 
   const overlay = createSvgElement('svg', {
     class: 'collab-overlay',
@@ -645,10 +645,10 @@ export function installMapCollaboration(map) {
     connect(nextRoom);
   });
   const handleDocumentPointerDown = (event) => {
-    if (destroyed || !compactExpanded || panel.dataset.connection === 'idle') return;
+    if (destroyed || !compactExpanded) return;
     if (!panel.contains(event.target)) setMobileExpanded(false);
   };
-  compactToggle.addEventListener('click', () => setMobileExpanded(true));
+  compactToggle.addEventListener('click', () => setMobileExpanded(!compactExpanded));
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
 
   nameInput.addEventListener('change', () => updateProfileName(nameInput.value));
@@ -714,7 +714,7 @@ export function installMapCollaboration(map) {
   }
 
   mapContainer.append(overlay, panel);
-  setMobileExpanded(true);
+  setMobileExpanded(compactExpanded);
   setStatus('', 'idle');
   renderPeople();
 
