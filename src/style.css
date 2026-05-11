@@ -62,30 +62,40 @@ html, body, #app {
   left: 50%;
   z-index: 20;
   display: flex;
+  flex-direction: column;
   align-items: center;
   gap: 8px;
-  max-width: calc(100vw - 180px);
-  min-height: 42px;
-  padding: 6px;
-  border: 1px solid rgba(15, 23, 42, 0.12);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+  max-width: calc(100vw - 24px);
   transform: translateX(-50%);
-  backdrop-filter: blur(14px);
-  color: #111827;
   pointer-events: auto;
 }
 
-.collab-room-form {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
+.collab-panel,
+.collab-panel * {
+  box-sizing: border-box;
 }
 
 .collab-compact-toggle {
-  display: none;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 4px 10px 4px 4px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
+  backdrop-filter: blur(10px);
+  color: #111827;
+  cursor: pointer;
+}
+
+.collab-compact-toggle:hover,
+.collab-compact-toggle:focus {
+  border-color: rgba(37, 99, 235, 0.28);
+  background: rgba(255, 255, 255, 0.98);
+  outline: none;
 }
 
 .collab-compact-avatars {
@@ -118,7 +128,76 @@ html, body, #app {
   box-shadow: 0 0 0 2px #111827, 0 0 0 4px #fff;
 }
 
-.collab-local-badge,
+.collab-compact-summary {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.collab-compact-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #111827;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1;
+}
+
+.collab-compact-title::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9ca3af;
+}
+
+.collab-panel[data-connection="live"] .collab-compact-title::before {
+  background: #16a34a;
+}
+
+.collab-panel[data-connection="connecting"] .collab-compact-title::before {
+  background: #d97706;
+}
+
+.collab-panel[data-connection="offline"] .collab-compact-title::before {
+  background: #dc2626;
+}
+
+.collab-compact-meta {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.collab-panel[data-expanded="false"] .collab-panel-body {
+  display: none;
+}
+
+.collab-panel-body {
+  display: grid;
+  gap: 12px;
+  width: min(304px, calc(100vw - 24px));
+  min-width: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.16);
+  backdrop-filter: blur(10px);
+}
+
+.collab-room-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  gap: 12px;
+  min-width: 0;
+}
+
 .collab-avatar {
   display: inline-flex;
   align-items: center;
@@ -136,28 +215,49 @@ html, body, #app {
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.14);
 }
 
+.collab-field {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.collab-field-label {
+  color: #374151;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.collab-field-hint {
+  color: #6b7280;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
 .collab-name-input,
 .collab-room-input {
-  width: 126px;
-  min-width: 72px;
-  height: 30px;
-  padding: 0 8px;
+  width: 100%;
+  min-width: 0;
+  height: 36px;
+  padding: 0 11px;
   border: 1px solid #d1d5db;
-  border-radius: 6px;
+  border-radius: 8px;
   outline: none;
   background: #fff;
   color: #111827;
   font: 650 13px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-.collab-name-input {
-  width: 108px;
-}
-
 .collab-name-input:focus,
 .collab-room-input:focus {
   border-color: #2563eb;
   box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.16);
+}
+
+.collab-name-input::placeholder,
+.collab-room-input::placeholder {
+  color: #6b7280;
 }
 
 .collab-button,
@@ -173,6 +273,34 @@ html, body, #app {
   line-height: 28px;
   white-space: nowrap;
   cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.collab-action-group {
+  display: grid;
+  gap: 8px;
+}
+
+.collab-button-primary {
+  border-color: #111827;
+  background: #111827;
+  color: #fff;
+}
+
+.collab-button-secondary {
+  background: #fff;
+}
+
+.collab-button[hidden] {
+  display: none;
+}
+
+.collab-button,
+.collab-follow-stop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
 }
 
 .collab-button:hover,
@@ -184,39 +312,47 @@ html, body, #app {
   outline: none;
 }
 
-.collab-status {
-  min-width: 52px;
+.collab-button-primary:hover,
+.collab-button-primary:focus {
+  border-color: #111827;
+  background: #1f2937;
+  color: #fff;
+}
+
+.collab-presence-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid #e5e7eb;
+}
+
+.collab-panel:not([data-connection="live"]) .collab-presence-bar {
+  display: none;
+}
+
+.collab-presence-summary {
+  flex: 1 1 140px;
   color: #6b7280;
   font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.collab-panel[data-connection="live"] .collab-status {
-  color: #15803d;
-}
-
-.collab-panel[data-connection="offline"] .collab-status {
-  color: #b91c1c;
-}
-
-.collab-panel[data-connection="idle"] .collab-status,
-.collab-panel[data-connection="idle"] .collab-avatars,
-.collab-panel[data-connection="idle"] .collab-follow-bar {
-  display: none;
+  font-weight: 600;
+  line-height: 1.2;
 }
 
 .collab-avatars {
   display: flex;
   align-items: center;
   flex: 0 0 auto;
-  min-width: 38px;
-  min-height: 30px;
+  min-width: 30px;
+  min-height: 28px;
+  justify-content: flex-end;
 }
 
 .collab-avatar {
-  margin-left: -7px;
+  margin-left: -6px;
   padding: 0;
   border: 2px solid #fff;
   cursor: pointer;
@@ -249,10 +385,12 @@ html, body, #app {
 .collab-follow-bar {
   display: none;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
   min-width: 0;
-  padding-left: 8px;
-  border-left: 1px solid #e5e7eb;
+  padding-top: 6px;
+  border-top: 1px solid #e5e7eb;
 }
 
 .collab-follow-bar.visible {
@@ -261,7 +399,7 @@ html, body, #app {
 
 .collab-follow-label {
   overflow: hidden;
-  max-width: 150px;
+  max-width: none;
   color: #111827;
   font-size: 12px;
   font-weight: 750;
@@ -281,107 +419,115 @@ html, body, #app {
     top: auto;
     right: 10px;
     bottom: calc(10px + env(safe-area-inset-bottom));
-    left: 10px;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    gap: 4px;
-    min-height: 0;
-    max-width: none;
-    padding: 5px;
+    left: auto;
+    flex-direction: column-reverse;
+    align-items: flex-end;
+    gap: 6px;
+    max-width: calc(100vw - 20px);
     transform: none;
   }
 
-  .collab-panel[data-mobile-expanded="false"] {
-    right: 10px;
-    left: auto;
-    display: block;
-    width: auto;
+  .collab-compact-toggle {
+    min-width: 36px;
+    min-height: 36px;
     padding: 4px;
-    border-radius: 999px;
+    border-color: rgba(15, 23, 42, 0.14);
   }
 
-  .collab-panel[data-mobile-expanded="false"] .collab-compact-toggle {
-    display: inline-flex;
+  .collab-compact-toggle::after {
+    content: '';
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 8px;
+    height: 8px;
+    border: 2px solid #fff;
+    border-radius: 50%;
+    background: #9ca3af;
   }
 
-  .collab-panel[data-mobile-expanded="false"] .collab-room-form,
-  .collab-panel[data-mobile-expanded="false"] .collab-avatars,
-  .collab-panel[data-mobile-expanded="false"] .collab-follow-bar {
+  .collab-panel[data-connection="live"] .collab-compact-toggle {
+    border-color: rgba(22, 163, 74, 0.34);
+    box-shadow: 0 2px 10px rgba(22, 163, 74, 0.18);
+  }
+
+  .collab-panel[data-connection="live"] .collab-compact-toggle::after {
+    background: #16a34a;
+  }
+
+  .collab-panel[data-connection="connecting"] .collab-compact-toggle {
+    border-color: rgba(217, 119, 6, 0.34);
+    box-shadow: 0 2px 10px rgba(217, 119, 6, 0.16);
+  }
+
+  .collab-panel[data-connection="connecting"] .collab-compact-toggle::after {
+    background: #d97706;
+  }
+
+  .collab-panel[data-connection="offline"] .collab-compact-toggle {
+    border-color: rgba(220, 38, 38, 0.28);
+    box-shadow: 0 2px 10px rgba(220, 38, 38, 0.14);
+  }
+
+  .collab-panel[data-connection="offline"] .collab-compact-toggle::after {
+    background: #dc2626;
+  }
+
+  .collab-compact-summary {
     display: none;
   }
 
-  .collab-compact-toggle {
-    align-items: center;
-    min-width: 28px;
-    min-height: 28px;
-    padding: 0;
-    border: 0;
-    background: transparent;
-    cursor: pointer;
-  }
-
-  .collab-compact-avatar {
-    width: 24px;
-    height: 24px;
-    font-size: 10px;
-  }
-
-  .collab-room-form {
-    display: grid;
-    grid-template-columns: 24px minmax(58px, 1fr) minmax(58px, 1fr) auto;
-    align-items: center;
-    gap: 4px;
-    min-width: 0;
-  }
-
-  .collab-name-input,
-  .collab-room-input {
-    width: auto;
-    min-width: 0;
-    height: 28px;
-    padding: 0 6px;
-    font-size: 12px;
-  }
-
-  .collab-local-badge,
+  .collab-compact-avatar,
   .collab-avatar {
     width: 24px;
     height: 24px;
     font-size: 10px;
   }
 
-  .collab-button {
-    height: 28px;
-    padding: 0 8px;
-    font-size: 12px;
-    line-height: 26px;
+  .collab-panel-body {
+    width: min(284px, calc(100vw - 20px));
+    gap: 8px;
+    padding: 10px;
   }
 
-  .collab-share-button,
-  .collab-status {
-    display: none;
+  .collab-room-form,
+  .collab-presence-bar,
+  .collab-follow-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .collab-room-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .collab-name-input,
+  .collab-room-input {
+    height: 34px;
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .collab-action-group {
+    width: 100%;
+  }
+
+  .collab-button {
+    height: 30px;
+    padding: 0 8px;
+    font-size: 12px;
+    line-height: 28px;
   }
 
   .collab-avatars {
-    grid-column: 1 / -1;
+    justify-content: flex-start;
     min-height: 24px;
-    padding-left: 28px;
   }
 
-  .collab-empty {
-    display: none;
-  }
-
-  .collab-follow-bar {
-    grid-column: 1 / -1;
-    margin-left: auto;
-    padding-left: 0;
-    border-left: 0;
-  }
-
-  .collab-follow-label {
-    max-width: calc(100vw - 104px);
-    font-size: 12px;
+  .collab-follow-stop {
+    width: 100%;
+    height: 28px;
+    line-height: 26px;
   }
 }
 
