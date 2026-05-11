@@ -481,24 +481,60 @@ export async function processOrQueueGpx(map, xmlString) {
     }
     return stats || null;
   } else {
+    // Compute bounds now so caller can fitBounds immediately,
+    // without waiting for the map tiles to finish loading.
+    const result = gpxToGeoJson(xmlString);
     pendingGpxQueue.push({ xml: xmlString, hash });
     console.log('Map not yet loaded, queued GPX for after load');
+    if (result) {
+      return { bounds: result.bounds, points: result.stats.points, maxSpeed: result.stats.maxSpeed, p99Speed: result.stats.p99Speed };
+    }
     return null;
   }
 }
 
 /**
  * Defer GeoJSON processing until map is loaded.
+ * Also returns bounds immediately so the caller can zoom before map tiles load.
  */
 export function processOrQueueGeoJson(map, geojson) {
+  let bounds = null;
+  // Compute bounds ahead of time for early zoom
+  if (geojson && geojson.features && geojson.features.length > 0) {
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    for (const f of geojson.features) {
+      const coords = f.geometry?.coords ?? f.geometry?.coordinates;
+      if (!coords) continue;
+      if (f.geometry.type === 'LineString') {
+        for (const [lng, lat] of coords) {
+          if (lng < minLng) minLng = lng;
+          if (lat < minLat) minLat = lat;
+          if (lng > maxLng) maxLng = lng;
+          if (lat > maxLat) maxLat = lat;
+        }
+      } else if (f.geometry.type === 'Point') {
+        const [lng, lat] = coords;
+        if (lng < minLng) minLng = lng;
+        if (lat < minLat) minLat = lat;
+        if (lng > maxLng) maxLng = lng;
+        if (lat > maxLat) maxLat = lat;
+      }
+    }
+    if (isFinite(minLng) && isFinite(maxLng)) {
+      bounds = [[minLng, minLat], [maxLng, maxLat]];
+    }
+  }
+
   if (map.loaded()) {
     const result = addGeoJsonToMap(map, geojson);
     if (result) {
       console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points`);
     }
+    return bounds ? { bounds } : null;
   } else {
     pendingGeoJsonQueue.push(geojson);
     console.log('Map not yet loaded, queued GeoJSON for after load');
+    return bounds ? { bounds } : null;
   }
 }
 
