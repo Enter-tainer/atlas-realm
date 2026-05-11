@@ -3,13 +3,14 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@10.24.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "npm run build && wrangler dev",
+    "preview": "pnpm build && wrangler dev",
     "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json",
     "verify:style-bitexact": "cp scripts/styles/styles.mjs /tmp/orm-styles.split.mjs && cp /tmp/style-refactor-backup/styles.mjs.orig scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cp standard.json /tmp/orm-standard.before.json && cp /tmp/orm-styles.split.mjs scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cmp -s standard.json /tmp/orm-standard.before.json",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "pnpm build && wrangler deploy"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.28.0",
@@ -21,6 +22,8 @@
     "@mapbox/vector-tile": "^2.0.4",
     "maplibre-contour": "^0.0.5",
     "maplibre-gl": "^5.18.0",
+    "partyserver": "^0.5.5",
+    "partysocket": "^1.1.18",
     "pbf": "^4.0.1",
     "pmtiles": "^4.4.0"
   }

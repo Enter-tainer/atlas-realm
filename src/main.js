@@ -5,6 +5,7 @@ import mlcontour from 'maplibre-contour';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson, mergeBounds } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
+import { installMapCollaboration } from './collaboration.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -238,6 +239,14 @@ function setGlobalStatePropertyWhenReady(map, propertyName, value) {
   map.once('load', () => map.setGlobalStateProperty(propertyName, value));
 }
 
+function runWhenStyleReady(map, callback) {
+  if (map.isStyleLoaded()) {
+    callback();
+    return;
+  }
+  map.once('load', callback);
+}
+
 const STATE_DEFAULTS = {
   date: 2026,
   allDates: false,
@@ -397,8 +406,23 @@ async function init() {
         .catch((err) => console.error('Failed to load GeoJSON from URL:', geojsonUrl, err));
     }
 
+    let terrainControl = null;
+    let satelliteControl = null;
+    const getCollaborationViewState = () => ({
+      terrain: Boolean(terrainControl?._enabled),
+      satellite: Boolean(satelliteControl?._enabled),
+    });
+    const emitCollaborationViewState = () => {
+      map.getContainer().dispatchEvent(new CustomEvent('collaboration:viewstatechange', {
+        detail: getCollaborationViewState(),
+      }));
+    };
+
     // Terrain toggle control
     class TerrainToggleControl {
+      constructor(onChange) {
+        this._onChange = onChange;
+      }
       onAdd(map) {
         this._map = map;
         this._enabled = false;
@@ -410,27 +434,33 @@ async function init() {
         this._btn.setAttribute('aria-label', '3D Terrain');
         this._btn.className = 'maplibregl-ctrl-terrain';
         this._btn.textContent = '3D';
-        this._btn.addEventListener('click', () => {
-          this._enabled = !this._enabled;
-          if (this._enabled) {
-            map.setTerrain({ source: 'hillshadeSource', exaggeration: 1.0 });
-          } else {
-            map.setTerrain(null);
-          }
-          this._btn.classList.toggle('maplibregl-ctrl-terrain-enabled', this._enabled);
-        });
+        this._btn.addEventListener('click', () => this.setEnabled(!this._enabled));
         this._container.appendChild(this._btn);
         return this._container;
+      }
+      setEnabled(enabled, options = {}) {
+        const next = Boolean(enabled);
+        if (this._enabled === next) return;
+        this._enabled = next;
+        runWhenStyleReady(this._map, () => {
+          this._map.setTerrain(next ? { source: 'hillshadeSource', exaggeration: 1.0 } : null);
+        });
+        this._btn?.classList.toggle('maplibregl-ctrl-terrain-enabled', next);
+        if (!options.silent) this._onChange?.();
       }
       onRemove() {
         this._container.parentNode?.removeChild(this._container);
         this._map = undefined;
       }
     }
-    map.addControl(new TerrainToggleControl(), 'top-right');
+    terrainControl = new TerrainToggleControl(emitCollaborationViewState);
+    map.addControl(terrainControl, 'top-right');
 
     // Satellite imagery toggle control
     class SatelliteToggleControl {
+      constructor(onChange) {
+        this._onChange = onChange;
+      }
       onAdd(map) {
         this._map = map;
         this._enabled = false;
@@ -447,29 +477,50 @@ async function init() {
         return this._container;
       }
       _toggle() {
-        this._enabled = !this._enabled;
-
-        if (this._enabled) {
+        this.setEnabled(!this._enabled);
+      }
+      setEnabled(enabled, options = {}) {
+        const next = Boolean(enabled);
+        if (this._enabled === next) return;
+        this._enabled = next;
+        if (next) {
           this._enable();
         } else {
           this._disable();
         }
-        this._btn.classList.toggle('maplibregl-ctrl-satellite-enabled', this._enabled);
+        this._btn?.classList.toggle('maplibregl-ctrl-satellite-enabled', next);
+        if (!options.silent) this._onChange?.();
       }
       _enable() {
-        setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, false);
-        this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
+        runWhenStyleReady(this._map, () => {
+          setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, false);
+          if (this._map.getLayer('satellite-layer')) {
+            this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
+          }
+        });
       }
       _disable() {
-        this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
-        setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, true);
+        runWhenStyleReady(this._map, () => {
+          if (this._map.getLayer('satellite-layer')) {
+            this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
+          }
+          setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, true);
+        });
       }
       onRemove() {
         this._container.parentNode?.removeChild(this._container);
         this._map = undefined;
       }
     }
-    map.addControl(new SatelliteToggleControl(), 'top-right');
+    satelliteControl = new SatelliteToggleControl(emitCollaborationViewState);
+    map.addControl(satelliteControl, 'top-right');
+    map.getCollaborationViewState = getCollaborationViewState;
+    map.setCollaborationViewState = (viewState, options = {}) => {
+      terrainControl?.setEnabled(Boolean(viewState?.terrain), { silent: true });
+      satelliteControl?.setEnabled(Boolean(viewState?.satellite), { silent: true });
+      if (!options.silent) emitCollaborationViewState();
+    };
+    installMapCollaboration(map);
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);

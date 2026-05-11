@@ -1,0 +1,734 @@
+import PartySocket from 'partysocket';
+
+const PARTY_NAME = 'map-collaboration';
+const DEFAULT_ROOM = 'main';
+const PROFILE_KEY = 'orm-collaboration-profile';
+const SESSION_KEY = 'orm-collaboration-session';
+const SEND_INTERVAL_MS = 90;
+const FOLLOW_INTERVAL_MS = 140;
+const STALE_PEER_MS = 45_000;
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+const PROFILE_COLORS = [
+  '#2563eb',
+  '#dc2626',
+  '#16a34a',
+  '#9333ea',
+  '#ea580c',
+  '#0891b2',
+  '#be123c',
+  '#4f46e5',
+];
+
+function safeGetStorage(storage, key) {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSetStorage(storage, key, value) {
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Ignore private browsing and disabled storage.
+  }
+}
+
+function randomId(prefix) {
+  const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
+}
+
+function getSessionId() {
+  const existing = safeGetStorage(sessionStorage, SESSION_KEY);
+  if (existing) return existing;
+  const id = randomId('session');
+  safeSetStorage(sessionStorage, SESSION_KEY, id);
+  return id;
+}
+
+function getProfile() {
+  const stored = safeGetStorage(localStorage, PROFILE_KEY);
+  if (stored) {
+    try {
+      const profile = JSON.parse(stored);
+      if (profile?.userId && profile?.name && profile?.color) return profile;
+    } catch {
+      // Fall through to a new local profile.
+    }
+  }
+
+  const userId = randomId('user');
+  const color = PROFILE_COLORS[Math.floor(Math.random() * PROFILE_COLORS.length)];
+  const profile = {
+    userId,
+    name: `Guest ${userId.slice(-4)}`,
+    color,
+  };
+  safeSetStorage(localStorage, PROFILE_KEY, JSON.stringify(profile));
+  return profile;
+}
+
+function sanitizeProfileName(value, fallback = 'Guest') {
+  const name = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 32);
+  return name || fallback;
+}
+
+function normalizeRoom(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return normalized || DEFAULT_ROOM;
+}
+
+function getInitialRoom() {
+  const params = new URLSearchParams(window.location.search);
+  return normalizeRoom(params.get('room') || params.get('collab') || DEFAULT_ROOM);
+}
+
+function updateRoomUrl(room) {
+  const nextUrl = new URL(window.location.href);
+  nextUrl.searchParams.set('room', room);
+  window.history.replaceState(null, '', nextUrl);
+}
+
+function createElement(tag, className, attributes = {}) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  for (const [name, value] of Object.entries(attributes)) {
+    if (value !== undefined && value !== null) el.setAttribute(name, value);
+  }
+  return el;
+}
+
+function createSvgElement(tag, attributes = {}) {
+  const el = document.createElementNS(SVG_NS, tag);
+  for (const [name, value] of Object.entries(attributes)) {
+    if (value !== undefined && value !== null) el.setAttribute(name, String(value));
+  }
+  return el;
+}
+
+function safeColor(color) {
+  return /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : PROFILE_COLORS[0];
+}
+
+function initials(name) {
+  const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+  const letters = parts.length > 1 ? [parts[0][0], parts[1][0]] : [parts[0]?.[0] || '?'];
+  return letters.join('').toUpperCase();
+}
+
+function pointString(point) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+  return `${point.x.toFixed(1)},${point.y.toFixed(1)}`;
+}
+
+function buildViewportSnapshot(map) {
+  const canvas = map.getCanvas();
+  const width = canvas.clientWidth || canvas.width || 0;
+  const height = canvas.clientHeight || canvas.height || 0;
+  const corners = [
+    [0, 0],
+    [width, 0],
+    [width, height],
+    [0, height],
+  ].map((point) => map.unproject(point).toArray());
+
+  return {
+    center: map.getCenter().toArray(),
+    zoom: map.getZoom(),
+    bearing: map.getBearing(),
+    pitch: map.getPitch(),
+    corners,
+  };
+}
+
+function buildShareUrl(room) {
+  const url = new URL(window.location.href);
+  url.searchParams.set('room', room);
+  return url.toString();
+}
+
+function readViewState(map) {
+  return map.getCollaborationViewState?.() || { terrain: false, satellite: false };
+}
+
+function applyViewState(map, viewState) {
+  if (!viewState || typeof viewState !== 'object') return;
+  map.setCollaborationViewState?.({
+    terrain: Boolean(viewState.terrain),
+    satellite: Boolean(viewState.satellite),
+  }, { silent: true });
+}
+
+export function installMapCollaboration(map) {
+  const mapContainer = map.getContainer();
+  const clientId = getSessionId();
+  const profile = getProfile();
+  const peers = new Map();
+
+  let socket = null;
+  let currentRoom = getInitialRoom();
+  let localCursor = { visible: false, lngLat: null };
+  let ownConnectionId = clientId;
+  let followedPeerId = null;
+  let applyingRemoteView = false;
+  let destroyed = false;
+  let lastSentAt = 0;
+  let sendTimer = 0;
+  let overlayFrame = 0;
+  let followTimer = 0;
+  let lastFollowAt = 0;
+  let shareResetTimer = 0;
+  let compactExpanded = true;
+
+  const overlay = createSvgElement('svg', {
+    class: 'collab-overlay',
+    'aria-hidden': 'true',
+  });
+  const viewportLayer = createSvgElement('g', { class: 'collab-overlay-viewports' });
+  const cursorLayer = createSvgElement('g', { class: 'collab-overlay-cursors' });
+  overlay.append(viewportLayer, cursorLayer);
+
+  const panel = createElement('section', 'collab-panel', {
+    'aria-label': 'Map collaboration',
+  });
+  const compactToggle = createElement('button', 'collab-compact-toggle', {
+    type: 'button',
+    'aria-label': 'Open collaboration controls',
+    title: 'Open collaboration controls',
+  });
+  const compactAvatars = createElement('span', 'collab-compact-avatars', {
+    'aria-hidden': 'true',
+  });
+  compactToggle.append(compactAvatars);
+
+  const roomForm = createElement('form', 'collab-room-form');
+  const localBadge = createElement('span', 'collab-local-badge', {
+    title: profile.name,
+    'aria-label': profile.name,
+  });
+  localBadge.style.setProperty('--peer-color', profile.color);
+  localBadge.textContent = initials(profile.name);
+
+  const nameInput = createElement('input', 'collab-name-input', {
+    type: 'text',
+    maxlength: '32',
+    spellcheck: 'false',
+    autocomplete: 'nickname',
+    'aria-label': 'Your name',
+    placeholder: 'Name',
+  });
+  nameInput.value = profile.name;
+
+  const roomInput = createElement('input', 'collab-room-input', {
+    type: 'text',
+    spellcheck: 'false',
+    autocapitalize: 'none',
+    autocomplete: 'off',
+    'aria-label': 'Room',
+  });
+  roomInput.value = currentRoom;
+
+  const joinButton = createElement('button', 'collab-button collab-join-button', { type: 'submit' });
+  joinButton.textContent = 'Join';
+
+  const shareButton = createElement('button', 'collab-button collab-share-button', { type: 'button' });
+  shareButton.textContent = 'Share';
+
+  const status = createElement('span', 'collab-status');
+  const avatars = createElement('div', 'collab-avatars', { 'aria-label': 'People in room' });
+  const followBar = createElement('div', 'collab-follow-bar');
+  const followLabel = createElement('span', 'collab-follow-label');
+  const stopFollowButton = createElement('button', 'collab-follow-stop', { type: 'button' });
+  stopFollowButton.textContent = 'Stop';
+  followBar.append(followLabel, stopFollowButton);
+
+  roomForm.append(localBadge, nameInput, roomInput, joinButton, shareButton, status);
+  panel.append(compactToggle, roomForm, avatars, followBar);
+
+  function renderLocalProfile() {
+    localBadge.title = profile.name;
+    localBadge.setAttribute('aria-label', profile.name);
+    localBadge.textContent = initials(profile.name);
+    renderCompactAvatars();
+  }
+
+  function persistProfile() {
+    safeSetStorage(localStorage, PROFILE_KEY, JSON.stringify(profile));
+  }
+
+  function updateProfileName(value) {
+    const nextName = sanitizeProfileName(value, profile.name);
+    nameInput.value = nextName;
+    if (profile.name === nextName) return;
+    profile.name = nextName;
+    persistProfile();
+    renderLocalProfile();
+    scheduleSend(true);
+  }
+
+  function updateJoinButtonLabel() {
+    const state = panel.dataset.connection;
+    joinButton.disabled = state === 'connecting';
+    if (state === 'connecting') {
+      joinButton.textContent = 'Joining';
+    } else if (state === 'live' && normalizeRoom(roomInput.value) === currentRoom) {
+      joinButton.textContent = 'Disconnect';
+    } else {
+      joinButton.textContent = 'Join';
+    }
+  }
+
+  function setMobileExpanded(expanded) {
+    compactExpanded = Boolean(expanded);
+    panel.dataset.mobileExpanded = compactExpanded ? 'true' : 'false';
+    compactToggle.setAttribute('aria-expanded', String(compactExpanded));
+  }
+
+  function setStatus(text, state) {
+    status.textContent = text;
+    panel.dataset.connection = state;
+    updateJoinButtonLabel();
+    renderCompactAvatars();
+  }
+
+  function createAvatarNode(peer, className = 'collab-avatar') {
+    const avatar = createElement('button', className, {
+      type: 'button',
+      title: `Follow ${peer.user.name}`,
+      'aria-label': `Follow ${peer.user.name}`,
+    });
+    avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
+    avatar.textContent = initials(peer.user.name);
+    avatar.classList.toggle('following', peer.id === followedPeerId);
+    avatar.addEventListener('click', () => {
+      if (followedPeerId === peer.id) stopFollowing();
+      else followPeer(peer.id, true);
+    });
+    return avatar;
+  }
+
+  function renderCompactAvatars() {
+    compactAvatars.replaceChildren();
+
+    const local = createElement('span', 'collab-compact-avatar');
+    local.style.setProperty('--peer-color', safeColor(profile.color));
+    local.textContent = initials(profile.name);
+    compactAvatars.append(local);
+
+    for (const peer of [...peers.values()].slice(0, 5)) {
+      const avatar = createElement('span', 'collab-compact-avatar');
+      avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
+      avatar.textContent = initials(peer.user.name);
+      avatar.classList.toggle('following', peer.id === followedPeerId);
+      compactAvatars.append(avatar);
+    }
+  }
+
+  function renderPeople() {
+    avatars.replaceChildren();
+
+    if (!socket) return;
+
+    if (peers.size === 0) {
+      const empty = createElement('span', 'collab-empty');
+      empty.textContent = 'Solo';
+      avatars.append(empty);
+    } else {
+      for (const peer of peers.values()) avatars.append(createAvatarNode(peer));
+    }
+
+    const followedPeer = followedPeerId ? peers.get(followedPeerId) : null;
+    followBar.classList.toggle('visible', Boolean(followedPeer));
+    followLabel.textContent = followedPeer ? `Following ${followedPeer.user.name}` : '';
+    renderCompactAvatars();
+  }
+
+  function scheduleOverlayRender() {
+    if (overlayFrame || destroyed) return;
+    overlayFrame = requestAnimationFrame(renderOverlay);
+  }
+
+  function renderOverlay() {
+    overlayFrame = 0;
+    const now = Date.now();
+    const viewportNodes = [];
+    const cursorNodes = [];
+
+    for (const peer of peers.values()) {
+      const color = safeColor(peer.user?.color);
+      const staleClass = now - (peer.updatedAt || 0) > STALE_PEER_MS ? ' collab-peer-stale' : '';
+      const shouldShowViewport = peer.id !== followedPeerId && !peer.followingId;
+
+      if (shouldShowViewport && peer.viewport?.corners?.length === 4) {
+        const points = peer.viewport.corners.map((lngLat) => pointString(map.project(lngLat)));
+        if (points.every(Boolean)) {
+          const polygon = createSvgElement('polygon', {
+            class: `collab-viewport${staleClass}`,
+            points: points.join(' '),
+          });
+          polygon.style.setProperty('--peer-color', color);
+          viewportNodes.push(polygon);
+
+          const center = map.project(peer.viewport.center);
+          if (Number.isFinite(center.x) && Number.isFinite(center.y)) {
+            const label = createSvgElement('text', {
+              class: `collab-viewport-label${staleClass}`,
+              x: center.x + 10,
+              y: center.y - 10,
+            });
+            label.style.setProperty('--peer-color', color);
+            label.textContent = peer.user.name;
+            viewportNodes.push(label);
+          }
+        }
+      }
+
+      if (peer.cursor?.visible && peer.cursor.lngLat) {
+        const point = map.project(peer.cursor.lngLat);
+        if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+          const group = createSvgElement('g', {
+            class: `collab-cursor${staleClass}`,
+            transform: `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})`,
+          });
+          group.style.setProperty('--peer-color', color);
+          group.append(
+            createSvgElement('path', {
+              class: 'collab-cursor-pointer',
+              d: 'M0 0 L0 20 L5 15 L8 23 L12 21 L9 13 L17 13 Z',
+            }),
+          );
+          const label = createSvgElement('text', {
+            class: 'collab-cursor-label',
+            x: 18,
+            y: 16,
+          });
+          label.textContent = peer.user.name;
+          group.append(label);
+          cursorNodes.push(group);
+        }
+      }
+    }
+
+    viewportLayer.replaceChildren(...viewportNodes);
+    cursorLayer.replaceChildren(...cursorNodes);
+  }
+
+  function sendUpdate() {
+    sendTimer = 0;
+    if (!socket || destroyed) return;
+    lastSentAt = Date.now();
+    socket.send(JSON.stringify({
+      type: 'client:update',
+      user: {
+        id: profile.userId,
+        name: profile.name,
+        color: profile.color,
+      },
+      viewport: buildViewportSnapshot(map),
+      cursor: localCursor,
+      followingId: followedPeerId,
+      viewState: readViewState(map),
+    }));
+  }
+
+  function scheduleSend(immediate = false) {
+    if (!socket || destroyed) return;
+    const elapsed = Date.now() - lastSentAt;
+    if (immediate || elapsed >= SEND_INTERVAL_MS) {
+      if (sendTimer) {
+        clearTimeout(sendTimer);
+        sendTimer = 0;
+      }
+      sendUpdate();
+      return;
+    }
+    if (!sendTimer) {
+      sendTimer = window.setTimeout(sendUpdate, SEND_INTERVAL_MS - elapsed);
+    }
+  }
+
+  function stopFollowing() {
+    if (!followedPeerId) return;
+    followedPeerId = null;
+    renderPeople();
+    scheduleOverlayRender();
+    scheduleSend(true);
+  }
+
+  function applyFollow(peer, immediate = false) {
+    if (!peer?.viewport) return;
+    const viewport = peer.viewport;
+    const duration = immediate ? 260 : 180;
+    applyingRemoteView = true;
+    applyViewState(map, peer.viewState);
+    map.easeTo({
+      center: viewport.center,
+      zoom: viewport.zoom,
+      bearing: viewport.bearing,
+      pitch: viewport.pitch,
+      duration,
+      essential: true,
+    });
+    window.setTimeout(() => {
+      applyingRemoteView = false;
+    }, duration + 80);
+  }
+
+  function scheduleFollow(peer) {
+    if (!peer || peer.id !== followedPeerId) return;
+    const elapsed = Date.now() - lastFollowAt;
+    if (elapsed >= FOLLOW_INTERVAL_MS) {
+      lastFollowAt = Date.now();
+      applyFollow(peer);
+      return;
+    }
+    if (!followTimer) {
+      followTimer = window.setTimeout(() => {
+        followTimer = 0;
+        lastFollowAt = Date.now();
+        applyFollow(peers.get(followedPeerId));
+      }, FOLLOW_INTERVAL_MS - elapsed);
+    }
+  }
+
+  function followPeer(peerId, immediate = false) {
+    const peer = peers.get(peerId);
+    if (!peer) return;
+    followedPeerId = peerId;
+    renderPeople();
+    scheduleOverlayRender();
+    scheduleSend(true);
+    applyFollow(peer, immediate);
+  }
+
+  function upsertPeer(peer) {
+    if (!peer?.id || peer.id === ownConnectionId) return;
+    peers.set(peer.id, peer);
+    renderPeople();
+    scheduleOverlayRender();
+    if (peer.id === followedPeerId) scheduleFollow(peer);
+  }
+
+  function handleMessage(event) {
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      return;
+    }
+
+    if (message.type === 'presence:init') {
+      ownConnectionId = message.id || ownConnectionId;
+      peers.clear();
+      for (const peer of message.peers || []) upsertPeer(peer);
+      if (followedPeerId && !peers.has(followedPeerId)) followedPeerId = null;
+      renderPeople();
+      scheduleOverlayRender();
+      scheduleSend(true);
+      return;
+    }
+
+    if (message.type === 'presence:join' || message.type === 'presence:update') {
+      upsertPeer(message.peer);
+      return;
+    }
+
+    if (message.type === 'presence:leave') {
+      peers.delete(message.id);
+      if (followedPeerId === message.id) {
+        followedPeerId = null;
+        scheduleSend(true);
+      }
+      renderPeople();
+      scheduleOverlayRender();
+    }
+  }
+
+  function connect(roomValue) {
+    const room = normalizeRoom(roomValue);
+    currentRoom = room;
+    roomInput.value = room;
+    updateRoomUrl(room);
+    peers.clear();
+    followedPeerId = null;
+    renderPeople();
+    scheduleOverlayRender();
+
+    if (socket) {
+      socket.close(1000, 'room change');
+      socket = null;
+    }
+
+    const nextSocket = new PartySocket({
+      host: window.location.host,
+      party: PARTY_NAME,
+      room,
+      id: clientId,
+      protocol: window.location.protocol === 'https:' ? 'wss' : 'ws',
+      query: () => ({
+        userId: profile.userId,
+        name: profile.name,
+        color: profile.color,
+      }),
+      maxEnqueuedMessages: 32,
+      maxReconnectionDelay: 5_000,
+    });
+    socket = nextSocket;
+    setStatus('Connecting', 'connecting');
+
+    nextSocket.addEventListener('open', () => {
+      if (socket !== nextSocket) return;
+      setStatus('Live', 'live');
+      setMobileExpanded(false);
+      scheduleSend(true);
+    });
+    nextSocket.addEventListener('close', () => {
+      if (socket !== nextSocket) return;
+      setStatus('Offline', 'offline');
+    });
+    nextSocket.addEventListener('error', () => {
+      if (socket !== nextSocket) return;
+      setStatus('Offline', 'offline');
+    });
+    nextSocket.addEventListener('message', (event) => {
+      if (socket !== nextSocket) return;
+      handleMessage(event);
+    });
+  }
+
+  function disconnect() {
+    if (socket) {
+      const closing = socket;
+      socket = null;
+      closing.close(1000, 'disconnect');
+    }
+    clearTimeout(sendTimer);
+    clearTimeout(followTimer);
+    sendTimer = 0;
+    followTimer = 0;
+    peers.clear();
+    followedPeerId = null;
+    localCursor = { visible: false, lngLat: null };
+    ownConnectionId = clientId;
+    viewportLayer.replaceChildren();
+    cursorLayer.replaceChildren();
+    setMobileExpanded(true);
+    setStatus('', 'idle');
+    renderPeople();
+  }
+
+  roomForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    updateProfileName(nameInput.value);
+    const nextRoom = normalizeRoom(roomInput.value);
+    if (panel.dataset.connection === 'live' && nextRoom === currentRoom) {
+      disconnect();
+      return;
+    }
+    const shouldConnect = !socket || socket.readyState > WebSocket.OPEN || nextRoom !== currentRoom;
+    if (!shouldConnect) {
+      roomInput.value = nextRoom;
+      scheduleSend(true);
+      return;
+    }
+    connect(nextRoom);
+  });
+  const handleDocumentPointerDown = (event) => {
+    if (destroyed || !compactExpanded || panel.dataset.connection === 'idle') return;
+    if (!panel.contains(event.target)) setMobileExpanded(false);
+  };
+  compactToggle.addEventListener('click', () => setMobileExpanded(true));
+  document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
+
+  nameInput.addEventListener('change', () => updateProfileName(nameInput.value));
+  nameInput.addEventListener('blur', () => updateProfileName(nameInput.value));
+  nameInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      nameInput.value = profile.name;
+      nameInput.blur();
+    }
+  });
+  roomInput.addEventListener('input', updateJoinButtonLabel);
+
+  shareButton.addEventListener('click', async () => {
+    const room = normalizeRoom(roomInput.value);
+    currentRoom = room;
+    roomInput.value = room;
+    updateRoomUrl(room);
+    const url = buildShareUrl(room);
+    clearTimeout(shareResetTimer);
+    try {
+      await navigator.clipboard.writeText(url);
+      shareButton.textContent = 'Copied';
+    } catch {
+      shareButton.textContent = 'Copy failed';
+    }
+    shareResetTimer = window.setTimeout(() => {
+      shareButton.textContent = 'Share';
+    }, 1_300);
+  });
+
+  stopFollowButton.addEventListener('click', stopFollowing);
+  mapContainer.addEventListener('collaboration:viewstatechange', () => {
+    if (!applyingRemoteView && followedPeerId) stopFollowing();
+    scheduleSend(true);
+  });
+
+  for (const eventName of ['mousedown', 'dblclick', 'wheel', 'touchstart']) {
+    panel.addEventListener(eventName, (event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
+  }
+
+  map.on('move', () => {
+    scheduleOverlayRender();
+    scheduleSend();
+  });
+  map.on('moveend', () => scheduleSend(true));
+  map.on('render', scheduleOverlayRender);
+  map.on('mousemove', (event) => {
+    localCursor = {
+      visible: true,
+      lngLat: event.lngLat.toArray(),
+    };
+    scheduleSend();
+  });
+  map.getCanvas().addEventListener('mouseleave', () => {
+    localCursor = { visible: false, lngLat: null };
+    scheduleSend(true);
+  });
+
+  for (const eventName of ['dragstart', 'zoomstart', 'rotatestart', 'pitchstart']) {
+    map.on(eventName, () => {
+      if (!applyingRemoteView && followedPeerId) stopFollowing();
+    });
+  }
+
+  mapContainer.append(overlay, panel);
+  setMobileExpanded(true);
+  setStatus('', 'idle');
+  renderPeople();
+
+  return {
+    destroy() {
+      destroyed = true;
+      clearTimeout(sendTimer);
+      clearTimeout(followTimer);
+      clearTimeout(shareResetTimer);
+      if (overlayFrame) cancelAnimationFrame(overlayFrame);
+      document.removeEventListener('pointerdown', handleDocumentPointerDown);
+      socket?.close(1000, 'destroy');
+      overlay.remove();
+      panel.remove();
+    },
+  };
+}
