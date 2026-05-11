@@ -529,6 +529,10 @@ html, body, #app {
     height: 28px;
     line-height: 26px;
   }
+
+  .collab-presence-summary {
+    flex: none;
+  }
 }
 
 .maplibregl-ctrl-terrain {

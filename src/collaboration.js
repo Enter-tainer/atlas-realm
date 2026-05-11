@@ -91,7 +91,8 @@ function normalizeRoom(value) {
 
 function getInitialRoom() {
   const params = new URLSearchParams(window.location.search);
-  return normalizeRoom(params.get('room') || params.get('collab') || DEFAULT_ROOM);
+  const raw = params.get('room') || params.get('collab');
+  return raw ? normalizeRoom(raw) : null;
 }
 
 function updateRoomUrl(room) {
@@ -250,7 +251,7 @@ export function installMapCollaboration(map) {
     'aria-label': 'Room',
     placeholder: 'main',
   });
-  roomInput.value = currentRoom;
+  roomInput.value = currentRoom || '';
   roomField.append(roomLabel, roomInput, roomHint);
 
   const actionGroup = createElement('div', 'collab-action-group');
@@ -801,6 +802,8 @@ export function installMapCollaboration(map) {
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
   renderPeople();
+
+  if (currentRoom) connect(currentRoom);
 
   return {
     destroy() {
