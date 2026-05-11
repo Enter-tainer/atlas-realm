@@ -14,6 +14,22 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "MapCollaboration",
+        "class_name": "MapCollaboration"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "MapCollaboration"
+      ]
+    }
+  ],
   "r2_buckets": [
     {
       "binding": "ORM_BUCKET",
