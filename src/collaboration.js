@@ -189,7 +189,7 @@ export function installMapCollaboration(map) {
   let followTimer = 0;
   let lastFollowAt = 0;
   let shareResetTimer = 0;
-  let compactExpanded = window.innerWidth > 760;
+  let panelExpanded = false;
 
   const overlay = createSvgElement('svg', {
     class: 'collab-overlay',
@@ -210,15 +210,20 @@ export function installMapCollaboration(map) {
   const compactAvatars = createElement('span', 'collab-compact-avatars', {
     'aria-hidden': 'true',
   });
-  compactToggle.append(compactAvatars);
+  const compactSummary = createElement('span', 'collab-compact-summary');
+  const compactTitle = createElement('span', 'collab-compact-title');
+  const compactMeta = createElement('span', 'collab-compact-meta');
+  compactSummary.append(compactTitle, compactMeta);
+  compactToggle.append(compactAvatars, compactSummary);
+
+  const panelBody = createElement('div', 'collab-panel-body');
 
   const roomForm = createElement('form', 'collab-room-form');
-  const localBadge = createElement('span', 'collab-local-badge', {
-    title: profile.name,
-    'aria-label': profile.name,
-  });
-  localBadge.style.setProperty('--peer-color', profile.color);
-  localBadge.textContent = initials(profile.name);
+  const nameField = createElement('label', 'collab-field collab-name-field');
+  const nameLabel = createElement('span', 'collab-field-label');
+  nameLabel.textContent = 'Display name';
+  const nameHint = createElement('span', 'collab-field-hint');
+  nameHint.textContent = 'Shown next to your cursor and viewport';
 
   const nameInput = createElement('input', 'collab-name-input', {
     type: 'text',
@@ -226,9 +231,16 @@ export function installMapCollaboration(map) {
     spellcheck: 'false',
     autocomplete: 'nickname',
     'aria-label': 'Your name',
-    placeholder: 'Name',
+    placeholder: 'How others see you',
   });
   nameInput.value = profile.name;
+  nameField.append(nameLabel, nameInput, nameHint);
+
+  const roomField = createElement('label', 'collab-field collab-room-field');
+  const roomLabel = createElement('span', 'collab-field-label');
+  roomLabel.textContent = 'Shared room';
+  const roomHint = createElement('span', 'collab-field-hint');
+  roomHint.textContent = 'Anyone with the same room link joins the same live session';
 
   const roomInput = createElement('input', 'collab-room-input', {
     type: 'text',
@@ -236,31 +248,86 @@ export function installMapCollaboration(map) {
     autocapitalize: 'none',
     autocomplete: 'off',
     'aria-label': 'Room',
+    placeholder: 'main',
   });
   roomInput.value = currentRoom;
+  roomField.append(roomLabel, roomInput, roomHint);
 
-  const joinButton = createElement('button', 'collab-button collab-join-button', { type: 'submit' });
-  joinButton.textContent = 'Join';
+  const actionGroup = createElement('div', 'collab-action-group');
 
-  const shareButton = createElement('button', 'collab-button collab-share-button', { type: 'button' });
-  shareButton.textContent = 'Share';
+  const joinButton = createElement('button', 'collab-button collab-button-primary collab-join-button', { type: 'submit' });
+  joinButton.textContent = 'Start sharing';
 
-  const status = createElement('span', 'collab-status');
+  const shareButton = createElement('button', 'collab-button collab-button-secondary collab-share-button', { type: 'button' });
+  shareButton.textContent = 'Copy invite link';
+  shareButton.hidden = true;
+  actionGroup.append(joinButton, shareButton);
+
+  const presenceBar = createElement('div', 'collab-presence-bar');
+  const presenceSummary = createElement('span', 'collab-presence-summary');
   const avatars = createElement('div', 'collab-avatars', { 'aria-label': 'People in room' });
+  presenceBar.append(presenceSummary, avatars);
+
   const followBar = createElement('div', 'collab-follow-bar');
   const followLabel = createElement('span', 'collab-follow-label');
   const stopFollowButton = createElement('button', 'collab-follow-stop', { type: 'button' });
-  stopFollowButton.textContent = 'Stop';
+  stopFollowButton.textContent = 'Stop following';
   followBar.append(followLabel, stopFollowButton);
 
-  roomForm.append(localBadge, nameInput, roomInput, joinButton, shareButton, status);
-  panel.append(compactToggle, roomForm, avatars, followBar);
+  roomForm.append(nameField, roomField, actionGroup);
+  panelBody.append(roomForm, presenceBar, followBar);
+  panel.append(compactToggle, panelBody);
+
+  function isMobileViewport() {
+    return window.innerWidth <= 760;
+  }
+
+  function renderCompactSummary() {
+    const state = panel.dataset.connection || 'idle';
+    const otherCount = peers.size;
+
+    if (state === 'live') {
+      compactTitle.textContent = 'Sharing';
+      compactMeta.textContent = otherCount === 0
+        ? `#${currentRoom}`
+        : `#${currentRoom} · ${otherCount} other${otherCount === 1 ? '' : 's'}`;
+    } else if (state === 'connecting') {
+      compactTitle.textContent = 'Connecting';
+      compactMeta.textContent = `#${currentRoom}`;
+    } else if (state === 'offline') {
+      compactTitle.textContent = 'Offline';
+      compactMeta.textContent = 'Open to retry';
+    } else {
+      compactTitle.textContent = 'Collaborate';
+      compactMeta.textContent = 'Open to set name and room';
+    }
+
+    const toggleLabel = panelExpanded
+      ? 'Close collaboration controls'
+      : 'Open collaboration controls';
+    compactToggle.title = toggleLabel;
+    compactToggle.setAttribute('aria-label', toggleLabel);
+  }
+
+  function renderPresenceSummary() {
+    if (!socket) {
+      presenceSummary.textContent = 'Start sharing to invite others';
+      avatars.setAttribute('aria-label', 'Collaboration is offline');
+      return;
+    }
+
+    const totalPeople = peers.size + 1;
+    presenceSummary.textContent = peers.size === 0
+      ? 'No one else is here yet'
+      : peers.size === 1
+        ? '1 other person is here'
+        : `${peers.size} other people are here`;
+    avatars.setAttribute('aria-label', `${totalPeople} people in room`);
+  }
 
   function renderLocalProfile() {
-    localBadge.title = profile.name;
-    localBadge.setAttribute('aria-label', profile.name);
-    localBadge.textContent = initials(profile.name);
     renderCompactAvatars();
+    renderCompactSummary();
   }
 
   function persistProfile() {
@@ -277,29 +344,41 @@ export function installMapCollaboration(map) {
     scheduleSend(true);
   }
 
-  function updateJoinButtonLabel() {
+  function updateActionState() {
     const state = panel.dataset.connection;
+    const nextRoom = normalizeRoom(roomInput.value);
+    const canCopyLink = state === 'live' && nextRoom === currentRoom;
+
     joinButton.disabled = state === 'connecting';
     if (state === 'connecting') {
-      joinButton.textContent = 'Joining';
-    } else if (state === 'live' && normalizeRoom(roomInput.value) === currentRoom) {
-      joinButton.textContent = 'Disconnect';
+      joinButton.textContent = 'Connecting...';
+    } else if (state === 'live' && nextRoom === currentRoom) {
+      joinButton.textContent = 'Stop sharing';
+    } else if (state === 'live') {
+      joinButton.textContent = 'Switch room';
+    } else if (state === 'offline') {
+      joinButton.textContent = 'Retry connection';
     } else {
-      joinButton.textContent = 'Join';
+      joinButton.textContent = 'Start sharing';
     }
+
+    shareButton.hidden = !canCopyLink;
+    shareButton.disabled = !canCopyLink;
   }
 
-  function setMobileExpanded(expanded) {
-    compactExpanded = Boolean(expanded);
-    panel.dataset.mobileExpanded = compactExpanded ? 'true' : 'false';
-    compactToggle.setAttribute('aria-expanded', String(compactExpanded));
+  function setPanelExpanded(expanded) {
+    panelExpanded = Boolean(expanded);
+    panel.dataset.expanded = panelExpanded ? 'true' : 'false';
+    compactToggle.setAttribute('aria-expanded', String(panelExpanded));
+    renderCompactSummary();
   }
 
   function setStatus(text, state) {
-    status.textContent = text;
     panel.dataset.connection = state;
-    updateJoinButtonLabel();
+    updateActionState();
+    renderPresenceSummary();
     renderCompactAvatars();
+    renderCompactSummary();
   }
 
   function createAvatarNode(peer, className = 'collab-avatar') {
@@ -326,7 +405,7 @@ export function installMapCollaboration(map) {
     local.textContent = initials(profile.name);
     compactAvatars.append(local);
 
-    for (const peer of [...peers.values()].slice(0, 5)) {
+    for (const peer of [...peers.values()].slice(0, 3)) {
       const avatar = createElement('span', 'collab-compact-avatar');
       avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
       avatar.textContent = initials(peer.user.name);
@@ -338,11 +417,13 @@ export function installMapCollaboration(map) {
   function renderPeople() {
     avatars.replaceChildren();
 
-    if (!socket) return;
-
-    if (peers.size === 0) {
+    if (!socket) {
       const empty = createElement('span', 'collab-empty');
-      empty.textContent = 'Solo';
+      empty.textContent = 'Offline';
+      avatars.append(empty);
+    } else if (peers.size === 0) {
+      const empty = createElement('span', 'collab-empty');
+      empty.textContent = 'Just you';
       avatars.append(empty);
     } else {
       for (const peer of peers.values()) avatars.append(createAvatarNode(peer));
@@ -351,7 +432,9 @@ export function installMapCollaboration(map) {
     const followedPeer = followedPeerId ? peers.get(followedPeerId) : null;
     followBar.classList.toggle('visible', Boolean(followedPeer));
     followLabel.textContent = followedPeer ? `Following ${followedPeer.user.name}` : '';
+    renderPresenceSummary();
     renderCompactAvatars();
+    renderCompactSummary();
   }
 
   function scheduleOverlayRender() {
@@ -590,7 +673,7 @@ export function installMapCollaboration(map) {
     nextSocket.addEventListener('open', () => {
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
-      setMobileExpanded(false);
+      if (isMobileViewport()) setPanelExpanded(false);
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -623,8 +706,8 @@ export function installMapCollaboration(map) {
     ownConnectionId = clientId;
     viewportLayer.replaceChildren();
     cursorLayer.replaceChildren();
-    setMobileExpanded(true);
-    setStatus('', 'idle');
+    setPanelExpanded(false);
+    setStatus('Ready', 'idle');
     renderPeople();
   }
 
@@ -645,10 +728,10 @@ export function installMapCollaboration(map) {
     connect(nextRoom);
   });
   const handleDocumentPointerDown = (event) => {
-    if (destroyed || !compactExpanded) return;
-    if (!panel.contains(event.target)) setMobileExpanded(false);
+    if (destroyed || !panelExpanded) return;
+    if (!panel.contains(event.target)) setPanelExpanded(false);
   };
-  compactToggle.addEventListener('click', () => setMobileExpanded(!compactExpanded));
+  compactToggle.addEventListener('click', () => setPanelExpanded(!panelExpanded));
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
 
   nameInput.addEventListener('change', () => updateProfileName(nameInput.value));
@@ -659,23 +742,24 @@ export function installMapCollaboration(map) {
       nameInput.blur();
     }
   });
-  roomInput.addEventListener('input', updateJoinButtonLabel);
+  roomInput.addEventListener('input', updateActionState);
 
   shareButton.addEventListener('click', async () => {
     const room = normalizeRoom(roomInput.value);
     currentRoom = room;
     roomInput.value = room;
     updateRoomUrl(room);
+    renderCompactSummary();
     const url = buildShareUrl(room);
     clearTimeout(shareResetTimer);
     try {
       await navigator.clipboard.writeText(url);
-      shareButton.textContent = 'Copied';
+      shareButton.textContent = 'Link copied';
     } catch {
       shareButton.textContent = 'Copy failed';
     }
     shareResetTimer = window.setTimeout(() => {
-      shareButton.textContent = 'Share';
+      shareButton.textContent = 'Copy invite link';
     }, 1_300);
   });
 
@@ -714,8 +798,8 @@ export function installMapCollaboration(map) {
   }
 
   mapContainer.append(overlay, panel);
-  setMobileExpanded(compactExpanded);
-  setStatus('', 'idle');
+  setPanelExpanded(false);
+  setStatus('Ready', 'idle');
   renderPeople();
 
   return {
