@@ -130,12 +130,8 @@ function initials(name) {
 
 function renderLocationMarker(el, peer) {
   const color = safeColor(peer.user?.color);
-  const loc = peer.location;
   el.style.setProperty('--peer-color', color);
-  el._arrow.outerHTML = loc?.heading != null
-    ? `<div class="collab-location-arrow" style="transform:rotate(${loc.heading}deg)">&#x25B2;</div>`
-    : '<div class="collab-location-arrow"></div>';
-  el._dot.textContent = initials(peer.user.name);
+  el._avatar.textContent = initials(peer.user.name);
   const nameLabel = el.querySelector('.collab-location-name');
   if (nameLabel) nameLabel.textContent = peer.user.name;
 }
@@ -144,12 +140,11 @@ function createLocationMarker(peer) {
   const el = document.createElement('div');
   el.className = 'collab-location-marker';
   el.innerHTML = `
-    <div class="collab-location-arrow">&#x25B2;</div>
-    <div class="collab-location-dot"></div>
     <div class="collab-location-name"></div>
+    <div class="collab-location-avatar"></div>
+    <div class="collab-location-dot"></div>
   `;
-  el._arrow = el.querySelector('.collab-location-arrow');
-  el._dot = el.querySelector('.collab-location-dot');
+  el._avatar = el.querySelector('.collab-location-avatar');
   renderLocationMarker(el, peer);
   return new maplibregl.Marker({ element: el, anchor: 'bottom' })
     .setLngLat(peer.location.lngLat)

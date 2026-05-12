@@ -540,41 +540,37 @@ html, body, #app {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
+  gap: 1px;
   pointer-events: auto;
 }
 
-.collab-location-arrow {
-  width: 0;
-  height: 0;
-  border-left: 5px solid transparent;
-  border-right: 5px solid transparent;
-  border-bottom: 8px solid var(--peer-color, #2563eb);
-  opacity: 0;
-  transition: opacity 0.2s;
-}
-.collab-location-arrow:not(:empty) {
-  opacity: 0.9;
-}
-
 .collab-location-dot {
-  width: 26px;
-  height: 26px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
   background: var(--peer-color, #2563eb);
   border: 2px solid #fff;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+.collab-location-avatar {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--peer-color, #2563eb);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
   color: #fff;
   line-height: 1;
 }
 
 .collab-location-name {
-  padding: 1px 6px;
+  padding: 1px 5px;
   border-radius: 4px;
   background: var(--peer-color, #2563eb);
   color: #fff;
