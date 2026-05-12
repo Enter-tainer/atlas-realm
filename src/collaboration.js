@@ -201,12 +201,12 @@ function startLocationWatch() {
         accuracy: pos.coords.accuracy,
         heading: pos.coords.heading,
       };
-      scheduleSend(true);
+      scheduleSend();
     },
     (err) => {
       console.warn('Location watch error:', err.message);
       ownLocation = null;
-      scheduleSend(true);
+      scheduleSend();
     },
     { enableHighAccuracy: true },
   );
