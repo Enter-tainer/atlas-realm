@@ -357,11 +357,37 @@ async function init() {
 
     window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
-    map.addControl(new maplibregl.GeolocateControl({
+    const geolocateControl = new maplibregl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,
       showUserHeading: true,
-    }), 'top-right');
+    });
+    const emitCollaborationLocation = (detail) => {
+      map.getContainer().dispatchEvent(new CustomEvent('collaboration:locationchange', { detail }));
+    };
+    const clearCollaborationLocation = () => emitCollaborationLocation({ enabled: false });
+    const clearCollaborationLocationIfOff = () => {
+      if (geolocateControl._watchState === 'OFF') clearCollaborationLocation();
+    };
+    geolocateControl.on('geolocate', (event) => {
+      const coords = event?.coords;
+      if (!coords) {
+        clearCollaborationLocation();
+        return;
+      }
+      emitCollaborationLocation({
+        enabled: true,
+        lngLat: [coords.longitude, coords.latitude],
+        accuracy: coords.accuracy,
+        heading: coords.heading,
+        speed: coords.speed,
+        timestamp: event.timestamp || Date.now(),
+      });
+    });
+    geolocateControl.on('trackuserlocationend', clearCollaborationLocationIfOff);
+    geolocateControl.on('error', clearCollaborationLocation);
+    geolocateControl.on('outofmaxbounds', clearCollaborationLocation);
+    map.addControl(geolocateControl, 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
     installPhotonSearch(map, maplibregl);

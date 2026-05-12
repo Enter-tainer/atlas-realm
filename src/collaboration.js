@@ -7,7 +7,17 @@ const SESSION_KEY = 'orm-collaboration-session';
 const SEND_INTERVAL_MS = 90;
 const FOLLOW_INTERVAL_MS = 140;
 const STALE_PEER_MS = 45_000;
+const EARTH_RADIUS_METERS = 6_378_137;
+const LOCATION_ACCURACY_SEGMENTS = 48;
 const SVG_NS = 'http://www.w3.org/2000/svg';
+const EMPTY_LOCATION = {
+  enabled: false,
+  lngLat: null,
+  accuracy: null,
+  heading: null,
+  speed: null,
+  updatedAt: null,
+};
 
 const PROFILE_COLORS = [
   '#2563eb',
@@ -133,6 +143,78 @@ function pointString(point) {
   return `${point.x.toFixed(1)},${point.y.toFixed(1)}`;
 }
 
+function optionalNumber(value, min, max) {
+  if (value === null || value === undefined) return null;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  return Math.min(max, Math.max(min, number));
+}
+
+function normalizeLocalLocation(value) {
+  if (!value || value.enabled === false) {
+    return { ...EMPTY_LOCATION, updatedAt: Date.now() };
+  }
+
+  const lng = Number(value.lngLat?.[0]);
+  const lat = Number(value.lngLat?.[1]);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+    return { ...EMPTY_LOCATION, updatedAt: Date.now() };
+  }
+
+  return {
+    enabled: true,
+    lngLat: [
+      Math.min(180, Math.max(-180, lng)),
+      Math.min(85, Math.max(-85, lat)),
+    ],
+    accuracy: optionalNumber(value.accuracy, 0, 50_000),
+    heading: optionalNumber(value.heading, 0, 360),
+    speed: optionalNumber(value.speed, 0, 200),
+    updatedAt: optionalNumber(value.timestamp, 0, Number.MAX_SAFE_INTEGER) || Date.now(),
+  };
+}
+
+function normalizeLongitude(lng) {
+  return ((((lng + 180) % 360) + 360) % 360) - 180;
+}
+
+function destinationLngLat(lngLat, distanceMeters, bearingDegrees) {
+  const angularDistance = distanceMeters / EARTH_RADIUS_METERS;
+  const bearing = (bearingDegrees * Math.PI) / 180;
+  const lat1 = (Number(lngLat[1]) * Math.PI) / 180;
+  const lng1 = (Number(lngLat[0]) * Math.PI) / 180;
+  const sinLat1 = Math.sin(lat1);
+  const cosLat1 = Math.cos(lat1);
+  const sinDistance = Math.sin(angularDistance);
+  const cosDistance = Math.cos(angularDistance);
+
+  const lat2 = Math.asin((sinLat1 * cosDistance) + (cosLat1 * sinDistance * Math.cos(bearing)));
+  const lng2 = lng1 + Math.atan2(
+    Math.sin(bearing) * sinDistance * cosLat1,
+    cosDistance - (sinLat1 * Math.sin(lat2)),
+  );
+
+  return [
+    normalizeLongitude((lng2 * 180) / Math.PI),
+    Math.min(85, Math.max(-85, (lat2 * 180) / Math.PI)),
+  ];
+}
+
+function accuracyRingPoints(map, lngLat, accuracyMeters) {
+  const accuracy = Number(accuracyMeters);
+  if (!Number.isFinite(accuracy) || accuracy <= 0) return null;
+
+  const points = [];
+  for (let i = 0; i < LOCATION_ACCURACY_SEGMENTS; i += 1) {
+    const bearing = (i / LOCATION_ACCURACY_SEGMENTS) * 360;
+    const projected = map.project(destinationLngLat(lngLat, accuracy, bearing));
+    const point = pointString(projected);
+    if (!point) return null;
+    points.push(point);
+  }
+  return points.join(' ');
+}
+
 function buildViewportSnapshot(map) {
   const canvas = map.getCanvas();
   const width = canvas.clientWidth || canvas.width || 0;
@@ -180,6 +262,7 @@ export function installMapCollaboration(map) {
   let socket = null;
   let currentRoom = getInitialRoom();
   let localCursor = { visible: false, lngLat: null };
+  let localLocation = { ...EMPTY_LOCATION };
   let ownConnectionId = clientId;
   let followedPeerId = null;
   let applyingRemoteView = false;
@@ -197,8 +280,9 @@ export function installMapCollaboration(map) {
     'aria-hidden': 'true',
   });
   const viewportLayer = createSvgElement('g', { class: 'collab-overlay-viewports' });
+  const locationLayer = createSvgElement('g', { class: 'collab-overlay-locations' });
   const cursorLayer = createSvgElement('g', { class: 'collab-overlay-cursors' });
-  overlay.append(viewportLayer, cursorLayer);
+  overlay.append(viewportLayer, locationLayer, cursorLayer);
 
   const panel = createElement('section', 'collab-panel', {
     'aria-label': 'Map collaboration',
@@ -447,6 +531,7 @@ export function installMapCollaboration(map) {
     overlayFrame = 0;
     const now = Date.now();
     const viewportNodes = [];
+    const locationNodes = [];
     const cursorNodes = [];
 
     for (const peer of peers.values()) {
@@ -502,9 +587,52 @@ export function installMapCollaboration(map) {
           cursorNodes.push(group);
         }
       }
+
+      if (peer.location?.enabled && peer.location.lngLat) {
+        const point = map.project(peer.location.lngLat);
+        if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+          const accuracyPoints = accuracyRingPoints(map, peer.location.lngLat, peer.location.accuracy);
+          if (accuracyPoints) {
+            const accuracy = createSvgElement('polygon', {
+              class: `collab-location-accuracy${staleClass}`,
+              points: accuracyPoints,
+            });
+            accuracy.style.setProperty('--peer-color', color);
+            locationNodes.push(accuracy);
+          }
+
+          const group = createSvgElement('g', {
+            class: `collab-location${staleClass}`,
+            transform: `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})`,
+          });
+          group.style.setProperty('--peer-color', color);
+          if (Number.isFinite(Number(peer.location.heading))) {
+            group.append(createSvgElement('path', {
+              class: 'collab-location-heading',
+              d: 'M0 -24 L5 -10 L0 -13 L-5 -10 Z',
+              transform: `rotate(${Number(peer.location.heading).toFixed(1)})`,
+            }));
+          }
+          group.append(createSvgElement('circle', {
+            class: 'collab-location-dot',
+            cx: 0,
+            cy: 0,
+            r: 6,
+          }));
+          const label = createSvgElement('text', {
+            class: 'collab-location-label',
+            x: 12,
+            y: 4,
+          });
+          label.textContent = peer.user.name;
+          group.append(label);
+          locationNodes.push(group);
+        }
+      }
     }
 
     viewportLayer.replaceChildren(...viewportNodes);
+    locationLayer.replaceChildren(...locationNodes);
     cursorLayer.replaceChildren(...cursorNodes);
   }
 
@@ -521,6 +649,7 @@ export function installMapCollaboration(map) {
       },
       viewport: buildViewportSnapshot(map),
       cursor: localCursor,
+      location: localLocation,
       followingId: followedPeerId,
       viewState: readViewState(map),
     }));
@@ -706,6 +835,7 @@ export function installMapCollaboration(map) {
     localCursor = { visible: false, lngLat: null };
     ownConnectionId = clientId;
     viewportLayer.replaceChildren();
+    locationLayer.replaceChildren();
     cursorLayer.replaceChildren();
     setPanelExpanded(false);
     setStatus('Ready', 'idle');
@@ -769,6 +899,11 @@ export function installMapCollaboration(map) {
     if (!applyingRemoteView && followedPeerId) stopFollowing();
     scheduleSend(true);
   });
+  const handleLocationChange = (event) => {
+    localLocation = normalizeLocalLocation(event.detail);
+    scheduleSend(true);
+  };
+  mapContainer.addEventListener('collaboration:locationchange', handleLocationChange);
 
   for (const eventName of ['mousedown', 'dblclick', 'wheel', 'touchstart']) {
     panel.addEventListener(eventName, (event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
@@ -803,8 +938,6 @@ export function installMapCollaboration(map) {
   setStatus('Ready', 'idle');
   renderPeople();
 
-  if (currentRoom) connect(currentRoom);
-
   return {
     destroy() {
       destroyed = true;
@@ -813,6 +946,7 @@ export function installMapCollaboration(map) {
       clearTimeout(shareResetTimer);
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
+      mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);
       socket?.close(1000, 'destroy');
       overlay.remove();
       panel.remove();

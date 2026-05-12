@@ -35,13 +35,37 @@ html, body, #app {
 }
 
 .collab-viewport-label,
-.collab-cursor-label {
+.collab-cursor-label,
+.collab-location-label {
   fill: var(--peer-color);
   stroke: #fff;
   stroke-width: 4;
   paint-order: stroke;
   font: 700 12px/1 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   pointer-events: none;
+}
+
+.collab-location-accuracy {
+  fill: none;
+  stroke: var(--peer-color);
+  stroke-width: 1.5;
+  stroke-opacity: 0.28;
+  vector-effect: non-scaling-stroke;
+}
+
+.collab-location-dot {
+  fill: var(--peer-color);
+  stroke: #fff;
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.collab-location-heading {
+  fill: var(--peer-color);
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .collab-cursor-pointer {
