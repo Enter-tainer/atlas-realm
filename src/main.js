@@ -357,11 +357,12 @@ async function init() {
 
     window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
-    map.addControl(new maplibregl.GeolocateControl({
+    const geolocateControl = new maplibregl.GeolocateControl({
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,
       showUserHeading: true,
-    }), 'top-right');
+    });
+    map.addControl(geolocateControl, 'top-right');
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
     installPhotonSearch(map, maplibregl);
@@ -520,7 +521,7 @@ async function init() {
       satelliteControl?.setEnabled(Boolean(viewState?.satellite), { silent: true });
       if (!options.silent) emitCollaborationViewState();
     };
-    installMapCollaboration(map);
+    installMapCollaboration(map, maplibregl, geolocateControl);
 
     map.on('load', () => {
       installOrmPopups(map, maplibregl, featuresCatalog);

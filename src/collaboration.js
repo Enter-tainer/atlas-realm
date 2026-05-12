@@ -122,10 +122,105 @@ function safeColor(color) {
   return /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : PROFILE_COLORS[0];
 }
 
-function initials(name) {
+function initials$0(name) {
   const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
   const letters = parts.length > 1 ? [parts[0][0], parts[1][0]] : [parts[0]?.[0] || '?'];
   return letters.join('').toUpperCase();
+}
+
+function renderLocationMarker(el, peer) {
+  const color = safeColor(peer.user?.color);
+  const loc = peer.location;
+  el.style.setProperty('--peer-color', color);
+  el._arrow.outerHTML = loc?.heading != null
+    ? `<div class="collab-location-arrow" style="transform:rotate(${loc.heading}deg)">&#x25B2;</div>`
+    : '<div class="collab-location-arrow"></div>';
+  el._dot.textContent = initials$0(peer.user.name);
+  const nameLabel = el.querySelector('.collab-location-name');
+  if (nameLabel) nameLabel.textContent = peer.user.name;
+}
+
+function createLocationMarker(peer) {
+  const el = document.createElement('div');
+  el.className = 'collab-location-marker';
+  el.innerHTML = `
+    <div class="collab-location-arrow">&#x25B2;</div>
+    <div class="collab-location-dot"></div>
+    <div class="collab-location-name"></div>
+  `;
+  el._arrow = el.querySelector('.collab-location-arrow');
+  el._dot = el.querySelector('.collab-location-dot');
+  renderLocationMarker(el, peer);
+  return new maplibregl.Marker({ element: el, anchor: 'bottom' })
+    .setLngLat(peer.location.lngLat)
+    .addTo(map);
+}
+
+function addPeerMarker(peer) {
+  if (peerMarkers.has(peer.id)) return;
+  if (!peer.location?.lngLat) return;
+  peerMarkers.set(peer.id, createLocationMarker(peer));
+}
+
+function updatePeerMarker(peer) {
+  const marker = peerMarkers.get(peer.id);
+  if (!marker) {
+    addPeerMarker(peer);
+    return;
+  }
+  if (!peer.location?.lngLat) {
+    removePeerMarker(peer.id);
+    return;
+  }
+  marker.setLngLat(peer.location.lngLat);
+  renderLocationMarker(marker.getElement(), peer);
+}
+
+function removePeerMarker(peerId) {
+  const marker = peerMarkers.get(peerId);
+  if (!marker) return;
+  marker.remove();
+  peerMarkers.delete(peerId);
+}
+
+function removeAllPeerMarkers() {
+  for (const marker of peerMarkers.values()) marker.remove();
+  peerMarkers.clear();
+}
+
+function startLocationWatch() {
+  if (locationWatchId !== null) return;
+  if (!navigator.geolocation) {
+    console.warn('Geolocation not available');
+    return;
+  }
+  locationWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      ownLocation = {
+        lngLat: [pos.coords.longitude, pos.coords.latitude],
+        accuracy: pos.coords.accuracy,
+        heading: pos.coords.heading,
+      };
+      scheduleSend(true);
+    },
+    (err) => {
+      console.warn('Location watch error:', err.message);
+      ownLocation = null;
+      scheduleSend(true);
+    },
+    { enableHighAccuracy: true },
+  );
+  geolocateActive = true;
+}
+
+function stopLocationWatch() {
+  if (locationWatchId !== null) {
+    navigator.geolocation.clearWatch(locationWatchId);
+    locationWatchId = null;
+  }
+  ownLocation = null;
+  geolocateActive = false;
+  scheduleSend(true);
 }
 
 function pointString(point) {
@@ -171,11 +266,12 @@ function applyViewState(map, viewState) {
   }, { silent: true });
 }
 
-export function installMapCollaboration(map) {
+export function installMapCollaboration(map, maplibregl, geolocateControl) {
   const mapContainer = map.getContainer();
   const clientId = getSessionId();
   const profile = getProfile();
   const peers = new Map();
+  const peerMarkers = new Map();
 
   let socket = null;
   let currentRoom = getInitialRoom();
@@ -191,6 +287,9 @@ export function installMapCollaboration(map) {
   let lastFollowAt = 0;
   let shareResetTimer = 0;
   let panelExpanded = false;
+  let locationWatchId = null;
+  let ownLocation = null;
+  let geolocateActive = false;
 
   const overlay = createSvgElement('svg', {
     class: 'collab-overlay',
@@ -389,7 +488,7 @@ export function installMapCollaboration(map) {
       'aria-label': `Follow ${peer.user.name}`,
     });
     avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
-    avatar.textContent = initials(peer.user.name);
+    avatar.textContent = initials$0(peer.user.name);
     avatar.classList.toggle('following', peer.id === followedPeerId);
     avatar.addEventListener('click', () => {
       if (followedPeerId === peer.id) stopFollowing();
@@ -403,13 +502,13 @@ export function installMapCollaboration(map) {
 
     const local = createElement('span', 'collab-compact-avatar');
     local.style.setProperty('--peer-color', safeColor(profile.color));
-    local.textContent = initials(profile.name);
+    local.textContent = initials$0(profile.name);
     compactAvatars.append(local);
 
     for (const peer of [...peers.values()].slice(0, 3)) {
       const avatar = createElement('span', 'collab-compact-avatar');
       avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
-      avatar.textContent = initials(peer.user.name);
+      avatar.textContent = initials$0(peer.user.name);
       avatar.classList.toggle('following', peer.id === followedPeerId);
       compactAvatars.append(avatar);
     }
@@ -521,6 +620,7 @@ export function installMapCollaboration(map) {
       },
       viewport: buildViewportSnapshot(map),
       cursor: localCursor,
+      location: ownLocation,
       followingId: followedPeerId,
       viewState: readViewState(map),
     }));
@@ -598,10 +698,19 @@ export function installMapCollaboration(map) {
 
   function upsertPeer(peer) {
     if (!peer?.id || peer.id === ownConnectionId) return;
+    const existing = peers.get(peer.id);
     peers.set(peer.id, peer);
     renderPeople();
     scheduleOverlayRender();
     if (peer.id === followedPeerId) scheduleFollow(peer);
+
+    // Location marker management
+    if (peer.location?.lngLat) {
+      if (existing) updatePeerMarker(peer);
+      else addPeerMarker(peer);
+    } else {
+      removePeerMarker(peer.id);
+    }
   }
 
   function handleMessage(event) {
@@ -630,6 +739,7 @@ export function installMapCollaboration(map) {
 
     if (message.type === 'presence:leave') {
       peers.delete(message.id);
+      removePeerMarker(message.id);
       if (followedPeerId === message.id) {
         followedPeerId = null;
         scheduleSend(true);
@@ -645,6 +755,7 @@ export function installMapCollaboration(map) {
     roomInput.value = room;
     updateRoomUrl(room);
     peers.clear();
+    removeAllPeerMarkers();
     followedPeerId = null;
     renderPeople();
     scheduleOverlayRender();
@@ -675,6 +786,13 @@ export function installMapCollaboration(map) {
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
+      // If geolocate was already active before joining room, start sharing location
+      if (geolocateControl) {
+        const btn = geolocateControl._container?.querySelector('.maplibregl-ctrl-geolocate');
+        if (btn?.classList.contains('maplibregl-ctrl-geolocate-active')) {
+          startLocationWatch();
+        }
+      }
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -798,6 +916,16 @@ export function installMapCollaboration(map) {
     });
   }
 
+  // GeolocateControl integration: share location when user activates GPS
+  if (geolocateControl) {
+    geolocateControl.on('trackuserlocationstart', () => {
+      startLocationWatch();
+    });
+    geolocateControl.on('trackuserlocationend', () => {
+      stopLocationWatch();
+    });
+  }
+
   mapContainer.append(overlay, panel);
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
@@ -811,6 +939,8 @@ export function installMapCollaboration(map) {
       clearTimeout(sendTimer);
       clearTimeout(followTimer);
       clearTimeout(shareResetTimer);
+      stopLocationWatch();
+      removeAllPeerMarkers();
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       socket?.close(1000, 'destroy');
