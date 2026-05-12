@@ -159,6 +159,17 @@ function sanitizeCursor(value) {
   return lngLat ? { visible: true, lngLat } : { visible: false, lngLat: null };
 }
 
+function sanitizeLocation(value) {
+  if (!value || typeof value !== 'object') return null;
+  const lngLat = sanitizeLngLat(value.lngLat || value.coords);
+  if (!lngLat) return null;
+  return {
+    lngLat,
+    accuracy: Math.min(Number(value.accuracy) || 0, 10_000),
+    heading: Number.isFinite(value.heading) ? Number(value.heading.toFixed(1)) : null,
+  };
+}
+
 function sanitizeViewState(value, fallback = { terrain: false, satellite: false }) {
   if (!value || typeof value !== 'object') return fallback;
   return {
@@ -175,6 +186,7 @@ function publicPeer(connection) {
     user: state.user,
     viewport: state.viewport || null,
     cursor: state.cursor || { visible: false, lngLat: null },
+    location: state.location || null,
     followingId: state.followingId || null,
     viewState: state.viewState || { terrain: false, satellite: false },
     updatedAt: state.updatedAt || Date.now(),
@@ -206,6 +218,7 @@ export class MapCollaboration extends Server {
       user,
       viewport: null,
       cursor: { visible: false, lngLat: null },
+      location: null,
       followingId: null,
       viewState: { terrain: false, satellite: false },
       updatedAt: Date.now(),
@@ -247,6 +260,7 @@ export class MapCollaboration extends Server {
       user: sanitizeUser(payload.user, previous.user),
       viewport: sanitizeViewport(payload.viewport) || previous.viewport || null,
       cursor: sanitizeCursor(payload.cursor),
+      location: sanitizeLocation(payload.location),
       followingId: followingId === connection.id ? null : followingId,
       viewState: sanitizeViewState(payload.viewState, previous.viewState || { terrain: false, satellite: false }),
       updatedAt: Date.now(),

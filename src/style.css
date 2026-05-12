@@ -535,6 +535,59 @@ html, body, #app {
   }
 }
 
+/* ── Collab location markers ── */
+.collab-location-marker {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  pointer-events: auto;
+}
+
+.collab-location-arrow {
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-bottom: 8px solid var(--peer-color, #2563eb);
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.collab-location-arrow:not(:empty) {
+  opacity: 0.9;
+}
+
+.collab-location-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--peer-color, #2563eb);
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.25);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1;
+}
+
+.collab-location-name {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--peer-color, #2563eb);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  white-space: nowrap;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.18);
+}
+
 .maplibregl-ctrl-terrain {
   width: 29px;
   height: 29px;
