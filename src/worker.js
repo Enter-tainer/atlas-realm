@@ -95,6 +95,17 @@ const PROFILE_COLORS = [
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 
+function emptyLocation() {
+  return {
+    enabled: false,
+    lngLat: null,
+    accuracy: null,
+    heading: null,
+    speed: null,
+    updatedAt: null,
+  };
+}
+
 function clampNumber(value, min, max, fallback) {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -159,6 +170,31 @@ function sanitizeCursor(value) {
   return lngLat ? { visible: true, lngLat } : { visible: false, lngLat: null };
 }
 
+function sanitizeOptionalNumber(value, min, max) {
+  if (value === null || value === undefined) return null;
+  const number = clampNumber(value, min, max, NaN);
+  return Number.isFinite(number) ? Number(number.toFixed(2)) : null;
+}
+
+function sanitizeLocation(value, fallback = emptyLocation()) {
+  if (value === undefined) return fallback;
+  if (!value || typeof value !== 'object' || value.enabled === false) {
+    return { ...emptyLocation(), updatedAt: Date.now() };
+  }
+
+  const lngLat = sanitizeLngLat(value.lngLat);
+  if (!lngLat) return { ...emptyLocation(), updatedAt: Date.now() };
+
+  return {
+    enabled: true,
+    lngLat,
+    accuracy: sanitizeOptionalNumber(value.accuracy, 0, 50_000),
+    heading: sanitizeOptionalNumber(value.heading, 0, 360),
+    speed: sanitizeOptionalNumber(value.speed, 0, 200),
+    updatedAt: Date.now(),
+  };
+}
+
 function sanitizeViewState(value, fallback = { terrain: false, satellite: false }) {
   if (!value || typeof value !== 'object') return fallback;
   return {
@@ -175,6 +211,7 @@ function publicPeer(connection) {
     user: state.user,
     viewport: state.viewport || null,
     cursor: state.cursor || { visible: false, lngLat: null },
+    location: state.location || emptyLocation(),
     followingId: state.followingId || null,
     viewState: state.viewState || { terrain: false, satellite: false },
     updatedAt: state.updatedAt || Date.now(),
@@ -206,6 +243,7 @@ export class MapCollaboration extends Server {
       user,
       viewport: null,
       cursor: { visible: false, lngLat: null },
+      location: emptyLocation(),
       followingId: null,
       viewState: { terrain: false, satellite: false },
       updatedAt: Date.now(),
@@ -247,6 +285,7 @@ export class MapCollaboration extends Server {
       user: sanitizeUser(payload.user, previous.user),
       viewport: sanitizeViewport(payload.viewport) || previous.viewport || null,
       cursor: sanitizeCursor(payload.cursor),
+      location: sanitizeLocation(payload.location, previous.location || emptyLocation()),
       followingId: followingId === connection.id ? null : followingId,
       viewState: sanitizeViewState(payload.viewState, previous.viewState || { terrain: false, satellite: false }),
       updatedAt: Date.now(),
