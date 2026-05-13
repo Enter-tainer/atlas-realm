@@ -6,6 +6,7 @@ import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeo
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
 import { installMapCollaboration } from './collaboration.js';
+import { installWeatherPointPicker } from './weather.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -391,6 +392,7 @@ async function init() {
     map.addControl(new maplibregl.FullscreenControl(), 'top-right');
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
     installPhotonSearch(map, maplibregl);
+    installWeatherPointPicker(map, maplibregl);
 
     installSpriteFallback(map, atlases);
 

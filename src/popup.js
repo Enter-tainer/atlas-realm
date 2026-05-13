@@ -1127,9 +1127,22 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
       .map((k) => k.split('-')[0]),
   );
   const isOrmFeature = (f) => ormSources.has(f.source);
+  const isWeatherPickerActive = () => map.getContainer().dataset.weatherPickerActive === 'true';
+
+  function clearHover() {
+    if (!hoveredFeature) return;
+    map.setFeatureState(hoveredFeature, { hover: false });
+    hoveredFeature = null;
+  }
 
   // Hover cursor
   map.on('mousemove', (event) => {
+    if (isWeatherPickerActive()) {
+      map.getCanvas().style.cursor = 'crosshair';
+      clearHover();
+      return;
+    }
+
     const features = map
       .queryRenderedFeatures(event.point)
       .filter(isOrmFeature);
@@ -1154,15 +1167,14 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
       }
     } else {
       map.getCanvas().style.cursor = '';
-      if (hoveredFeature) {
-        map.setFeatureState(hoveredFeature, { hover: false });
-        hoveredFeature = null;
-      }
+      clearHover();
     }
   });
 
   // Click popup
   map.on('click', (event) => {
+    if (isWeatherPickerActive() || event.originalEvent?.weatherPickerHandled) return;
+
     const features = map
       .queryRenderedFeatures(event.point)
       .filter(isOrmFeature);
