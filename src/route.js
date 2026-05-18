@@ -141,8 +141,13 @@ class RouteController {
       if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
     }, { passive: true });
 
-    // Click on map (for closing context menu)
+    // Click on map (for closing context menu and layer panel)
     this._map.on('click', this._onMapClick);
+
+    // Close layer panel when clicking map (desktop — no backdrop)
+    this._map.on('click', () => {
+      this._map._layerPanel?._close?.();
+    });
 
     return this._container;
   }

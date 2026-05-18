@@ -1322,7 +1322,7 @@ html, body, #app {
 /* ── Mode bar (floating bottom center) ───────────────────────────────── */
 .route-mode-bar {
   position: fixed;
-  bottom: 24px;
+  bottom: 40px;
   left: 50%;
   z-index: 100;
   display: flex;
@@ -1498,11 +1498,11 @@ html, body, #app {
   transform: translateY(0);
 }
 
-/* Desktop: positioned near top-right control group */
+/* Desktop: positioned to the left of the control group buttons */
 @media (min-width: 641px) {
   .layer-panel {
-    top: 52px;
-    right: 10px;
+    top: 10px;
+    right: 48px;
   }
 }
 
