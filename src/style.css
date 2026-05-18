@@ -1409,6 +1409,7 @@ html, body, #app {
     bottom: calc(12px + env(safe-area-inset-bottom));
     left: 8px;
     right: 8px;
+    z-index: 105; /* above layer panel bottom sheet */
     transform: none;
     flex-wrap: wrap;
     justify-content: center;
@@ -1424,6 +1425,27 @@ html, body, #app {
 
   .route-ctx-menu {
     min-width: 160px;
+    /* Ensure context menu stays on screen on small devices */
+    max-width: calc(100vw - 16px);
+  }
+
+  .route-ctx-item {
+    padding: 8px 14px;
+    font-size: 14px;
+    /* Larger touch target */
+    min-height: 36px;
+  }
+}
+
+/* ── Narrow screen overflow (mode pills) ──────────────────────────── */
+@media (max-width: 360px) {
+  .route-mode-btn {
+    padding: 4px 7px;
+    font-size: 10px;
+  }
+
+  .route-mode-selector {
+    gap: 1px;
   }
 }
 
@@ -1628,15 +1650,15 @@ html, body, #app {
 .layer-panel-row-vis,
 .layer-panel-row-del {
   flex: 0 0 auto;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   padding: 0;
   border: 0;
   border-radius: 4px;
   background: transparent;
   color: #888;
-  font-size: 13px;
-  line-height: 24px;
+  font-size: 14px;
+  line-height: 28px;
   text-align: center;
   cursor: pointer;
 }
@@ -1649,4 +1671,19 @@ html, body, #app {
 
 .layer-panel-row-del:hover {
   color: #d22;
+}
+
+/* Mobile: larger touch targets */
+@media (max-width: 640px) {
+  .layer-panel-row {
+    padding: 8px 12px;
+  }
+
+  .layer-panel-row-vis,
+  .layer-panel-row-del {
+    width: 36px;
+    height: 36px;
+    font-size: 16px;
+    line-height: 36px;
+  }
 }
