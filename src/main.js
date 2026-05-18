@@ -9,6 +9,8 @@ import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
 import { installRouting } from './route.js';
 import { LayerRegistry } from './layers.js';
+import { LayerPanelControl } from './layer-panel.js';
+import { setGpxRegistry } from './gpx.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -398,7 +400,12 @@ async function init() {
 
     // LayerRegistry — tracks all overlays (GPX, GeoJSON, Routes)
     const registry = new LayerRegistry(map);
+    setGpxRegistry(registry);
     installRouting(map, maplibregl, registry);
+    const layerPanel = new LayerPanelControl(registry);
+    map.addControl(layerPanel, 'top-right');
+    // Store panel reference so route/gpx modules can refresh it
+    map._layerPanel = layerPanel;
 
     installSpriteFallback(map, atlases);
 

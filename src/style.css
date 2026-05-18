@@ -1471,3 +1471,218 @@ html, body, #app {
     min-width: 160px;
   }
 }
+
+/* ==========================================================================
+   Layer Panel — overlay management UI
+   ========================================================================== */
+
+/* ── Button ────────────────────────────────────────────────────────── */
+.maplibregl-ctrl-layer-panel {
+  position: relative;
+  width: 29px;
+  height: 29px;
+  font-size: 14px;
+  line-height: 29px;
+  text-align: center;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  color: #333;
+}
+
+.maplibregl-ctrl-layer-panel:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.maplibregl-ctrl-layer-panel.active {
+  color: #2563eb;
+}
+
+/* Count badge */
+.layer-panel-badge {
+  display: none;
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: #2563eb;
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+/* ── Backdrop (mobile) ────────────────────────────────────────────── */
+.layer-panel-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.layer-panel-backdrop.visible {
+  display: block;
+}
+
+/* ── Panel ────────────────────────────────────────────────────────── */
+.layer-panel {
+  position: fixed;
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-height: min(480px, calc(100vh - 80px));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.97);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(14px);
+  /* Hidden by default; positioned on open */
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.layer-panel.open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* Desktop: positioned near the top-right control group */
+@media (min-width: 641px) {
+  .layer-panel {
+    top: 56px;
+    right: 12px;
+  }
+}
+
+/* Mobile: bottom sheet */
+@media (max-width: 640px) {
+  .layer-panel {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    max-height: 55vh;
+    border-radius: 18px 18px 0 0;
+    transform: translateY(100%);
+  }
+
+  .layer-panel.open {
+    transform: translateY(0);
+  }
+}
+
+/* ── Panel header ─────────────────────────────────────────────────── */
+.layer-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.layer-panel-title {
+  font: 700 16px/1.3 Inter, system-ui, sans-serif;
+  color: #111827;
+}
+
+.layer-panel-close {
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #9ca3af;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.layer-panel-close:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+/* ── Empty state ──────────────────────────────────────────────────── */
+.layer-panel-empty {
+  display: none;
+  padding: 32px 20px;
+  color: #9ca3af;
+  font: 500 13px/1.6 Inter, system-ui, sans-serif;
+  text-align: center;
+  white-space: pre-line;
+}
+
+/* ── Layer list ───────────────────────────────────────────────────── */
+.layer-panel-list {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.layer-panel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid #f3f4f6;
+  cursor: default;
+  transition: background 120ms ease;
+}
+
+.layer-panel-row:hover {
+  background: #f9fafb;
+}
+
+.layer-panel-row:last-child {
+  border-bottom: 0;
+}
+
+.layer-panel-row-icon {
+  flex: 0 0 auto;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.layer-panel-row-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 600 13px/1.35 Inter, system-ui, sans-serif;
+  color: #111827;
+}
+
+.layer-panel-row-vis,
+.layer-panel-row-del {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 16px;
+  line-height: 32px;
+  text-align: center;
+  cursor: pointer;
+}
+
+.layer-panel-row-vis:hover,
+.layer-panel-row-del:hover {
+  background: #f3f4f6;
+}
+
+.layer-panel-row-del:hover {
+  color: #dc2626;
+}

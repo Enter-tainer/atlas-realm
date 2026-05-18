@@ -225,6 +225,17 @@ export function mergeBounds(a, b) {
 
 let gpxLayerCount = 0;
 
+/** @type {import('./layers.js').LayerRegistry|null} */
+let _registry = null;
+
+/**
+ * Set the LayerRegistry instance for auto-registration of GPX/GeoJSON overlays.
+ * @param {import('./layers.js').LayerRegistry} registry
+ */
+export function setGpxRegistry(registry) {
+  _registry = registry;
+}
+
 export function addGpxToMap(map, xmlString) {
   const result = gpxToGeoJson(xmlString);
   if (!result) return;
@@ -343,6 +354,23 @@ export function addGpxToMap(map, xmlString) {
     });
   }
 
+  // Collect layer IDs for registry
+  const layerIds = [];
+  if (hasTrack) layerIds.push(`${id}-stroke`, `${id}-line`);
+  if (hasGaps) layerIds.push(`${id}-gap-arc`);
+  if (hasArrows) layerIds.push(`${id}-gap-arrow`);
+  if (hasWaypoints) layerIds.push(`${id}-wpt`);
+
+  // Register with overlay registry
+  if (_registry) {
+    _registry.register(id, {
+      name: `GPX Track ${gpxLayerCount}`,
+      type: 'gpx',
+      sourceIds: [id],
+      layerIds,
+    });
+  }
+
   return {
     ...result.stats,
     bounds: result.bounds,
@@ -446,6 +474,21 @@ export function addGeoJsonToMap(map, geojson) {
         'text-halo-color': '#ffffff',
         'text-halo-width': 2,
       },
+    });
+  }
+
+  // Collect layer IDs for registry
+  const layerIds = [];
+  if (lineFeatures.length > 0) layerIds.push(`${id}-line-stroke`, `${id}-line`);
+  if (pointFeatures.length > 0) layerIds.push(`${id}-point`);
+
+  // Register with overlay registry
+  if (_registry) {
+    _registry.register(id, {
+      name: `GeoJSON ${geojsonLayerCount}`,
+      type: 'geojson',
+      sourceIds: [id],
+      layerIds,
     });
   }
 

@@ -111,8 +111,35 @@ class RouteController {
     this._container.appendChild(this._ctxMenu);
     this._container.appendChild(this._modeBar);
 
-    // Right-click handler
+    // Right-click handler (desktop)
     this._map.getCanvas().addEventListener('contextmenu', this._onContextMenu);
+
+    // Long-press handler (mobile — touch devices don't have right-click)
+    let longPressTimer = null;
+    const LONG_PRESS_MS = 500;
+    this._map.getCanvas().addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1) return;
+      const touch = e.touches[0];
+      longPressTimer = setTimeout(() => {
+        longPressTimer = null;
+        // Use the touch's offset within the canvas
+        const rect = this._map.getCanvas().getBoundingClientRect();
+        const offsetX = touch.clientX - rect.left;
+        const offsetY = touch.clientY - rect.top;
+        const ctxEvent = new MouseEvent('contextmenu', {
+          bubbles: true, cancelable: true,
+          clientX: touch.clientX, clientY: touch.clientY,
+          offsetX, offsetY, button: 2,
+        });
+        this._map.getCanvas().dispatchEvent(ctxEvent);
+      }, LONG_PRESS_MS);
+    }, { passive: true });
+    this._map.getCanvas().addEventListener('touchend', () => {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    });
+    this._map.getCanvas().addEventListener('touchmove', () => {
+      if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+    }, { passive: true });
 
     // Click on map (for closing context menu)
     this._map.on('click', this._onMapClick);
@@ -474,6 +501,8 @@ class RouteController {
     this._fitRouteBounds(routes);
 
     this._renderModeBar();
+    // Refresh layer panel to show new route in the list
+    this._map._layerPanel?.refresh();
   }
 
   _fitRouteBounds(routes) {
@@ -542,8 +571,6 @@ class RouteController {
       this._registry.remove(this._routeEntryId);
       this._routeEntryId = null;
     }
-    this._removeMarkerSource('route-start');
-    this._removeMarkerSource('route-end');
     this._lastRoute = null;
     this._popup?.remove();
     this._popup = null;
@@ -552,12 +579,15 @@ class RouteController {
 
   _clearRoute() {
     this._clearRouteLayers();
+    this._removeMarkerSource('route-start');
+    this._removeMarkerSource('route-end');
     this._start = null;
     this._startName = null;
     this._end = null;
     this._hideModeBar();
     this._hideContextMenu();
     this._renderModeBar();
+    this._map._layerPanel?.refresh();
   }
 
   // ── Map click handler (close context menu) ────────────────────────────
