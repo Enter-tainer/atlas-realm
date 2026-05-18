@@ -1403,51 +1403,6 @@ html, body, #app {
   to { transform: rotate(360deg); }
 }
 
-/* ── Route popup ─────────────────────────────────────────────────────── */
-.route-popup {
-  max-width: 300px;
-  color: #111827;
-}
-
-.route-popup-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #e5e7eb;
-}
-
-.route-popup-mode {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.route-popup-summary {
-  color: #6b7280;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.route-popup-steps {
-  margin: 0;
-  padding: 0 0 0 18px;
-  max-height: 240px;
-  overflow-y: auto;
-  list-style: decimal;
-}
-
-.route-popup-step {
-  padding: 3px 0;
-  font-size: 12px;
-  line-height: 1.5;
-  color: #374151;
-}
-
-.route-popup-step + .route-popup-step {
-  border-top: 1px solid #f3f4f6;
-}
-
 /* ── Mobile adjustments ──────────────────────────────────────────────── */
 @media (max-width: 640px) {
   .route-mode-bar {

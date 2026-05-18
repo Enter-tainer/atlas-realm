@@ -535,27 +535,60 @@ class RouteController {
   }
 
   _buildPopupContent(props) {
-    const container = el('div', 'route-popup');
-    const header = el('div', 'route-popup-header', container);
+    const prof = PROFILES[this._profile];
+    const container = el('div', 'orm-popup');
 
-    const mode = el('span', 'route-popup-mode', header);
-    mode.textContent = `${PROFILES[this._profile].emoji} ${PROFILES[this._profile].name}`;
+    // Title — mode emoji + profile name
+    const title = el('h5', 'orm-popup-title', container);
+    title.innerText = `${prof.emoji} ${prof.name} Route`;
 
-    const summary = el('span', 'route-popup-summary', header);
-    summary.textContent = `${formatDistance(props.distance)} · ${formatDuration(props.duration)}`;
+    // Badge row — distance, duration, step count
+    const badgeRow = el('h6', 'orm-popup-badges', container);
+    const distBadge = el('span', 'orm-badge', badgeRow);
+    const distTitle = el('span', 'orm-badge-title', distBadge);
+    distTitle.innerText = 'Distance: ';
+    const distValue = el('span', undefined, distBadge);
+    distValue.innerText = formatDistance(props.distance);
 
-    // Steps list
+    const durBadge = el('span', 'orm-badge', badgeRow);
+    const durTitle = el('span', 'orm-badge-title', durBadge);
+    durTitle.innerText = 'Duration: ';
+    const durValue = el('span', undefined, durBadge);
+    durValue.innerText = formatDuration(props.duration);
+
+    // Steps list (ORM route-list style)
     let steps = [];
     try { steps = JSON.parse(props.steps || '[]'); } catch { /* ignore */ }
     if (steps.length > 0) {
-      const stepsList = el('ol', 'route-popup-steps', container);
+      const stepsBadge = el('span', 'orm-badge', badgeRow);
+      const stepsTitle = el('span', 'orm-badge-title', stepsBadge);
+      stepsTitle.innerText = 'Steps: ';
+      const stepsValue = el('span', undefined, stepsBadge);
+      stepsValue.innerText = String(steps.length);
+
+      const stepsList = el('ul', 'orm-popup-route-list', container);
       for (const step of steps) {
-        const li = el('li', 'route-popup-step', stepsList);
+        const li = el('li', undefined, stepsList);
         li.textContent = formatStepInstruction(step);
       }
     }
 
+    // OSRM link button (ORM button group style)
+    const btnRow = el('h6', 'orm-popup-osm', container);
+    const btnGroup = el('div', 'orm-btn-group', btnRow);
+    const osmLink = el('a', 'orm-btn orm-btn-action', btnGroup);
+    osmLink.href = this._buildOsrmUrl();
+    osmLink.target = '_blank';
+    osmLink.title = 'Open route in OSRM';
+    osmLink.innerText = 'View on OSRM ▸';
+
     return container;
+  }
+
+  _buildOsrmUrl() {
+    if (!this._start || !this._end) return '#';
+    const coords = `${this._start.lng},${this._start.lat};${this._end.lng},${this._end.lat}`;
+    return `https://map.project-osrm.org/?z=10&center=${this._end.lat}%2C${this._end.lng}&loc=${this._start.lat}%2C${this._start.lng}&loc=${this._end.lat}%2C${this._end.lng}&hl=en&alt=0&srv=0`;
   }
 
   // ── Cleanup ───────────────────────────────────────────────────────────
