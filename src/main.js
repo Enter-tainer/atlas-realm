@@ -7,6 +7,8 @@ import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
 import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
+import { installRouting } from './route.js';
+import { LayerRegistry } from './layers.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -393,6 +395,10 @@ async function init() {
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
     installPhotonSearch(map, maplibregl);
     installWeatherPointPicker(map, maplibregl);
+
+    // LayerRegistry — tracks all overlays (GPX, GeoJSON, Routes)
+    const registry = new LayerRegistry(map);
+    installRouting(map, maplibregl, registry);
 
     installSpriteFallback(map, atlases);
 
