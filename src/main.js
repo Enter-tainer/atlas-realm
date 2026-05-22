@@ -232,21 +232,7 @@ function withGlobalStateVisibility(layer, stateName) {
   return { ...layer, layout };
 }
 
-function setGlobalStatePropertyWhenReady(map, propertyName, value) {
-  if (map.isStyleLoaded()) {
-    map.setGlobalStateProperty(propertyName, value);
-    return;
-  }
-  map.once('load', () => map.setGlobalStateProperty(propertyName, value));
-}
-
-function runWhenStyleReady(map, callback) {
-  if (map.isStyleLoaded()) {
-    callback();
-    return;
-  }
-  map.once('load', callback);
-}
+import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-ready.js';
 
 const STATE_DEFAULTS = {
   date: 2026,
