@@ -2,18 +2,19 @@ import { describe, it, expect, vi } from 'vitest';
 import { runWhenStyleReady, setGlobalStatePropertyWhenReady } from './style-ready.js';
 
 /**
- * Create a mock maplibregl.Map object that supports:
- *  - isStyleLoaded()
- *  - once(event, callback)
- *  - setGlobalStateProperty(name, value)
- *  - _styleEverLoaded (mutable property — the real MapLibre does not provide this)
+ * Create a mock maplibregl.Map that exercises the style-ready helpers.
+ *
+ * MapLibre's `isStyleLoaded()` returns false while any tile manager has
+ * tiles in 'loading' state — a normal situation after toggling layer
+ * visibility kicks off new tile fetches.  The mock's `_setStyleLoaded()`
+ * simulates this transient false.
  */
 function createMockMap({ styleLoaded = false } = {}) {
-  const listeners = new Map(); // eventName → callback[]
+  const listeners = new Map();
 
   const mock = {
     _styleLoaded: styleLoaded,
-    _styleEverLoaded: undefined,
+    _styleInitialized: undefined,
     _globalState: {},
 
     isStyleLoaded() {
@@ -27,7 +28,7 @@ function createMockMap({ styleLoaded = false } = {}) {
       this._globalState[name] = value;
     },
 
-    // Test helpers
+    /** Simulate isStyleLoaded() flipping after tile fetches start. */
     _setStyleLoaded(loaded) {
       this._styleLoaded = loaded;
     },
@@ -40,23 +41,23 @@ function createMockMap({ styleLoaded = false } = {}) {
 }
 
 describe('runWhenStyleReady', () => {
-  it('runs synchronously when style is already loaded (isStyleLoaded=true)', () => {
+  it('runs synchronously when style is loaded', () => {
     const map = createMockMap({ styleLoaded: true });
     const fn = vi.fn();
     runWhenStyleReady(map, fn);
     expect(fn).toHaveBeenCalledOnce();
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
   });
 
-  it('defers to load event when style is not loaded', () => {
+  it('defers to the load event when style has not loaded yet', () => {
     const map = createMockMap({ styleLoaded: false });
     const fn = vi.fn();
     runWhenStyleReady(map, fn);
     expect(fn).not.toHaveBeenCalled();
-    expect(map._styleEverLoaded).toBeUndefined();
+    expect(map._styleInitialized).toBeUndefined();
   });
 
-  it('executes deferred callbacks when load event fires', () => {
+  it('executes deferred callbacks when the load event fires', () => {
     const map = createMockMap({ styleLoaded: false });
     const fn = vi.fn();
     runWhenStyleReady(map, fn);
@@ -64,22 +65,23 @@ describe('runWhenStyleReady', () => {
     map._emit('load');
 
     expect(fn).toHaveBeenCalledOnce();
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
   });
 
-  it('runs synchronously after style has ever been loaded, even if isStyleLoaded() temporarily returns false', () => {
+  it('runs synchronously while tiles are still loading, once the style has been initialised', () => {
     const map = createMockMap({ styleLoaded: true });
     const fn1 = vi.fn();
     runWhenStyleReady(map, fn1);
     expect(fn1).toHaveBeenCalledOnce();
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
 
-    // Now simulate transient isStyleLoaded() → false (the MapLibre bug)
+    // Simulate isStyleLoaded()→false caused by in-flight tile loads
+    // (e.g. satellite visibility toggle triggered tile fetches).
     map._setStyleLoaded(false);
 
     const fn2 = vi.fn();
     runWhenStyleReady(map, fn2);
-    expect(fn2).toHaveBeenCalledOnce(); // runs synchronously despite isStyleLoaded=false
+    expect(fn2).toHaveBeenCalledOnce(); // synchronous despite tile loading
   });
 
   it('handles multiple deferred callbacks on the load event', () => {
@@ -94,10 +96,10 @@ describe('runWhenStyleReady', () => {
 
     expect(fn1).toHaveBeenCalledOnce();
     expect(fn2).toHaveBeenCalledOnce();
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
   });
 
-  it('does not double-execute: rapid toggles before load fires', () => {
+  it('preserves callback order for rapid toggles queued before load fires', () => {
     const map = createMockMap({ styleLoaded: false });
 
     const enable = vi.fn();
@@ -108,12 +110,11 @@ describe('runWhenStyleReady', () => {
 
     map._emit('load');
 
-    // Both registered, both fire — order is preserved
     expect(enable).toHaveBeenCalledOnce();
     expect(disable).toHaveBeenCalledOnce();
   });
 
-  it('rapid toggles after style was loaded: all run synchronously', () => {
+  it('rapid toggles after initialisation: all run synchronously', () => {
     const map = createMockMap({ styleLoaded: true });
 
     const calls = [];
@@ -127,42 +128,43 @@ describe('runWhenStyleReady', () => {
 });
 
 describe('setGlobalStatePropertyWhenReady', () => {
-  it('sets property synchronously when style is loaded', () => {
+  it('sets the property synchronously when style is loaded', () => {
     const map = createMockMap({ styleLoaded: true });
     setGlobalStatePropertyWhenReady(map, 'showBaseMap', false);
     expect(map._globalState.showBaseMap).toBe(false);
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
   });
 
-  it('sets property after load event when style is not loaded', () => {
+  it('sets the property after the load event when style has not loaded yet', () => {
     const map = createMockMap({ styleLoaded: false });
     setGlobalStatePropertyWhenReady(map, 'showBaseMap', false);
     expect(map._globalState.showBaseMap).toBeUndefined();
 
     map._emit('load');
     expect(map._globalState.showBaseMap).toBe(false);
-    expect(map._styleEverLoaded).toBe(true);
+    expect(map._styleInitialized).toBe(true);
   });
 
-  it('sets property synchronously after style ever loaded, even if isStyleLoaded() temporarily false', () => {
+  it('sets the property synchronously while tiles are still loading, once style has been initialised', () => {
     const map = createMockMap({ styleLoaded: true });
     setGlobalStatePropertyWhenReady(map, 'showBaseMap', false);
     expect(map._globalState.showBaseMap).toBe(false);
 
-    map._setStyleLoaded(false); // transient bug repro
+    // Simulate isStyleLoaded()→false caused by in-flight tile loads.
+    map._setStyleLoaded(false);
+
     setGlobalStatePropertyWhenReady(map, 'showBaseMap', true);
-    expect(map._globalState.showBaseMap).toBe(true); // synchronous
+    expect(map._globalState.showBaseMap).toBe(true);
   });
 
-  it('handles rapid toggles: final value wins', () => {
+  it('rapid toggles: last write wins, all applied', () => {
     const map = createMockMap({ styleLoaded: true });
 
-    // 10 rapid toggles
     for (let i = 0; i < 10; i++) {
       setGlobalStatePropertyWhenReady(map, 'showBaseMap', i % 2 === 0);
     }
 
-    // Odd count (10) → last is i=9, i%2=1 → false
+    // 10 toggles → last is i=9, false
     expect(map._globalState.showBaseMap).toBe(false);
   });
 });
