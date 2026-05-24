@@ -63,6 +63,13 @@ function formatOverlayType(type) {
 }
 
 function formatOverlayMeta(overlay) {
+  if (overlay.subType === 'osrm') {
+    const parts = [overlay.distanceText, overlay.durationText].filter(Boolean);
+    if (Number.isFinite(overlay.stepCount)) parts.push(`${overlay.stepCount} steps`);
+    if (Number.isFinite(overlay.annotationSegmentCount)) parts.push(`${overlay.annotationSegmentCount} speed segments`);
+    return parts.join(' - ') || 'OSRM route';
+  }
+
   if (overlay.type === 'gpx') {
     const parts = [];
     if (Number.isFinite(overlay.points)) parts.push(`${overlay.points} pts`);
@@ -173,6 +180,7 @@ class OverlayManagerControl {
     this._boundOverlayAdded = (event) => this._registerOverlay(event.detail);
     this._boundKeydown = (event) => this._handleKeydown(event);
     this._boundViewportChange = () => this._syncViewportMode();
+    this._boundRoutingPanelOpen = () => this.setExpanded(false);
   }
 
   onAdd(map) {
@@ -335,6 +343,7 @@ class OverlayManagerControl {
     });
 
     map.getContainer().addEventListener('overlay:add', this._boundOverlayAdded);
+    map.getContainer().addEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
     this._syncViewportMode();
@@ -345,6 +354,7 @@ class OverlayManagerControl {
 
   onRemove() {
     this._map.getContainer().removeEventListener('overlay:add', this._boundOverlayAdded);
+    this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
     this._panel?.remove();
@@ -354,6 +364,9 @@ class OverlayManagerControl {
 
   setExpanded(expanded) {
     this._expanded = Boolean(expanded);
+    if (this._expanded) {
+      this._map.getContainer().dispatchEvent(new CustomEvent('overlay-manager:panelopen'));
+    }
     this._button.classList.toggle('maplibregl-ctrl-overlays-enabled', this._expanded);
     this._button.setAttribute('aria-expanded', this._expanded ? 'true' : 'false');
     this._panel.classList.toggle('overlay-manager-panel-visible', this._expanded);
@@ -487,7 +500,7 @@ class OverlayManagerControl {
   _updateSelectedStyle(changes) {
     const overlay = this._selectedOverlay();
     if (!overlay) return;
-    if (overlay.type === 'gpx') return;
+    if (overlay.type === 'gpx' || overlay.subType === 'osrm') return;
     if (changes.color) overlay.color = normalizeColor(changes.color, overlay.color);
     if (changes.opacity != null) overlay.opacity = clamp(changes.opacity, 0.2, 1);
     if (changes.lineWidth != null) overlay.lineWidth = clamp(changes.lineWidth, 1, 12);
@@ -519,7 +532,20 @@ class OverlayManagerControl {
       if (!layer || !isManagedLayer(layer)) continue;
 
       if (layer.type === 'line') {
-        if (/-stroke$|line-stroke$/.test(layerId)) {
+        if (/-osrm-segment$/.test(layerId)) {
+          this._map.setPaintProperty(layerId, 'line-width', Math.max(2, lineWidth - 2));
+          this._map.setPaintProperty(layerId, 'line-opacity', Math.min(0.8, opacity * 0.76));
+        } else if (/-osrm-step$/.test(layerId)) {
+          this._map.setPaintProperty(layerId, 'line-width', lineWidth + 4);
+          this._map.setPaintProperty(layerId, 'line-opacity', 0.01);
+        } else if (/-osrm-route-stroke$/.test(layerId)) {
+          this._map.setPaintProperty(layerId, 'line-width', lineWidth + 3);
+          this._map.setPaintProperty(layerId, 'line-opacity', Math.min(0.9, opacity));
+        } else if (/-osrm-route$/.test(layerId)) {
+          this._map.setPaintProperty(layerId, 'line-color', color);
+          this._map.setPaintProperty(layerId, 'line-width', lineWidth);
+          this._map.setPaintProperty(layerId, 'line-opacity', opacity);
+        } else if (/-stroke$|line-stroke$/.test(layerId)) {
           this._map.setPaintProperty(layerId, 'line-width', lineWidth + 3);
           this._map.setPaintProperty(layerId, 'line-opacity', Math.min(0.9, opacity));
         } else if (/-gap-arc$/.test(layerId)) {
@@ -543,6 +569,10 @@ class OverlayManagerControl {
         if (this._map.getPaintProperty(layerId, 'icon-opacity') !== undefined) {
           this._map.setPaintProperty(layerId, 'icon-opacity', opacity);
         }
+      } else if (layer.type === 'circle' && /-osrm-maneuver$/.test(layerId)) {
+        this._map.setPaintProperty(layerId, 'circle-stroke-color', color);
+        this._map.setPaintProperty(layerId, 'circle-opacity', opacity);
+        this._map.setPaintProperty(layerId, 'circle-stroke-opacity', opacity);
       }
     }
   }
@@ -763,7 +793,7 @@ class OverlayManagerControl {
       const name = el('span', 'overlay-manager-item-name', main);
       name.textContent = overlay.name;
       const meta = el('span', 'overlay-manager-item-meta', main);
-      meta.textContent = `${formatOverlayType(overlay.type)} - ${formatOverlayMeta(overlay)}`;
+      meta.textContent = `${overlay.subType === 'osrm' ? 'OSRM' : formatOverlayType(overlay.type)} - ${formatOverlayMeta(overlay)}`;
 
       const zoom = el('button', 'overlay-manager-icon-button', row);
       zoom.type = 'button';
@@ -787,10 +817,10 @@ class OverlayManagerControl {
     this._detailsTitle.textContent = formatOverlayMeta(overlay);
     if (this._nameInput.value !== overlay.name) this._nameInput.value = overlay.name;
 
-    const isGpx = overlay.type === 'gpx';
-    this._colorField.hidden = isGpx;
-    this._widthField.hidden = isGpx;
-    this._opacityField.hidden = isGpx;
+    const hasDataDrivenStyle = overlay.type === 'gpx' || overlay.subType === 'osrm';
+    this._colorField.hidden = hasDataDrivenStyle;
+    this._widthField.hidden = hasDataDrivenStyle;
+    this._opacityField.hidden = hasDataDrivenStyle;
     const color = normalizeColor(overlay.color);
     this._customColor.value = color;
     for (const swatch of this._swatches.querySelectorAll('.overlay-manager-swatch')) {

@@ -638,6 +638,281 @@ html, body, #app {
   color: #0f766e;
 }
 
+.maplibregl-ctrl-routing {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border: 0;
+  background: none;
+  color: #333;
+  cursor: pointer;
+}
+
+.maplibregl-ctrl-routing:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.maplibregl-ctrl-routing-enabled {
+  color: #0f766e;
+}
+
+.routing-panel,
+.routing-panel * {
+  box-sizing: border-box;
+}
+
+.routing-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  stroke-width: 2.2;
+}
+
+.routing-panel {
+  position: absolute;
+  top: 12px;
+  right: 52px;
+  z-index: 18;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(360px, calc(100vw - 72px));
+  max-height: calc(100vh - 24px);
+  overflow: hidden;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.2);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(18px);
+  transition: opacity 160ms ease, transform 180ms ease;
+}
+
+.routing-panel-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.routing-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 7px 8px 7px 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.1);
+  background: rgba(248, 250, 252, 0.96);
+}
+
+.routing-title-wrap {
+  min-width: 0;
+}
+
+.routing-title {
+  color: #111827;
+  font-size: 13px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.routing-summary {
+  margin-top: 2px;
+  overflow: hidden;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.routing-close,
+.routing-pick {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: #475569;
+  cursor: pointer;
+}
+
+.routing-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 6px;
+}
+
+.routing-close:hover,
+.routing-close:focus,
+.routing-pick:hover,
+.routing-pick:focus {
+  background: #eef2f7;
+  color: #0f172a;
+  outline: none;
+}
+
+.routing-body {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.routing-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.routing-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.routing-field-label {
+  color: #475569;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.routing-point-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(15, 23, 42, 0.16);
+}
+
+.routing-point-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 36px;
+  gap: 6px;
+  min-width: 0;
+}
+
+.routing-input {
+  width: 100%;
+  min-width: 0;
+  height: 34px;
+  padding: 0 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  outline: none;
+  background: #fff;
+  color: #111827;
+  font: 650 12px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.routing-input:focus {
+  border-color: #0f766e;
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.16);
+}
+
+.routing-pick {
+  width: 36px;
+  height: 34px;
+  border-radius: 7px;
+}
+
+.routing-pick.active {
+  background: #ecfdf5;
+  color: #0f766e;
+}
+
+.routing-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.72fr);
+  gap: 6px;
+}
+
+.routing-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  min-width: 0;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.routing-action-primary {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.routing-action:hover,
+.routing-action:focus {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  color: #111827;
+  outline: none;
+}
+
+.routing-action-primary:hover,
+.routing-action-primary:focus {
+  border-color: #115e59;
+  background: #115e59;
+  color: #fff;
+}
+
+.routing-action:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.routing-action:disabled:hover,
+.routing-action:disabled:focus {
+  border-color: #cbd5e1;
+  background: #fff;
+  color: #1f2937;
+}
+
+.routing-action-primary:disabled:hover,
+.routing-action-primary:disabled:focus {
+  border-color: #0f766e;
+  background: #0f766e;
+  color: #fff;
+}
+
+.routing-status {
+  display: none;
+  min-height: 24px;
+  align-items: center;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: #ecfeff;
+  color: #0e7490;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.routing-status.visible {
+  display: flex;
+}
+
+#map[data-routing-picker-active="true"] .maplibregl-canvas {
+  cursor: crosshair;
+}
+
 .overlay-manager-panel,
 .overlay-manager-panel * {
   box-sizing: border-box;
@@ -1144,6 +1419,55 @@ html, body, #app {
 }
 
 @media (max-width: 640px) {
+  .routing-panel {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    max-height: min(74vh, 620px);
+    border-right: 0;
+    border-bottom: 0;
+    border-left: 0;
+    border-radius: 10px 10px 0 0;
+    transform: translateY(100%);
+  }
+
+  .routing-panel-visible {
+    transform: translateY(0);
+  }
+
+  .routing-header {
+    min-height: 42px;
+    padding: 7px 8px 7px 10px;
+  }
+
+  .routing-body {
+    gap: 8px;
+    padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .routing-point-row {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  .routing-pick {
+    width: 40px;
+    height: 36px;
+  }
+
+  .routing-input {
+    height: 36px;
+  }
+
+  .routing-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .routing-action {
+    height: 36px;
+  }
+
   .overlay-manager-panel {
     top: auto;
     right: 0;

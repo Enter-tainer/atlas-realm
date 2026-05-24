@@ -208,6 +208,8 @@ export function gpxToGeoJson(xmlString) {
 // ── SHA-256 dedup ─────────────────────────────────────────
 const loadedGpxHashes = new Set();
 const DEFAULT_OVERLAY_COLOR = '#3b82f6';
+const OSRM_ROUTE_COLOR = '#0f766e';
+const OSRM_KIND_PREFIX = 'osrm_';
 
 function normalizeOverlayName(name, fallback) {
   const normalized = String(name || '').replace(/\s+/g, ' ').trim();
@@ -282,6 +284,22 @@ function getGeometryFamily(geometry) {
   if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') return 'line';
   if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') return 'polygon';
   return null;
+}
+
+function getFeatureKind(feature) {
+  return String(feature?.properties?.kind || '');
+}
+
+function isOsrmFeature(feature) {
+  return feature?.properties?.source === 'OSRM' || getFeatureKind(feature).startsWith(OSRM_KIND_PREFIX);
+}
+
+function hasOsrmFeatures(geojson) {
+  return (geojson.features || []).some(isOsrmFeature);
+}
+
+function osrmKindFilter(kind) {
+  return ['==', ['get', 'kind'], kind];
 }
 
 function summarizeGeoJson(geojson) {
@@ -501,6 +519,10 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
 
   const summary = summarizeGeoJson(normalized);
   const color = options.color || DEFAULT_OVERLAY_COLOR;
+  const containsOsrm = hasOsrmFeatures(normalized);
+  const routeFeature = containsOsrm
+    ? normalized.features.find((feature) => getFeatureKind(feature) === 'osrm_route')
+    : null;
   const lineFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'line');
   const pointFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'point');
   const polygonFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'polygon');
@@ -515,7 +537,103 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
     tolerance: 0,
   });
 
-  if (polygonFeatures.length > 0) {
+  if (containsOsrm) {
+    const osrmStepLayerId = `${id}-osrm-step`;
+    map.addLayer({
+      id: osrmStepLayerId,
+      type: 'line',
+      source: id,
+      filter: osrmKindFilter('osrm_step'),
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'color'], color, OSRM_ROUTE_COLOR],
+        'line-width': 9,
+        'line-opacity': 0.01,
+      },
+    });
+    layerIds.push(osrmStepLayerId);
+
+    const osrmRouteStrokeLayerId = `${id}-osrm-route-stroke`;
+    map.addLayer({
+      id: osrmRouteStrokeLayerId,
+      type: 'line',
+      source: id,
+      filter: osrmKindFilter('osrm_route'),
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': '#000000',
+        'line-width': ['coalesce', ['get', 'stroke-width'], 8],
+        'line-opacity': 0.82,
+      },
+    });
+    layerIds.push(osrmRouteStrokeLayerId);
+
+    const osrmRouteLayerId = `${id}-osrm-route`;
+    map.addLayer({
+      id: osrmRouteLayerId,
+      type: 'line',
+      source: id,
+      filter: osrmKindFilter('osrm_route'),
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'color'], ['get', 'stroke'], color, OSRM_ROUTE_COLOR],
+        'line-width': ['coalesce', ['get', 'line-width'], 5],
+        'line-opacity': 0.95,
+      },
+    });
+    layerIds.push(osrmRouteLayerId);
+
+    const osrmSegmentLayerId = `${id}-osrm-segment`;
+    map.addLayer({
+      id: osrmSegmentLayerId,
+      type: 'line',
+      source: id,
+      filter: osrmKindFilter('osrm_segment'),
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': [
+          'interpolate',
+          ['linear'],
+          ['coalesce', ['get', 'speed_kmh'], 0],
+          0, '#b91c1c',
+          20, '#f97316',
+          40, '#eab308',
+          70, '#22c55e',
+          100, '#2563eb',
+        ],
+        'line-width': 3,
+        'line-opacity': 0.72,
+      },
+    });
+    layerIds.push(osrmSegmentLayerId);
+
+    const osrmManeuverLayerId = `${id}-osrm-maneuver`;
+    map.addLayer({
+      id: osrmManeuverLayerId,
+      type: 'circle',
+      source: id,
+      filter: osrmKindFilter('osrm_maneuver'),
+      paint: {
+        'circle-radius': [
+          'case',
+          ['in', ['get', 'maneuver'], ['literal', ['depart', 'arrive']]],
+          5.5,
+          4,
+        ],
+        'circle-color': [
+          'case',
+          ['==', ['get', 'maneuver'], 'depart'], '#16a34a',
+          ['==', ['get', 'maneuver'], 'arrive'], '#dc2626',
+          '#ffffff',
+        ],
+        'circle-stroke-color': ['coalesce', ['get', 'color'], ['get', 'stroke'], color, OSRM_ROUTE_COLOR],
+        'circle-stroke-width': 2,
+        'circle-opacity': 0.96,
+        'circle-stroke-opacity': 0.96,
+      },
+    });
+    layerIds.push(osrmManeuverLayerId);
+  } else if (polygonFeatures.length > 0) {
     const fillLayerId = `${id}-polygon-fill`;
     map.addLayer({
       id: fillLayerId,
@@ -546,7 +664,7 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
   }
 
   // LineString: track rendering
-  if (lineFeatures.length > 0) {
+  if (!containsOsrm && lineFeatures.length > 0) {
     const strokeLayerId = `${id}-line-stroke`;
     map.addLayer({
       id: strokeLayerId,
@@ -579,7 +697,7 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
   }
 
   // Point: symbol layer with collision detection (icon + text)
-  if (pointFeatures.length > 0) {
+  if (!containsOsrm && pointFeatures.length > 0) {
     ensureMarkerIcon(map, color);
     const pointLayerId = `${id}-point`;
     map.addLayer({
@@ -609,6 +727,7 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
 
   const overlay = {
     type: 'geojson',
+    subType: containsOsrm ? 'osrm' : 'geojson',
     id,
     sourceId: id,
     layerIds,
@@ -618,6 +737,10 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
     lineWidth: 5,
     visible: true,
     data: normalized,
+    distanceText: routeFeature?.properties?.distance_text,
+    durationText: routeFeature?.properties?.duration_text,
+    stepCount: routeFeature?.properties?.step_count,
+    annotationSegmentCount: routeFeature?.properties?.annotation_segment_count,
     ...summary,
   };
   dispatchOverlayAdded(map, overlay);
