@@ -210,14 +210,21 @@ const loadedGpxHashes = new Set();
 const DEFAULT_OVERLAY_COLOR = '#3b82f6';
 const OSRM_ROUTE_COLOR = '#0f766e';
 const OSRM_KIND_PREFIX = 'osrm_';
+const REMOTE_OVERLAY_EVENT_KEY = Symbol('remoteOverlayEvent');
 
 function normalizeOverlayName(name, fallback) {
   const normalized = String(name || '').replace(/\s+/g, ' ').trim();
   return normalized || fallback;
 }
 
-function dispatchOverlayAdded(map, overlay) {
-  map.getContainer()?.dispatchEvent(new CustomEvent('overlay:add', { detail: overlay }));
+function dispatchOverlayAdded(map, overlay, options = {}) {
+  const detail = { ...overlay };
+  if (options.remote) detail[REMOTE_OVERLAY_EVENT_KEY] = true;
+  map.getContainer()?.dispatchEvent(new CustomEvent('overlay:add', { detail }));
+}
+
+export function isRemoteOverlayEvent(overlay) {
+  return Boolean(overlay?.[REMOTE_OVERLAY_EVENT_KEY]);
 }
 
 function visitGeometryCoordinates(geometry, callback) {
@@ -499,9 +506,13 @@ export function addGpxToMap(map, xmlString, options = {}) {
     visible: true,
     bounds: result.bounds,
     data: result.geojson,
+    rawText: xmlString,
+    syncOverlayId: options.syncOverlayId,
+    remoteOverlayId: options.remoteOverlayId,
+    contentHash: options.contentHash,
     ...result.stats,
   };
-  dispatchOverlayAdded(map, overlay);
+  dispatchOverlayAdded(map, overlay, { remote: options.remote });
   return overlay;
 }
 
@@ -737,13 +748,16 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
     lineWidth: 5,
     visible: true,
     data: normalized,
+    syncOverlayId: options.syncOverlayId,
+    remoteOverlayId: options.remoteOverlayId,
+    contentHash: options.contentHash,
     distanceText: routeFeature?.properties?.distance_text,
     durationText: routeFeature?.properties?.duration_text,
     stepCount: routeFeature?.properties?.step_count,
     annotationSegmentCount: routeFeature?.properties?.annotation_segment_count,
     ...summary,
   };
-  dispatchOverlayAdded(map, overlay);
+  dispatchOverlayAdded(map, overlay, { remote: options.remote });
   return overlay;
 }
 
@@ -758,7 +772,7 @@ let pendingGeoJsonQueue = [];
 export async function processOrQueueGpx(map, xmlString, options = {}) {
   // SHA-256 dedup — skip if we've seen identical content before
   const hash = await sha256(xmlString);
-  if (loadedGpxHashes.has(hash)) {
+  if (!options.remote && loadedGpxHashes.has(hash)) {
     console.log('GPX skipped: duplicate content (SHA-256 match)');
     return null;
   }
