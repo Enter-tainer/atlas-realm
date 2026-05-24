@@ -94,6 +94,13 @@ const PROFILE_COLORS = [
 ];
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
+const OVERLAY_CONTENT_BINARY_VERSION = 1;
+const MAX_OVERLAY_CONTENT_BYTES = 2 * 1024 * 1024;
+const EPHEMERAL_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
+const UNREFERENCED_OVERLAY_CONTENT_TTL_MS = 60 * 60 * 1000;
+const SQL_READY_KEY = '__overlay_sql_ready_v1';
+const textDecoder = new TextDecoder();
+const textEncoder = new TextEncoder();
 
 function emptyLocation() {
   return {
@@ -117,6 +124,84 @@ function sanitizeText(value, fallback, maxLength) {
   const trimmed = value.replace(/\s+/g, ' ').trim();
   if (!trimmed) return fallback;
   return trimmed.slice(0, maxLength);
+}
+
+function sanitizeOverlayId(value) {
+  if (typeof value !== 'string') return null;
+  const id = value.trim();
+  return /^[0-9a-zA-Z_-]{1,96}$/.test(id) ? id : null;
+}
+
+function sanitizeContentHash(value) {
+  if (typeof value !== 'string') return null;
+  const hash = value.trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
+}
+
+function sanitizeOverlayType(value) {
+  return value === 'gpx' || value === 'geojson' ? value : null;
+}
+
+function sanitizeOverlayManifest(value, fallback = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const id = sanitizeOverlayId(value.id) || sanitizeOverlayId(fallback.id);
+  const type = sanitizeOverlayType(value.type || fallback.type);
+  const contentHash = sanitizeContentHash(value.contentHash || fallback.contentHash);
+  if (!id || !type || !contentHash) return null;
+  const bounds = Array.isArray(value.bounds) ? value.bounds : null;
+  return {
+    ...value,
+    id,
+    type,
+    subType: value.subType === 'osrm' ? 'osrm' : value.subType === 'geojson' ? 'geojson' : value.subType,
+    name: sanitizeText(value.name, type === 'gpx' ? 'GPX overlay' : 'GeoJSON overlay', 96),
+    visible: value.visible !== false,
+    color: sanitizeColor(value.color, '#3b82f6'),
+    opacity: sanitizeOptionalNumber(value.opacity, 0.2, 1) ?? 0.95,
+    lineWidth: sanitizeOptionalNumber(value.lineWidth, 1, 12) ?? 5,
+    bounds,
+    contentHash,
+    contentType: sanitizeText(value.contentType, type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json', 80),
+    contentEncoding: value.contentEncoding === 'gzip' ? 'gzip' : 'identity',
+    contentByteLength: clampNumber(value.contentByteLength, 0, MAX_OVERLAY_CONTENT_BYTES, 0),
+    rawByteLength: clampNumber(value.rawByteLength, 0, Number.MAX_SAFE_INTEGER, 0),
+    syncVersion: 1,
+    persistence: value.persistence === 'persistent' ? 'persistent' : 'ephemeral',
+    updatedAt: Date.now(),
+  };
+}
+
+function normalizeBinaryMessage(message) {
+  if (message instanceof ArrayBuffer) return new Uint8Array(message);
+  if (ArrayBuffer.isView(message)) return new Uint8Array(message.buffer, message.byteOffset, message.byteLength);
+  return null;
+}
+
+function decodeOverlayContentFrame(message) {
+  const bytes = normalizeBinaryMessage(message);
+  if (!bytes || bytes.byteLength < 2 || bytes[0] !== OVERLAY_CONTENT_BINARY_VERSION) return null;
+  const hashLength = bytes[1];
+  if (bytes.byteLength < 2 + hashLength) return null;
+  const contentHash = sanitizeContentHash(textDecoder.decode(bytes.slice(2, 2 + hashLength)));
+  if (!contentHash) return null;
+  const content = bytes.slice(2 + hashLength);
+  if (content.byteLength > MAX_OVERLAY_CONTENT_BYTES) return null;
+  return { contentHash, content };
+}
+
+function toArrayBuffer(bytes) {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+}
+
+function encodeOverlayContentFrame(contentHash, content) {
+  const hashBytes = textEncoder.encode(contentHash);
+  const payload = content instanceof Uint8Array ? content : new Uint8Array(content);
+  const buffer = new Uint8Array(2 + hashBytes.byteLength + payload.byteLength);
+  buffer[0] = OVERLAY_CONTENT_BINARY_VERSION;
+  buffer[1] = hashBytes.byteLength;
+  buffer.set(hashBytes, 2);
+  buffer.set(payload, 2 + hashBytes.byteLength);
+  return buffer;
 }
 
 function sanitizeColor(value, fallback) {
@@ -227,7 +312,100 @@ export class MapCollaboration extends Server {
     hibernate: true,
   };
 
-  onConnect(connection, { request }) {
+  async _ensureOverlayStorage() {
+    if (await this.ctx.storage.get(SQL_READY_KEY)) return;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS room_meta (
+        room_id TEXT PRIMARY KEY,
+        persistence TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_active_at INTEGER NOT NULL,
+        expires_at INTEGER
+      )
+    `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS overlay_contents (
+        content_hash TEXT PRIMARY KEY,
+        bytes BLOB NOT NULL,
+        byte_length INTEGER NOT NULL,
+        created_at INTEGER NOT NULL
+      )
+    `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS overlays (
+        overlay_id TEXT PRIMARY KEY,
+        manifest_json TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        order_index INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `;
+    await this.ctx.storage.put(SQL_READY_KEY, true);
+  }
+
+  async _touchRoom() {
+    await this._ensureOverlayStorage();
+    const now = Date.now();
+    const expiresAt = now + EPHEMERAL_ROOM_TTL_MS;
+    const existing = this.sql`SELECT room_id, persistence FROM room_meta WHERE room_id = ${this.name} LIMIT 1`;
+    if (existing.length === 0) {
+      this.sql`
+        INSERT INTO room_meta (room_id, persistence, created_at, last_active_at, expires_at)
+        VALUES (${this.name}, ${'ephemeral'}, ${now}, ${now}, ${expiresAt})
+      `;
+    } else {
+      const persistence = existing[0].persistence === 'persistent' ? 'persistent' : 'ephemeral';
+      this.sql`
+        UPDATE room_meta
+        SET last_active_at = ${now}, expires_at = ${persistence === 'persistent' ? null : expiresAt}
+        WHERE room_id = ${this.name}
+      `;
+    }
+    await this.ctx.storage.setAlarm(expiresAt + 60_000);
+  }
+
+  _listOverlayManifests() {
+    return this.sql`
+      SELECT manifest_json FROM overlays ORDER BY order_index ASC, updated_at ASC
+    `.map((row) => {
+      try {
+        return JSON.parse(row.manifest_json);
+      } catch {
+        return null;
+      }
+    }).filter(Boolean);
+  }
+
+  _getOverlayContent(contentHash) {
+    const rows = this.sql`SELECT bytes FROM overlay_contents WHERE content_hash = ${contentHash} LIMIT 1`;
+    return rows[0]?.bytes || null;
+  }
+
+  _pruneUnreferencedOverlayContent({ immediate = false } = {}) {
+    const cutoff = immediate ? Date.now() + 1 : Date.now() - UNREFERENCED_OVERLAY_CONTENT_TTL_MS;
+    this.sql`
+      DELETE FROM overlay_contents
+      WHERE content_hash NOT IN (
+        SELECT DISTINCT content_hash FROM overlays
+      )
+      AND created_at < ${cutoff}
+    `;
+  }
+
+  _broadcastOverlayList(excludeId) {
+    this.broadcast(encodeMessage({
+      type: 'overlay:list',
+      persistence: 'ephemeral',
+      overlays: this._listOverlayManifests(),
+    }), excludeId ? [excludeId] : undefined);
+  }
+
+  async onStart() {
+    await this._ensureOverlayStorage();
+  }
+
+  async onConnect(connection, { request }) {
+    await this._touchRoom();
     const url = new URL(request.url);
     const color = sanitizeColor(
       url.searchParams.get('color'),
@@ -261,19 +439,121 @@ export class MapCollaboration extends Server {
       peers,
     }));
 
+    connection.send(encodeMessage({
+      type: 'overlay:init',
+      persistence: 'ephemeral',
+      overlays: this._listOverlayManifests(),
+    }));
+
     this.broadcast(encodeMessage({
       type: 'presence:join',
       peer: publicPeer(connection),
     }), [connection.id]);
   }
 
-  onMessage(connection, message) {
-    if (typeof message !== 'string') return;
+  async onMessage(connection, message) {
+    await this._touchRoom();
+
+    if (typeof message !== 'string') {
+      const frame = decodeOverlayContentFrame(message);
+      if (!frame) return;
+      this.sql`
+        INSERT OR REPLACE INTO overlay_contents (content_hash, bytes, byte_length, created_at)
+        VALUES (${frame.contentHash}, ${toArrayBuffer(frame.content)}, ${frame.content.byteLength}, ${Date.now()})
+      `;
+      connection.send(encodeMessage({
+        type: 'overlay:content:stored',
+        contentHash: frame.contentHash,
+      }));
+      return;
+    }
 
     let payload;
     try {
       payload = JSON.parse(message);
     } catch {
+      return;
+    }
+
+    if (payload?.type === 'overlay:upsert') {
+      const manifest = sanitizeOverlayManifest(payload.manifest);
+      if (!manifest) return;
+      const hasContent = this.sql`SELECT content_hash FROM overlay_contents WHERE content_hash = ${manifest.contentHash} LIMIT 1`.length > 0;
+      if (!hasContent) {
+        connection.send(encodeMessage({
+          type: 'overlay:content:needed',
+          contentHash: manifest.contentHash,
+        }));
+        return;
+      }
+      const existing = this.sql`SELECT order_index FROM overlays WHERE overlay_id = ${manifest.id} LIMIT 1`;
+      const requestedOrder = Number(manifest.pendingOrderIndex);
+      delete manifest.pendingOrderIndex;
+      const orderIndex = existing[0]?.order_index
+        ?? (Number.isInteger(requestedOrder) ? requestedOrder : -Date.now());
+      this.sql`
+        INSERT OR REPLACE INTO overlays (overlay_id, manifest_json, content_hash, order_index, updated_at)
+        VALUES (${manifest.id}, ${JSON.stringify(manifest)}, ${manifest.contentHash}, ${orderIndex}, ${Date.now()})
+      `;
+      this._pruneUnreferencedOverlayContent({ immediate: existing.length > 0 });
+      this._broadcastOverlayList();
+      return;
+    }
+
+    if (payload?.type === 'overlay:content:request') {
+      const contentHash = sanitizeContentHash(payload.contentHash);
+      if (!contentHash) return;
+      const content = this._getOverlayContent(contentHash);
+      if (!content) return;
+      connection.send(encodeOverlayContentFrame(contentHash, content));
+      return;
+    }
+
+    if (payload?.type === 'overlay:patch') {
+      const overlayId = sanitizeOverlayId(payload.overlayId);
+      if (!overlayId || !payload.patch || typeof payload.patch !== 'object') return;
+      const existing = this.sql`SELECT manifest_json FROM overlays WHERE overlay_id = ${overlayId} LIMIT 1`;
+      if (!existing.length) return;
+      let manifest;
+      try {
+        manifest = JSON.parse(existing[0].manifest_json);
+      } catch {
+        return;
+      }
+      const nextManifest = sanitizeOverlayManifest({
+        ...manifest,
+        ...payload.patch,
+        id: overlayId,
+        contentHash: manifest.contentHash,
+        type: manifest.type,
+      });
+      if (!nextManifest) return;
+      this.sql`
+        UPDATE overlays
+        SET manifest_json = ${JSON.stringify(nextManifest)}, updated_at = ${Date.now()}
+        WHERE overlay_id = ${overlayId}
+      `;
+      this._broadcastOverlayList(connection.id);
+      return;
+    }
+
+    if (payload?.type === 'overlay:reorder') {
+      const orderedIds = Array.isArray(payload.orderedIds)
+        ? payload.orderedIds.map(sanitizeOverlayId).filter(Boolean)
+        : [];
+      orderedIds.forEach((overlayId, index) => {
+        this.sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
+      });
+      this._broadcastOverlayList(connection.id);
+      return;
+    }
+
+    if (payload?.type === 'overlay:delete') {
+      const overlayId = sanitizeOverlayId(payload.overlayId);
+      if (!overlayId) return;
+      this.sql`DELETE FROM overlays WHERE overlay_id = ${overlayId}`;
+      this._pruneUnreferencedOverlayContent({ immediate: true });
+      this.broadcast(encodeMessage({ type: 'overlay:delete', overlayId }), [connection.id]);
       return;
     }
 
@@ -317,6 +597,19 @@ export class MapCollaboration extends Server {
     return new Response('Map collaboration room is ready.', {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
+  }
+
+  async onAlarm() {
+    await this._ensureOverlayStorage();
+    const room = this.sql`SELECT persistence, expires_at FROM room_meta WHERE room_id = ${this.name} LIMIT 1`[0];
+    if (!room || room.persistence === 'persistent') return;
+    if (room.expires_at && Number(room.expires_at) > Date.now()) {
+      await this.ctx.storage.setAlarm(Number(room.expires_at) + 60_000);
+      return;
+    }
+    this.sql`DELETE FROM overlays`;
+    this.sql`DELETE FROM overlay_contents`;
+    this.sql`DELETE FROM room_meta WHERE room_id = ${this.name}`;
   }
 }
 

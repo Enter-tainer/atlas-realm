@@ -1,4 +1,5 @@
-import { processOrQueueGpx, processOrQueueGeoJson } from './gpx.js';
+import { processOrQueueGpx, processOrQueueGeoJson, addGpxToMap, addGeoJsonToMap, isRemoteOverlayEvent } from './gpx.js';
+import { overlayManifestPatch } from './overlay-sync.js';
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import DownloadIcon from 'lucide/dist/esm/icons/download.mjs';
 import EyeIcon from 'lucide/dist/esm/icons/eye.mjs';
@@ -15,6 +16,11 @@ import XIcon from 'lucide/dist/esm/icons/x.mjs';
 const DEFAULT_COLOR = '#3b82f6';
 const COLOR_SWATCHES = ['#3b82f6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#8b5cf6', '#ec4899'];
 const OVERLAY_SOURCE_TYPES = new Set(['gpx', 'geojson']);
+
+function randomOverlaySyncId() {
+  const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `overlay-${id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80)}`;
+}
 
 function el(tagName, className, parent) {
   const node = document.createElement(tagName);
@@ -169,6 +175,15 @@ function isManagedLayer(layer) {
   return layer?.source && /^(gpx-track-|geojson-layer-)/.test(layer.source);
 }
 
+function hasSyncOrigin(overlay) {
+  return Boolean(overlay?.syncOverlayId || overlay?.remoteOverlayId);
+}
+
+function manifestOverlayMetadata(manifest) {
+  const { id, ...metadata } = overlayManifestPatch(manifest);
+  return metadata;
+}
+
 class OverlayManagerControl {
   constructor() {
     this._overlays = [];
@@ -178,6 +193,9 @@ class OverlayManagerControl {
     this._isImportingUrl = false;
     this._dragState = null;
     this._boundOverlayAdded = (event) => this._registerOverlay(event.detail);
+    this._boundOverlayRemoteAdd = (event) => this._addRemoteOverlay(event.detail);
+    this._boundOverlayRemoteList = (event) => this._applyRemoteOverlayList(event.detail);
+    this._boundOverlayRemoteDelete = (event) => this._deleteRemoteOverlay(event.detail?.overlayId);
     this._boundKeydown = (event) => this._handleKeydown(event);
     this._boundViewportChange = () => this._syncViewportMode();
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
@@ -343,6 +361,9 @@ class OverlayManagerControl {
     });
 
     map.getContainer().addEventListener('overlay:add', this._boundOverlayAdded);
+    map.getContainer().addEventListener('overlay-sync:remote-add', this._boundOverlayRemoteAdd);
+    map.getContainer().addEventListener('overlay-sync:remote-list', this._boundOverlayRemoteList);
+    map.getContainer().addEventListener('overlay-sync:remote-delete', this._boundOverlayRemoteDelete);
     map.getContainer().addEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
@@ -354,6 +375,9 @@ class OverlayManagerControl {
 
   onRemove() {
     this._map.getContainer().removeEventListener('overlay:add', this._boundOverlayAdded);
+    this._map.getContainer().removeEventListener('overlay-sync:remote-add', this._boundOverlayRemoteAdd);
+    this._map.getContainer().removeEventListener('overlay-sync:remote-list', this._boundOverlayRemoteList);
+    this._map.getContainer().removeEventListener('overlay-sync:remote-delete', this._boundOverlayRemoteDelete);
     this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
@@ -388,13 +412,19 @@ class OverlayManagerControl {
 
   _registerOverlay(overlay) {
     if (!overlay || !overlay.id || !OVERLAY_SOURCE_TYPES.has(overlay.type)) return;
-    const existingIndex = this._overlays.findIndex((item) => item.id === overlay.id);
+    const remote = isRemoteOverlayEvent(overlay);
+    const syncOverlayId = overlay.syncOverlayId || overlay.remoteOverlayId || (remote ? overlay.id : randomOverlaySyncId());
+    const existingIndex = this._overlays.findIndex((item) => (
+      item.id === overlay.id ||
+      (hasSyncOrigin(item) && item.syncOverlayId === syncOverlayId)
+    ));
     const normalized = {
       color: DEFAULT_COLOR,
       opacity: 0.95,
       lineWidth: 5,
       visible: true,
       layerIds: [],
+      syncOverlayId,
       ...overlay,
     };
     if (existingIndex === -1) {
@@ -403,9 +433,116 @@ class OverlayManagerControl {
     } else {
       this._overlays[existingIndex] = { ...this._overlays[existingIndex], ...normalized };
     }
-    this.setExpanded(true);
+    if (remote) this._syncPanelInteractivity();
+    else this.setExpanded(true);
     this._syncOverlayLayerOrder();
     this._render();
+    if (!remote) this._emitOverlaySyncUpsert(normalized);
+  }
+
+  _emitOverlaySyncUpsert(overlay) {
+    if (!overlay?.data) return;
+    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-upsert', {
+      detail: { overlay },
+    }));
+  }
+
+  _emitOverlaySyncPatch(overlay, patch) {
+    if (!overlay?.syncOverlayId) return;
+    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-patch', {
+      detail: { overlayId: overlay.syncOverlayId, patch },
+    }));
+  }
+
+  _emitOverlaySyncReorder() {
+    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-reorder', {
+      detail: {
+        orderedIds: this._overlays.map((overlay) => overlay.syncOverlayId || overlay.id),
+      },
+    }));
+  }
+
+  _emitOverlaySyncDelete(overlay) {
+    if (!overlay?.syncOverlayId) return;
+    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-delete', {
+      detail: { overlayId: overlay.syncOverlayId },
+    }));
+  }
+
+  _applyRemoteOverlayList(detail) {
+    const manifests = Array.isArray(detail?.overlays) ? detail.overlays : [];
+    const order = new Map(manifests.map((manifest, index) => [manifest.id, index]));
+    const remoteIds = new Set(manifests.map((manifest) => manifest.id));
+    for (const overlay of this._overlays.slice()) {
+      if (overlay.remoteOverlayId && !remoteIds.has(overlay.remoteOverlayId)) {
+        this._removeOverlay(overlay, { emit: false });
+      }
+    }
+    this._overlays.sort((a, b) => {
+      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId) ? order.get(a.remoteOverlayId || a.syncOverlayId) : Number.MAX_SAFE_INTEGER;
+      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId) ? order.get(b.remoteOverlayId || b.syncOverlayId) : Number.MAX_SAFE_INTEGER;
+      return aOrder - bOrder;
+    });
+    for (const manifest of manifests) {
+      const overlay = this._overlays.find((item) => item.remoteOverlayId === manifest.id || item.syncOverlayId === manifest.id);
+      if (!overlay) continue;
+      const visibleChanged = overlay.visible !== (manifest.visible !== false);
+      Object.assign(overlay, manifestOverlayMetadata(manifest), {
+        syncOverlayId: manifest.id,
+        remoteOverlayId: overlay.remoteOverlayId ? manifest.id : null,
+      });
+      if (visibleChanged) {
+        for (const layerId of overlay.layerIds) {
+          if (this._map.getLayer(layerId)) {
+            this._map.setLayoutProperty(layerId, 'visibility', overlay.visible ? 'visible' : 'none');
+          }
+        }
+      }
+      if (manifest.type !== 'gpx' && manifest.subType !== 'osrm') this._applyOverlayStyle(overlay);
+    }
+    this._syncOverlayLayerOrder();
+    this._render();
+  }
+
+  _addRemoteOverlay(detail) {
+    const manifest = detail?.manifest;
+    const content = detail?.content;
+    if (!manifest || !content) return;
+    if (this._overlays.some((overlay) => overlay.remoteOverlayId === manifest.id || overlay.syncOverlayId === manifest.id)) return;
+
+    const overlay = manifest.type === 'gpx'
+      ? addGpxToMap(this._map, content, {
+        name: manifest.name,
+        remote: true,
+        remoteOverlayId: manifest.id,
+        syncOverlayId: manifest.id,
+        contentHash: manifest.contentHash,
+      })
+      : addGeoJsonToMap(this._map, content, {
+        name: manifest.name,
+        color: manifest.color,
+        remote: true,
+        remoteOverlayId: manifest.id,
+        syncOverlayId: manifest.id,
+        contentHash: manifest.contentHash,
+      });
+    if (!overlay) return;
+    const local = this._overlays.find((item) => item.id === overlay.id);
+    if (local) {
+      Object.assign(local, manifestOverlayMetadata(manifest), {
+        remoteOverlayId: manifest.id,
+        syncOverlayId: manifest.id,
+        contentHash: manifest.contentHash,
+      });
+      if (local.visible === false) {
+        for (const layerId of local.layerIds) {
+          if (this._map.getLayer(layerId)) this._map.setLayoutProperty(layerId, 'visibility', 'none');
+        }
+      }
+      this._applyOverlayStyle(local);
+      this._syncOverlayLayerOrder();
+      this._render();
+    }
   }
 
   async _importFiles(files) {
@@ -495,6 +632,7 @@ class OverlayManagerControl {
     overlay.name = name.replace(/\s+/g, ' ').trimStart() || formatOverlayType(overlay.type);
     this._renderList();
     this._syncDetails();
+    this._emitOverlaySyncPatch(overlay, { name: overlay.name });
   }
 
   _updateSelectedStyle(changes) {
@@ -507,6 +645,11 @@ class OverlayManagerControl {
     this._applyOverlayStyle(overlay);
     this._renderList();
     this._syncDetails();
+    this._emitOverlaySyncPatch(overlay, {
+      color: overlay.color,
+      opacity: overlay.opacity,
+      lineWidth: overlay.lineWidth,
+    });
   }
 
   _toggleOverlayVisibility(overlay) {
@@ -518,6 +661,7 @@ class OverlayManagerControl {
     }
     this._renderList();
     this._syncDetails();
+    this._emitOverlaySyncPatch(overlay, { visible: overlay.visible });
   }
 
   _applyOverlayStyle(overlay) {
@@ -580,6 +724,10 @@ class OverlayManagerControl {
   _removeSelected() {
     const overlay = this._selectedOverlay();
     if (!overlay) return;
+    this._removeOverlay(overlay, { emit: true });
+  }
+
+  _removeOverlay(overlay, { emit = true } = {}) {
     for (const layerId of overlay.layerIds.slice().reverse()) {
       if (this._map.getLayer(layerId)) this._map.removeLayer(layerId);
     }
@@ -587,6 +735,13 @@ class OverlayManagerControl {
     this._overlays = this._overlays.filter((item) => item.id !== overlay.id);
     this._selectedId = this._overlays[0]?.id || null;
     this._render();
+    if (emit) this._emitOverlaySyncDelete(overlay);
+  }
+
+  _deleteRemoteOverlay(remoteOverlayId) {
+    if (!remoteOverlayId) return;
+    const overlay = this._overlays.find((item) => item.remoteOverlayId === remoteOverlayId || item.syncOverlayId === remoteOverlayId);
+    if (overlay) this._removeOverlay(overlay, { emit: false });
   }
 
   _exportSelected() {
@@ -626,6 +781,7 @@ class OverlayManagerControl {
       this._renderList();
       this._syncDetails();
     }
+    if (sync) this._emitOverlaySyncReorder();
     return true;
   }
 
@@ -716,6 +872,7 @@ class OverlayManagerControl {
     this._list.classList.remove('overlay-manager-list-reordering');
     this._dragState = null;
     this._syncOverlayLayerOrder();
+    this._emitOverlaySyncReorder();
     this._renderList();
     this._syncDetails();
   }

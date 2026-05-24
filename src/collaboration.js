@@ -1,4 +1,10 @@
 import PartySocket from 'partysocket';
+import {
+  buildOverlaySyncAsset,
+  decodeOverlayBinaryMessage,
+  encodeOverlayBinaryMessage,
+  materializeOverlayContent,
+} from './overlay-sync.js';
 
 const PARTY_NAME = 'map-collaboration';
 const DEFAULT_ROOM = 'main';
@@ -258,6 +264,13 @@ export function installMapCollaboration(map) {
   const clientId = getSessionId();
   const profile = getProfile();
   const peers = new Map();
+  const overlayManifests = new Map();
+  const overlayContentBytes = new Map();
+  const pendingOverlayAssets = new Map();
+  const requestedOverlayContent = new Set();
+  const localOverlayIds = new Set();
+  const knownLocalOverlays = new Map();
+  const uploadedLocalOverlayHashes = new Map();
 
   let socket = null;
   let currentRoom = getInitialRoom();
@@ -655,6 +668,152 @@ export function installMapCollaboration(map) {
     }));
   }
 
+  function sendOverlayMessage(message) {
+    if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  }
+
+  function dispatchRemoteOverlayList(manifests, persistence = 'ephemeral') {
+    mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-list', {
+      detail: { overlays: manifests, persistence },
+    }));
+  }
+
+  function dispatchRemoteOverlayDelete(overlayId) {
+    mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-delete', {
+      detail: { overlayId },
+    }));
+  }
+
+  function rememberOverlayManifests(manifests) {
+    overlayManifests.clear();
+    for (const manifest of manifests || []) {
+      if (manifest?.id && manifest?.contentHash) overlayManifests.set(manifest.id, manifest);
+    }
+  }
+
+  function requestMissingOverlayContent(manifests) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    for (const manifest of manifests || []) {
+      const hash = manifest?.contentHash;
+      if (!hash || overlayContentBytes.has(hash) || requestedOverlayContent.has(hash)) continue;
+      requestedOverlayContent.add(hash);
+      sendOverlayMessage({
+        type: 'overlay:content:request',
+        contentHash: hash,
+      });
+    }
+  }
+
+  async function dispatchRemoteOverlayAdd(manifest, contentBytes) {
+    if (!manifest || !contentBytes || localOverlayIds.has(manifest.id)) return;
+    try {
+      const content = await materializeOverlayContent(manifest, contentBytes);
+      mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-add', {
+        detail: { manifest, content },
+      }));
+    } catch (error) {
+      console.error('Failed to materialize shared overlay:', error);
+    }
+  }
+
+  function applyOverlayManifestList(message) {
+    const manifests = Array.isArray(message.overlays) ? message.overlays : [];
+    rememberOverlayManifests(manifests);
+    dispatchRemoteOverlayList(manifests, message.persistence || 'ephemeral');
+    for (const manifest of manifests) {
+      if (manifest?.contentHash && overlayContentBytes.has(manifest.contentHash)) {
+        dispatchRemoteOverlayAdd(manifest, overlayContentBytes.get(manifest.contentHash));
+      }
+    }
+    requestMissingOverlayContent(manifests);
+  }
+
+  async function handleOverlayBinaryMessage(data) {
+    const frame = decodeOverlayBinaryMessage(data);
+    if (!frame) return;
+    overlayContentBytes.set(frame.contentHash, frame.content);
+    requestedOverlayContent.delete(frame.contentHash);
+    for (const manifest of overlayManifests.values()) {
+      if (manifest.contentHash === frame.contentHash) {
+        await dispatchRemoteOverlayAdd(manifest, frame.content);
+      }
+    }
+  }
+
+  async function syncLocalOverlay(overlay) {
+    if (!overlay?.id || !overlay?.data) return;
+    knownLocalOverlays.set(overlay.syncOverlayId || overlay.remoteOverlayId || overlay.id, overlay);
+    if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
+    try {
+      const asset = await buildOverlaySyncAsset(overlay);
+      if (!asset || !socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
+      const overlayId = asset.envelope.manifest.id;
+      const previousHash = uploadedLocalOverlayHashes.get(overlayId);
+      if (previousHash === asset.envelope.manifest.contentHash) {
+        sendOverlayMessage({
+          type: 'overlay:upsert',
+          manifest: asset.envelope.manifest,
+        });
+        return;
+      }
+      localOverlayIds.add(overlayId);
+      overlayManifests.set(overlayId, asset.envelope.manifest);
+      const pendingForHash = pendingOverlayAssets.get(asset.envelope.manifest.contentHash) || new Map();
+      pendingForHash.set(overlayId, asset);
+      pendingOverlayAssets.set(asset.envelope.manifest.contentHash, pendingForHash);
+      overlayContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
+      uploadedLocalOverlayHashes.set(overlayId, asset.envelope.manifest.contentHash);
+      socket.send(encodeOverlayBinaryMessage(asset.envelope.manifest.contentHash, asset.content));
+    } catch (error) {
+      console.error('Failed to sync overlay:', error);
+    }
+  }
+
+  async function syncKnownLocalOverlays() {
+    for (const overlay of knownLocalOverlays.values()) {
+      if (!overlay.remoteOverlayId) await syncLocalOverlay(overlay);
+    }
+  }
+
+  function completePendingOverlayUpload(contentHash) {
+    const assets = pendingOverlayAssets.get(contentHash);
+    if (!assets) return;
+    pendingOverlayAssets.delete(contentHash);
+    for (const asset of assets.values()) {
+      sendOverlayMessage({
+        type: 'overlay:upsert',
+        manifest: asset.envelope.manifest,
+      });
+    }
+  }
+
+  function patchPendingOverlayAsset(overlayId, patch) {
+    const localOverlay = knownLocalOverlays.get(overlayId);
+    if (localOverlay) Object.assign(localOverlay, patch);
+    for (const assets of pendingOverlayAssets.values()) {
+      const asset = assets.get(overlayId);
+      if (!asset) continue;
+      if (asset.envelope.manifest.id !== overlayId) continue;
+      asset.envelope.manifest = {
+        ...asset.envelope.manifest,
+        ...patch,
+        id: asset.envelope.manifest.id,
+        type: asset.envelope.manifest.type,
+        contentHash: asset.envelope.manifest.contentHash,
+        updatedAt: Date.now(),
+      };
+      overlayManifests.set(overlayId, asset.envelope.manifest);
+    }
+  }
+
+  function resendPendingOverlayContent(contentHash) {
+    const asset = pendingOverlayAssets.get(contentHash)?.values().next().value;
+    if (!asset || !socket || socket.readyState !== WebSocket.OPEN) return;
+    socket.send(encodeOverlayBinaryMessage(contentHash, asset.content));
+  }
+
   function scheduleSend(immediate = false) {
     if (!socket || destroyed) return;
     const elapsed = Date.now() - lastSentAt;
@@ -733,7 +892,12 @@ export function installMapCollaboration(map) {
     if (peer.id === followedPeerId) scheduleFollow(peer);
   }
 
-  function handleMessage(event) {
+  async function handleMessage(event) {
+    if (typeof event.data !== 'string') {
+      await handleOverlayBinaryMessage(event.data);
+      return;
+    }
+
     let message;
     try {
       message = JSON.parse(event.data);
@@ -749,6 +913,29 @@ export function installMapCollaboration(map) {
       renderPeople();
       scheduleOverlayRender();
       scheduleSend(true);
+      return;
+    }
+
+    if (message.type === 'overlay:init' || message.type === 'overlay:list') {
+      applyOverlayManifestList(message);
+      return;
+    }
+
+    if (message.type === 'overlay:content:stored') {
+      completePendingOverlayUpload(message.contentHash);
+      return;
+    }
+
+    if (message.type === 'overlay:content:needed') {
+      resendPendingOverlayContent(message.contentHash);
+      return;
+    }
+
+    if (message.type === 'overlay:delete') {
+      if (message.overlayId) {
+        overlayManifests.delete(message.overlayId);
+        dispatchRemoteOverlayDelete(message.overlayId);
+      }
       return;
     }
 
@@ -774,6 +961,8 @@ export function installMapCollaboration(map) {
     roomInput.value = room;
     updateRoomUrl(room);
     peers.clear();
+    overlayManifests.clear();
+    requestedOverlayContent.clear();
     followedPeerId = null;
     renderPeople();
     scheduleOverlayRender();
@@ -797,6 +986,7 @@ export function installMapCollaboration(map) {
       maxEnqueuedMessages: 32,
       maxReconnectionDelay: 5_000,
     });
+    nextSocket.binaryType = 'arraybuffer';
     socket = nextSocket;
     setStatus('Connecting', 'connecting');
 
@@ -804,6 +994,7 @@ export function installMapCollaboration(map) {
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
+      syncKnownLocalOverlays();
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -816,7 +1007,9 @@ export function installMapCollaboration(map) {
     });
     nextSocket.addEventListener('message', (event) => {
       if (socket !== nextSocket) return;
-      handleMessage(event);
+      handleMessage(event).catch((error) => {
+        console.error('Failed to handle collaboration message:', error);
+      });
     });
   }
 
@@ -831,6 +1024,12 @@ export function installMapCollaboration(map) {
     sendTimer = 0;
     followTimer = 0;
     peers.clear();
+    overlayManifests.clear();
+    overlayContentBytes.clear();
+    pendingOverlayAssets.clear();
+    requestedOverlayContent.clear();
+    localOverlayIds.clear();
+    uploadedLocalOverlayHashes.clear();
     followedPeerId = null;
     localCursor = { visible: false, lngLat: null };
     ownConnectionId = clientId;
@@ -903,7 +1102,63 @@ export function installMapCollaboration(map) {
     localLocation = normalizeLocalLocation(event.detail);
     scheduleSend(true);
   };
+  const handleLocalOverlayUpsert = (event) => {
+    syncLocalOverlay(event.detail?.overlay);
+  };
+  const handleLocalOverlayPatch = (event) => {
+    const overlayId = event.detail?.overlayId;
+    const patch = event.detail?.patch;
+    if (!overlayId || !patch) return;
+    patchPendingOverlayAsset(overlayId, patch);
+    sendOverlayMessage({
+      type: 'overlay:patch',
+      overlayId,
+      patch,
+    });
+  };
+  const handleLocalOverlayReorder = (event) => {
+    const orderedIds = Array.isArray(event.detail?.orderedIds)
+      ? event.detail.orderedIds.filter(Boolean)
+      : [];
+    if (pendingOverlayAssets.size > 0) {
+      const order = new Map(orderedIds.map((id, index) => [id, index]));
+      for (const assets of pendingOverlayAssets.values()) {
+        for (const asset of assets.values()) {
+          const id = asset.envelope.manifest.id;
+          if (!order.has(id)) continue;
+          asset.envelope.manifest = {
+            ...asset.envelope.manifest,
+            pendingOrderIndex: order.get(id),
+            updatedAt: Date.now(),
+          };
+          overlayManifests.set(id, asset.envelope.manifest);
+        }
+      }
+    }
+    sendOverlayMessage({
+      type: 'overlay:reorder',
+      orderedIds,
+    });
+  };
+  const handleLocalOverlayDelete = (event) => {
+    const overlayId = event.detail?.overlayId;
+    if (!overlayId) return;
+    localOverlayIds.delete(overlayId);
+    knownLocalOverlays.delete(overlayId);
+    uploadedLocalOverlayHashes.delete(overlayId);
+    for (const [id, manifest] of overlayManifests) {
+      if (manifest.id === overlayId) overlayManifests.delete(id);
+    }
+    sendOverlayMessage({
+      type: 'overlay:delete',
+      overlayId,
+    });
+  };
   mapContainer.addEventListener('collaboration:locationchange', handleLocationChange);
+  mapContainer.addEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
+  mapContainer.addEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
+  mapContainer.addEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
+  mapContainer.addEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
 
   for (const eventName of ['mousedown', 'dblclick', 'wheel', 'touchstart']) {
     panel.addEventListener(eventName, (event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
@@ -937,6 +1192,7 @@ export function installMapCollaboration(map) {
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
   renderPeople();
+  if (currentRoom) connect(currentRoom);
 
   return {
     destroy() {
@@ -947,6 +1203,10 @@ export function installMapCollaboration(map) {
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);
+      mapContainer.removeEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
+      mapContainer.removeEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
+      mapContainer.removeEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
+      mapContainer.removeEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
       socket?.close(1000, 'destroy');
       overlay.remove();
       panel.remove();
