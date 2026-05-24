@@ -6,12 +6,74 @@ const TEXT_DECODER = new TextDecoder();
 const GZIP_MAGIC_0 = 0x1f;
 const GZIP_MAGIC_1 = 0x8b;
 
-function normalizeString(value, fallback = '') {
+type OverlayType = 'gpx' | 'geojson';
+type OverlayContentEncoding = 'gzip' | 'identity';
+type OverlayBounds = [[number, number], [number, number]];
+type JsonRecord = Record<string, unknown>;
+export type OverlayContent = string | object;
+type OverlayMapLike = Parameters<typeof addGpxToMap>[0];
+
+export interface OverlayManifest extends JsonRecord {
+  id: string;
+  type: OverlayType;
+  name: string;
+  visible: boolean;
+  color?: string;
+  opacity?: number;
+  lineWidth?: number;
+  bounds?: OverlayBounds | null;
+  contentHash?: string;
+  contentType?: string;
+  contentEncoding?: OverlayContentEncoding;
+  contentByteLength?: number;
+  rawByteLength?: number;
+  syncVersion?: number;
+  persistence?: 'ephemeral' | 'persistent';
+}
+
+interface RuntimeOverlay extends Partial<OverlayManifest> {
+  id: string;
+  data: OverlayContent;
+  rawText?: string;
+  layerIds?: string[];
+  sourceId?: string;
+  remoteOverlayId?: string;
+  syncOverlayId?: string;
+}
+
+interface BuildOverlaySyncAssetOptions {
+  manifest?: Partial<OverlayManifest>;
+}
+
+export interface OverlaySyncAsset {
+  envelope: {
+    id: string;
+    manifest: OverlayManifest & {
+      contentHash: string;
+      contentType: string;
+      contentEncoding: OverlayContentEncoding;
+      contentByteLength: number;
+      rawByteLength: number;
+    };
+  };
+  content: Uint8Array;
+}
+
+export interface OverlayBinaryMessage {
+  contentHash: string;
+  content: Uint8Array;
+}
+
+function normalizeString(value: unknown, fallback = '') {
   const normalized = String(value || '').replace(/\s+/g, ' ').trim();
   return normalized || fallback;
 }
 
-function stripRuntimeOverlayFields(overlay) {
+function isRuntimeOverlay(value: unknown): value is RuntimeOverlay {
+  return Boolean(value && typeof value === 'object' && 'id' in value && 'data' in value);
+}
+
+function stripRuntimeOverlayFields(overlay: Partial<RuntimeOverlay | OverlayManifest>): OverlayManifest {
   const {
     layerIds,
     sourceId,
@@ -24,19 +86,20 @@ function stripRuntimeOverlayFields(overlay) {
   const id = syncOverlayId || remoteOverlayId || manifest.id;
   return {
     ...manifest,
-    id,
-    name: normalizeString(manifest.name, id || 'Overlay'),
+    id: String(id || ''),
+    type: manifest.type === 'gpx' ? 'gpx' : 'geojson',
+    name: normalizeString(manifest.name, String(id || 'Overlay')),
     visible: manifest.visible !== false,
   };
 }
 
-function arrayBufferToHex(buffer) {
+function arrayBufferToHex(buffer: ArrayBuffer) {
   return Array.from(new Uint8Array(buffer))
     .map((byte) => byte.toString(16).padStart(2, '0'))
     .join('');
 }
 
-function concatUint8Arrays(chunks) {
+function concatUint8Arrays(chunks: Uint8Array[]) {
   const totalLength = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
   const result = new Uint8Array(totalLength);
   let offset = 0;
@@ -47,7 +110,7 @@ function concatUint8Arrays(chunks) {
   return result;
 }
 
-async function streamToUint8Array(stream) {
+async function streamToUint8Array(stream: ReadableStream<Uint8Array>) {
   const reader = stream.getReader();
   const chunks = [];
   while (true) {
@@ -58,32 +121,39 @@ async function streamToUint8Array(stream) {
   return concatUint8Arrays(chunks);
 }
 
-async function gzipBytes(bytes) {
+function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function gzipBytes(bytes: Uint8Array): Promise<{ bytes: Uint8Array; encoding: OverlayContentEncoding }> {
   if (!globalThis.CompressionStream) return { bytes, encoding: 'identity' };
-  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  const stream = new Blob([bytesToArrayBuffer(bytes)]).stream().pipeThrough(new CompressionStream('gzip'));
   return { bytes: await streamToUint8Array(stream), encoding: 'gzip' };
 }
 
-async function gunzipBytes(bytes, encoding) {
+async function gunzipBytes(bytes: Uint8Array, encoding: OverlayContentEncoding | string) {
   if (encoding !== 'gzip') return bytes;
   if (!globalThis.DecompressionStream) {
     throw new Error('This browser cannot decompress shared overlays');
   }
-  const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const stream = new Blob([bytesToArrayBuffer(bytes)]).stream().pipeThrough(new DecompressionStream('gzip'));
   return streamToUint8Array(stream);
 }
 
-function isGzip(bytes) {
+function isGzip(bytes: Uint8Array) {
   return bytes?.[0] === GZIP_MAGIC_0 && bytes?.[1] === GZIP_MAGIC_1;
 }
 
-export async function buildOverlaySyncAsset(overlay, options = {}) {
-  if (!overlay?.id || !overlay?.data) return null;
+export async function buildOverlaySyncAsset(
+  overlay: unknown,
+  options: BuildOverlaySyncAssetOptions = {},
+): Promise<OverlaySyncAsset | null> {
+  if (!isRuntimeOverlay(overlay)) return null;
 
-  const manifest = {
+  const manifest: OverlayManifest & { persistence: 'ephemeral' | 'persistent'; syncVersion: number; createdAt: number; updatedAt: number } = {
     ...stripRuntimeOverlayFields(overlay),
     syncVersion: 1,
-    persistence: 'ephemeral',
+    persistence: 'ephemeral' as const,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     ...options.manifest,
@@ -97,7 +167,7 @@ export async function buildOverlaySyncAsset(overlay, options = {}) {
   if (compressed.bytes.byteLength > OVERLAY_SYNC_MAX_COMPRESSED_BYTES) {
     throw new Error('Overlay is too large to sync');
   }
-  const hash = arrayBufferToHex(await crypto.subtle.digest('SHA-256', compressed.bytes));
+  const hash = arrayBufferToHex(await crypto.subtle.digest('SHA-256', bytesToArrayBuffer(compressed.bytes)));
 
   return {
     envelope: {
@@ -115,7 +185,7 @@ export async function buildOverlaySyncAsset(overlay, options = {}) {
   };
 }
 
-export function encodeOverlayBinaryMessage(contentHash, contentBytes) {
+export function encodeOverlayBinaryMessage(contentHash: string, contentBytes: Uint8Array) {
   const hashBytes = TEXT_ENCODER.encode(contentHash);
   if (hashBytes.byteLength > 255) throw new Error('content hash is too long');
   const buffer = new Uint8Array(2 + hashBytes.byteLength + contentBytes.byteLength);
@@ -126,7 +196,7 @@ export function encodeOverlayBinaryMessage(contentHash, contentBytes) {
   return buffer;
 }
 
-export function decodeOverlayBinaryMessage(message) {
+export function decodeOverlayBinaryMessage(message: unknown): OverlayBinaryMessage | null {
   const bytes = message instanceof Uint8Array
     ? message
     : message instanceof ArrayBuffer
@@ -143,7 +213,7 @@ export function decodeOverlayBinaryMessage(message) {
   };
 }
 
-export async function materializeOverlayContent(manifest, content) {
+export async function materializeOverlayContent(manifest: OverlayManifest, content: Uint8Array | ArrayBuffer): Promise<OverlayContent> {
   const compressed = content instanceof Uint8Array ? content : new Uint8Array(content);
   const encoding = manifest.contentEncoding || (isGzip(compressed) ? 'gzip' : 'identity');
   const rawBytes = await gunzipBytes(compressed, encoding);
@@ -152,11 +222,12 @@ export async function materializeOverlayContent(manifest, content) {
   return JSON.parse(text);
 }
 
-export async function addSyncedOverlayToMap(map, manifest, content) {
+export async function addSyncedOverlayToMap(map: OverlayMapLike, manifest: OverlayManifest, content: Uint8Array | ArrayBuffer) {
   const payload = await materializeOverlayContent(manifest, content);
   const options = { name: manifest.name, remote: true };
   let overlay = null;
   if (manifest.type === 'gpx') {
+    if (typeof payload !== 'string') return null;
     overlay = addGpxToMap(map, payload, options);
   } else {
     overlay = addGeoJsonToMap(map, payload, {
@@ -175,10 +246,12 @@ export async function addSyncedOverlayToMap(map, manifest, content) {
   };
 }
 
-export function overlayManifestPatch(overlay) {
+export function overlayManifestPatch(overlay: Partial<RuntimeOverlay | OverlayManifest>) {
   return stripRuntimeOverlayFields(overlay);
 }
 
-export function mergeOverlayBounds(overlays) {
-  return overlays.reduce((bounds, overlay) => mergeBounds(bounds, overlay.bounds), null);
+export function mergeOverlayBounds(overlays: Array<{ bounds?: OverlayBounds | null }>) {
+  return overlays.reduce<OverlayBounds | null>((bounds, overlay) => (
+    mergeBounds(bounds, overlay.bounds) || null
+  ), null);
 }

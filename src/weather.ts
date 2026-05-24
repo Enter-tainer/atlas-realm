@@ -7,14 +7,56 @@ const PICKER_ACTIVE_DATASET_KEY = 'weatherPickerActive';
 const WEATHER_ROUTE_DAYS = 7;
 const WEATHER_COMPACT = true;
 
-function el(tagName, className, parent) {
+type LngLatLike = { lng: number; lat: number };
+type NominatimAddress = Record<string, string | undefined>;
+type NominatimReverseResponse = {
+  name?: string;
+  display_name?: string;
+  address?: NominatimAddress;
+};
+type WeatherMapClickEvent = {
+  lngLat: LngLatLike;
+  originalEvent?: Event & { weatherPickerHandled?: boolean };
+};
+type WeatherControl = {
+  onAdd(map: WeatherMap): HTMLElement;
+  onRemove(): void;
+};
+type WeatherMarkerOptions = {
+  color?: string;
+};
+type WeatherMap = {
+  addControl(control: WeatherControl, position?: string): void;
+  on(event: 'click', handler: (event: WeatherMapClickEvent) => void): void;
+  off(event: 'click', handler: (event: WeatherMapClickEvent) => void): void;
+  getContainer(): HTMLElement;
+  getCanvas(): HTMLCanvasElement;
+};
+type WeatherMarker = {
+  setLngLat(lngLat: [number, number]): WeatherMarker;
+  addTo(map: WeatherMap): WeatherMarker;
+  remove(): void;
+};
+type WeatherMaplibre = {
+  Marker: new (options?: WeatherMarkerOptions) => WeatherMarker;
+};
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className?: string,
+  parent?: Element,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tagName);
   if (className) node.className = className;
   if (parent) parent.appendChild(node);
   return node;
 }
 
-function appendIcon(parent, icon, className = 'weather-icon') {
+function errorName(error: unknown) {
+  return error instanceof Error ? error.name : '';
+}
+
+function appendIcon(parent: Element, icon: LucideIcon, className = 'weather-icon') {
   const svg = createIconElement(icon, {
     class: className,
     'aria-hidden': 'true',
@@ -24,22 +66,22 @@ function appendIcon(parent, icon, className = 'weather-icon') {
   return svg;
 }
 
-function formatDateLocal(date) {
+function formatDateLocal(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
   const day = String(date.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
 
-function formatCoord(value) {
+function formatCoord(value: number) {
   return value.toFixed(5);
 }
 
-function formatDisplayCoord(lngLat) {
+function formatDisplayCoord(lngLat: LngLatLike) {
   return `${lngLat.lat.toFixed(4)}, ${lngLat.lng.toFixed(4)}`;
 }
 
-function formatNominatimAddress(data = {}) {
+function formatNominatimAddress(data: NominatimReverseResponse = {}) {
   const address = data.address || {};
   const street = [address.road, address.house_number].filter(Boolean).join(' ');
   const locality = address.city || address.town || address.village || address.county || address.state;
@@ -53,11 +95,11 @@ function formatNominatimAddress(data = {}) {
   return parts.join(', ') || data.display_name || '';
 }
 
-function sanitizeDisplayName(displayName) {
+function sanitizeDisplayName(displayName: string) {
   return displayName.replace(/[~:;]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-async function reverseGeocode(lngLat, signal) {
+async function reverseGeocode(lngLat: LngLatLike, signal: AbortSignal) {
   const url = new URL(NOMINATIM_REVERSE_URL);
   url.searchParams.set('lat', lngLat.lat.toFixed(6));
   url.searchParams.set('lon', lngLat.lng.toFixed(6));
@@ -72,11 +114,11 @@ async function reverseGeocode(lngLat, signal) {
   });
   if (!response.ok) throw new Error(`Nominatim reverse geocoding failed: ${response.status}`);
 
-  const data = await response.json();
+  const data = await response.json() as NominatimReverseResponse;
   return formatNominatimAddress(data) || formatDisplayCoord(lngLat);
 }
 
-function buildWeatherUrl(lngLat, displayName = formatDisplayCoord(lngLat)) {
+function buildWeatherUrl(lngLat: LngLatLike, displayName = formatDisplayCoord(lngLat)) {
   const url = new URL(WEATHER_DASHBOARD_URL, window.location.href);
   const safeDisplayName = sanitizeDisplayName(displayName) || formatDisplayCoord(lngLat);
   const routeEntries = [];
@@ -94,7 +136,7 @@ function buildWeatherUrl(lngLat, displayName = formatDisplayCoord(lngLat)) {
   return url.toString();
 }
 
-function stopMapControlPropagation(node) {
+function stopMapControlPropagation(node: Element) {
   node.addEventListener('contextmenu', (event) => event.stopPropagation());
   node.addEventListener('dblclick', (event) => event.stopPropagation());
   node.addEventListener('mousedown', (event) => event.stopPropagation());
@@ -103,7 +145,28 @@ function stopMapControlPropagation(node) {
 }
 
 class WeatherPointPicker {
-  constructor(maplibregl) {
+  _maplibregl: WeatherMaplibre;
+  _map: WeatherMap;
+  _control: HTMLElement;
+  _button: HTMLButtonElement;
+  _panel: HTMLElement;
+  _title: HTMLElement;
+  _meta: HTMLElement;
+  _openLink: HTMLAnchorElement;
+  _closeButton: HTMLButtonElement;
+  _empty: HTMLElement;
+  _status: HTMLElement;
+  _iframe: HTMLIFrameElement;
+  _active: boolean;
+  _marker: WeatherMarker | null;
+  _selectedLngLat: LngLatLike | null;
+  _abortController: AbortController | null;
+  _isResolving: boolean;
+  _weatherUrl: string;
+  _boundClick: (event: WeatherMapClickEvent) => void;
+  _boundEscape: (event: KeyboardEvent) => void;
+
+  constructor(maplibregl: WeatherMaplibre) {
     this._maplibregl = maplibregl;
     this._active = false;
     this._marker = null;
@@ -115,7 +178,7 @@ class WeatherPointPicker {
     this._boundEscape = (event) => this._handleKeydown(event);
   }
 
-  onAdd(map) {
+  onAdd(map: WeatherMap) {
     this._map = map;
     this._map.on('click', this._boundClick);
     window.addEventListener('keydown', this._boundEscape);
@@ -177,7 +240,7 @@ class WeatherPointPicker {
     this._map = undefined;
   }
 
-  setActive(active) {
+  setActive(active: boolean) {
     const next = Boolean(active);
     if (this._active === next) return;
     this._active = next;
@@ -194,19 +257,19 @@ class WeatherPointPicker {
     this._sync();
   }
 
-  _handleKeydown(event) {
+  _handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && this._active) {
       this.setActive(false);
     }
   }
 
-  _handleMapClick(event) {
+  _handleMapClick(event: WeatherMapClickEvent) {
     if (!this._active) return;
     if (event.originalEvent) event.originalEvent.weatherPickerHandled = true;
     this._selectPoint(event.lngLat);
   }
 
-  _selectPoint(lngLat) {
+  _selectPoint(lngLat: LngLatLike) {
     this._selectedLngLat = { lng: lngLat.lng, lat: lngLat.lat };
     this._abortController?.abort();
     this._abortController = new AbortController();
@@ -236,8 +299,8 @@ class WeatherPointPicker {
         this._sync();
         this._meta.textContent = displayName;
       })
-      .catch((error) => {
-        if (error.name === 'AbortError') return;
+      .catch((error: unknown) => {
+        if (errorName(error) === 'AbortError') return;
         console.warn(error);
         this._isResolving = false;
         this._weatherUrl = '';
@@ -268,6 +331,6 @@ class WeatherPointPicker {
   }
 }
 
-export function installWeatherPointPicker(map, maplibregl) {
+export function installWeatherPointPicker(map: WeatherMap, maplibregl: WeatherMaplibre) {
   map.addControl(new WeatherPointPicker(maplibregl), 'top-right');
 }

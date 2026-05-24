@@ -2,6 +2,7 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
+import type { GlobalContourTileOptions } from 'maplibre-contour/dist/types';
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import SatelliteIcon from 'lucide/dist/esm/icons/satellite.mjs';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson, mergeBounds } from './gpx.js';
@@ -11,6 +12,7 @@ import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
 import { installOverlayManager } from './overlay-manager.js';
 import { installOsrmRouting } from './routing.js';
+import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-ready.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -29,11 +31,64 @@ app.innerHTML = `
 
 const featuresCatalog = buildFeatureCatalog();
 
-function absoluteUrl(path) {
+type JsonRecord = Record<string, unknown>;
+type StyleLayerLike = JsonRecord & {
+  id?: string;
+  type?: string;
+  layout?: JsonRecord;
+};
+type StyleLike = JsonRecord & {
+  glyphs?: string;
+  sprite?: string | Array<JsonRecord & { url: string }>;
+  sources?: Record<string, JsonRecord>;
+  layers?: StyleLayerLike[];
+  metadata?: JsonRecord;
+  state?: Record<string, JsonRecord>;
+  center?: maplibregl.LngLatLike;
+  zoom?: number;
+};
+type DemSourceLike = {
+  setupMaplibre(maplibre: typeof maplibregl): void;
+  contourProtocolUrl(options: GlobalContourTileOptions): string;
+};
+type SpriteAtlas = {
+  prefix: string;
+  index: Record<string, { x: number; y: number; width: number; height: number; pixelRatio?: number }>;
+  image: CanvasImageSource;
+  sdf: boolean;
+};
+type Bounds = [[number, number], [number, number]];
+type SwrCacheEntry = { response: Response; timestamp: number };
+type CollaborationLocationDetail = {
+  enabled: boolean;
+  lngLat?: [number, number];
+  accuracy?: number;
+  heading?: number | null;
+  speed?: number | null;
+  timestamp?: number;
+};
+type ToggleOptions = { silent?: boolean };
+type CollaborationViewState = { terrain?: boolean; satellite?: boolean };
+type MapWithCollaboration = maplibregl.Map & {
+  getCollaborationViewState?: () => { terrain: boolean; satellite: boolean };
+  setCollaborationViewState?: (viewState: CollaborationViewState, options?: ToggleOptions) => void;
+};
+type GeolocateControlWithState = maplibregl.GeolocateControl & {
+  _watchState?: 'OFF' | string;
+};
+type GeolocateControlOptionsWithHeading = maplibregl.GeolocateControlOptions & {
+  showUserHeading?: boolean;
+};
+type ToggleControl = maplibregl.IControl & {
+  _enabled: boolean;
+  setEnabled(enabled: boolean, options?: ToggleOptions): void;
+};
+
+function absoluteUrl(path: string) {
   return `${window.location.origin}${path}`;
 }
 
-function importNameFromUrl(url, fallback) {
+function importNameFromUrl(url: string, fallback: string) {
   try {
     const parsed = new URL(url, window.location.href);
     if (parsed.protocol === 'data:') return fallback;
@@ -43,13 +98,13 @@ function importNameFromUrl(url, fallback) {
   }
 }
 
-async function loadJson(url) {
+async function loadJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  return await res.json();
+  return await res.json() as T;
 }
 
-async function loadImage(url) {
+async function loadImage(url: string): Promise<HTMLImageElement> {
   return await new Promise((resolve, reject) => {
     const img = new Image();
     img.crossOrigin = 'anonymous';
@@ -59,7 +114,7 @@ async function loadImage(url) {
   });
 }
 
-function appendIcon(parent, icon, className = 'satellite-icon') {
+function appendIcon(parent: Element, icon: LucideIcon, className = 'satellite-icon') {
   const svg = createIconElement(icon, {
     class: className,
     'aria-hidden': 'true',
@@ -73,8 +128,8 @@ function appendIcon(parent, icon, className = 'satellite-icon') {
  * Fetch with stale-while-revalidate caching.
  * Serves cached responses instantly while revalidating in the background.
  */
-const swrCache = new Map();
-async function fetchWithSwr(url, ttlMs = 3600_000) {
+const swrCache = new Map<string, SwrCacheEntry>();
+async function fetchWithSwr(url: string, ttlMs = 3600_000) {
   const cached = swrCache.get(url);
   if (cached && Date.now() - cached.timestamp < ttlMs) {
     // Still fresh — return directly
@@ -93,7 +148,7 @@ async function fetchWithSwr(url, ttlMs = 3600_000) {
   return res;
 }
 
-function rewriteOrmStyle(style) {
+function rewriteOrmStyle(style: StyleLike): StyleLike {
   style.glyphs = absoluteUrl('/orm/font/{fontstack}/{range}');
 
   if (Array.isArray(style.sprite)) {
@@ -102,18 +157,18 @@ function rewriteOrmStyle(style) {
     style.sprite = absoluteUrl(`/orm${style.sprite}`);
   }
 
-  const rewrittenSources = [];
-  style.sources = Object.fromEntries(Object.entries(style.sources).map(([name, source]) => {
-    if (source?.type === 'vector' && source.url?.startsWith('/')) {
+  const rewrittenSources: string[] = [];
+  style.sources = Object.fromEntries(Object.entries(style.sources || {}).map(([name, source]) => {
+    if (source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/')) {
       rewrittenSources.push(name);
       return [name, {
         type: 'vector',
         tiles: [TILE_URL],
-        attribution: source.attribution,
-        promoteId: source.promoteId,
-        bounds: source.bounds,
-        scheme: source.scheme,
-        metadata: source.metadata,
+      attribution: source.attribution,
+      promoteId: source.promoteId,
+      bounds: source.bounds,
+      scheme: source.scheme,
+      metadata: source.metadata,
         maxzoom: 15,
       }];
     }
@@ -129,11 +184,11 @@ function rewriteOrmStyle(style) {
   return style;
 }
 
-function getFirstSymbolLayerId(style) {
+function getFirstSymbolLayerId(style: StyleLike) {
   return (style.layers || []).find((layer) => layer.type === 'symbol')?.id;
 }
 
-function addMapterhornTerrain(style, demSource) {
+function addMapterhornTerrain(style: StyleLike, demSource: DemSourceLike): StyleLike {
   style.sources = {
     ...(style.sources || {}),
     hillshadeSource: {
@@ -218,7 +273,7 @@ function addMapterhornTerrain(style, demSource) {
   return style;
 }
 
-function addSatelliteSourceAndLayer(style) {
+function addSatelliteSourceAndLayer(style: StyleLike): StyleLike {
   style.sources = {
     ...(style.sources || {}),
     satellite: {
@@ -231,7 +286,7 @@ function addSatelliteSourceAndLayer(style) {
     },
   };
 
-  const insertIdx = style.layers.findIndex((l) => l.id === 'trip-hillshade');
+  const insertIdx = style.layers.findIndex((l: StyleLayerLike) => l.id === 'trip-hillshade');
   const satelliteLayer = {
     id: 'satellite-layer',
     type: 'raster',
@@ -249,14 +304,12 @@ function addSatelliteSourceAndLayer(style) {
   return style;
 }
 
-function withGlobalStateVisibility(layer, stateName) {
+function withGlobalStateVisibility(layer: StyleLayerLike, stateName: string): StyleLayerLike {
   const layout = { ...(layer.layout || {}) };
   const originalVisibility = structuredClone(layout.visibility ?? 'visible');
   layout.visibility = ['case', ['global-state', stateName], originalVisibility, 'none'];
   return { ...layer, layout };
 }
-
-import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-ready.js';
 
 const STATE_DEFAULTS = {
   date: 2026,
@@ -274,7 +327,7 @@ const STATE_DEFAULTS = {
   trackRailwayLine: 'gauge',
 };
 
-function mergeBaseAndOrm(baseStyle, ormStyle) {
+function mergeBaseAndOrm(baseStyle: StyleLike, ormStyle: StyleLike): StyleLike {
   const merged = structuredClone(baseStyle);
   const baseLayers = (baseStyle.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
   merged.center = ormStyle.center || merged.center;
@@ -296,30 +349,34 @@ function mergeBaseAndOrm(baseStyle, ormStyle) {
   return merged;
 }
 
-async function loadStyle(demSource) {
+async function loadStyle(demSource: DemSourceLike): Promise<StyleLike> {
   const [baseStyle, ormStyleRaw] = await Promise.all([
-    loadJson(OPENFREEMAP_STYLE),
-    loadJson(STYLE_URL),
+    loadJson<StyleLike>(OPENFREEMAP_STYLE),
+    loadJson<StyleLike>(STYLE_URL),
   ]);
   const merged = mergeBaseAndOrm(baseStyle, rewriteOrmStyle(ormStyleRaw));
   const withTerrain = addMapterhornTerrain(merged, demSource);
   return addSatelliteSourceAndLayer(withTerrain);
 }
 
-async function loadSpriteAtlases() {
+function isSpriteIndex(value: unknown): value is SpriteAtlas['index'] {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function loadSpriteAtlases(): Promise<SpriteAtlas[]> {
   const specs = [
     { prefix: '', json: '/orm/sprite/symbols.json', png: '/orm/sprite/symbols.png', sdf: false },
     { prefix: 'sdf:', json: '/orm/sdf_sprite/symbols.json', png: '/orm/sdf_sprite/symbols.png', sdf: true },
   ];
-  const atlases = [];
+  const atlases: SpriteAtlas[] = [];
   for (const spec of specs) {
-    const [index, image] = await Promise.all([loadJson(spec.json), loadImage(spec.png)]);
-    atlases.push({ ...spec, index, image });
+    const [index, image] = await Promise.all([loadJson<unknown>(spec.json), loadImage(spec.png)]);
+    atlases.push({ ...spec, index: isSpriteIndex(index) ? index : {}, image });
   }
   return atlases;
 }
 
-function installSpriteFallback(map, atlases) {
+function installSpriteFallback(map: maplibregl.Map, atlases: SpriteAtlas[]) {
   map.on('styleimagemissing', (e) => {
     const id = e.id;
     for (const atlas of atlases) {
@@ -356,11 +413,11 @@ async function init() {
     window._mlmap = null;
     const map = new maplibregl.Map({
       container: 'map',
-      style,
+      style: style as maplibregl.StyleSpecification,
       center: [105, 35],
       zoom: 4,
       hash: true,
-      attributionControl: true,
+      attributionControl: {} as maplibregl.AttributionControlOptions,
       renderWorldCopies: false,
       maxZoom: 20,
       maxPitch: 85,
@@ -368,17 +425,18 @@ async function init() {
 
     window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
-    const geolocateControl = new maplibregl.GeolocateControl({
+    const geolocateOptions: GeolocateControlOptionsWithHeading = {
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,
       showUserHeading: true,
-    });
-    const emitCollaborationLocation = (detail) => {
+    };
+    const geolocateControl = new maplibregl.GeolocateControl(geolocateOptions);
+    const emitCollaborationLocation = (detail: CollaborationLocationDetail) => {
       map.getContainer().dispatchEvent(new CustomEvent('collaboration:locationchange', { detail }));
     };
     const clearCollaborationLocation = () => emitCollaborationLocation({ enabled: false });
     const clearCollaborationLocationIfOff = () => {
-      if (geolocateControl._watchState === 'OFF') clearCollaborationLocation();
+      if ((geolocateControl as GeolocateControlWithState)._watchState === 'OFF') clearCollaborationLocation();
     };
     geolocateControl.on('geolocate', (event) => {
       const coords = event?.coords;
@@ -417,7 +475,7 @@ async function init() {
     const gpxUrls = new URLSearchParams(window.location.search).getAll('gpx');
     if (gpxUrls.length > 0) {
       (async () => {
-        let bounds = null;
+        let bounds: Bounds | null = null;
         await Promise.allSettled(gpxUrls.map(async (gpxUrl) => {
           try {
             const res = await fetchWithSwr(gpxUrl);
@@ -438,7 +496,7 @@ async function init() {
     const geojsonUrls = new URLSearchParams(window.location.search).getAll('geojson');
     if (geojsonUrls.length > 0) {
       (async () => {
-        let bounds = null;
+        let bounds: Bounds | null = null;
         await Promise.allSettled(geojsonUrls.map(async (geojsonUrl) => {
           try {
             const res = await fetchWithSwr(geojsonUrl);
@@ -454,8 +512,8 @@ async function init() {
       })();
     }
 
-    let terrainControl = null;
-    let satelliteControl = null;
+    let terrainControl: ToggleControl | null = null;
+    let satelliteControl: ToggleControl | null = null;
     const getCollaborationViewState = () => ({
       terrain: Boolean(terrainControl?._enabled),
       satellite: Boolean(satelliteControl?._enabled),
@@ -468,10 +526,16 @@ async function init() {
 
     // Terrain toggle control
     class TerrainToggleControl {
-      constructor(onChange) {
+      _onChange: () => void;
+      _map?: maplibregl.Map;
+      _enabled = false;
+      _container?: HTMLElement;
+      _btn?: HTMLButtonElement;
+
+      constructor(onChange: () => void) {
         this._onChange = onChange;
       }
-      onAdd(map) {
+      onAdd(map: maplibregl.Map) {
         this._map = map;
         this._enabled = false;
         this._container = document.createElement('div');
@@ -486,7 +550,7 @@ async function init() {
         this._container.appendChild(this._btn);
         return this._container;
       }
-      setEnabled(enabled, options = {}) {
+      setEnabled(enabled: boolean, options: ToggleOptions = {}) {
         const next = Boolean(enabled);
         if (this._enabled === next) return;
         this._enabled = next;
@@ -506,10 +570,16 @@ async function init() {
 
     // Satellite imagery toggle control
     class SatelliteToggleControl {
-      constructor(onChange) {
+      _onChange: () => void;
+      _map?: maplibregl.Map;
+      _enabled = false;
+      _container?: HTMLElement;
+      _btn?: HTMLButtonElement;
+
+      constructor(onChange: () => void) {
         this._onChange = onChange;
       }
-      onAdd(map) {
+      onAdd(map: maplibregl.Map) {
         this._map = map;
         this._enabled = false;
         this._container = document.createElement('div');
@@ -527,7 +597,7 @@ async function init() {
       _toggle() {
         this.setEnabled(!this._enabled);
       }
-      setEnabled(enabled, options = {}) {
+      setEnabled(enabled: boolean, options: ToggleOptions = {}) {
         const next = Boolean(enabled);
         if (this._enabled === next) return;
         this._enabled = next;
@@ -562,8 +632,9 @@ async function init() {
     }
     satelliteControl = new SatelliteToggleControl(emitCollaborationViewState);
     map.addControl(satelliteControl, 'top-right');
-    map.getCollaborationViewState = getCollaborationViewState;
-    map.setCollaborationViewState = (viewState, options = {}) => {
+    const mapWithCollaboration = map as MapWithCollaboration;
+    mapWithCollaboration.getCollaborationViewState = getCollaborationViewState;
+    mapWithCollaboration.setCollaborationViewState = (viewState, options: ToggleOptions = {}) => {
       terrainControl?.setEnabled(Boolean(viewState?.terrain), { silent: true });
       satelliteControl?.setEnabled(Boolean(viewState?.satellite), { silent: true });
       if (!options.silent) emitCollaborationViewState();

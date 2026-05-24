@@ -16,20 +16,120 @@ import XIcon from 'lucide/dist/esm/icons/x.mjs';
 const DEFAULT_COLOR = '#3b82f6';
 const COLOR_SWATCHES = ['#3b82f6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#8b5cf6', '#ec4899'];
 const OVERLAY_SOURCE_TYPES = new Set(['gpx', 'geojson']);
+type AnyRecord = Record<string | symbol, unknown>;
+type OverlayBounds = [[number, number], [number, number]];
+type BoundsLike = readonly (readonly number[])[];
+type OverlayType = 'gpx' | 'geojson';
+type OverlayData = object;
+type OverlayContent = string | object;
+type OverlayStyleValue = string | number | boolean | null | OverlayStyleValue[];
+type OverlayFitBoundsOptions = {
+  padding?: number | { top: number; right: number; bottom: number; left: number };
+  maxZoom?: number;
+  duration?: number;
+};
+type OverlayEaseOptions = {
+  center: [number, number];
+  zoom: number;
+  duration: number;
+};
+type OverlayControl = {
+  onAdd(map: OverlayMap): HTMLElement;
+  onRemove(): void;
+};
+type OverlayLike = AnyRecord & {
+  id: string;
+  type: OverlayType;
+  subType?: string | null;
+  sourceId?: string;
+  layerIds: string[];
+  name: string;
+  color?: string;
+  opacity?: number;
+  lineWidth?: number;
+  visible: boolean;
+  bounds?: OverlayBounds | null;
+  data?: OverlayData;
+  syncOverlayId?: string;
+  remoteOverlayId?: string | null;
+  contentHash?: string;
+  points?: number;
+  p99Speed?: number;
+  lines?: number;
+  polygons?: number;
+  features?: number;
+  distanceText?: string;
+  durationText?: string;
+  stepCount?: number;
+  annotationSegmentCount?: number;
+};
+type OverlayLayer = { source?: string; type?: string };
+type OverlayMap = {
+  addControl(control: OverlayControl, position?: string): void;
+  getContainer(): HTMLElement;
+  addSource(id: string, source: object): void;
+  addLayer(layer: object): void;
+  hasImage(name: string): boolean;
+  addImage(name: string, image: ImageData, options?: { pixelRatio?: number }): void;
+  fitBounds(bounds: OverlayBounds, options?: OverlayFitBoundsOptions): void;
+  easeTo(options: OverlayEaseOptions): void;
+  getZoom(): number;
+  getLayer(layerId: string): OverlayLayer | undefined;
+  getSource(sourceId?: string): object | undefined;
+  setLayoutProperty(layerId: string, name: string, value: OverlayStyleValue): void;
+  setPaintProperty(layerId: string, name: string, value: OverlayStyleValue): void;
+  getPaintProperty(layerId: string, name: string): unknown;
+  removeLayer(layerId: string): void;
+  removeSource(sourceId?: string): void;
+  moveLayer(layerId: string): void;
+};
+type OverlayDragState = {
+  id: string;
+  pointerId: number;
+  handle: HTMLElement;
+  row: HTMLElement;
+};
+type OverlayMutationOptions = { emit?: boolean };
+type MoveOverlayOptions = { render?: boolean; sync?: boolean };
+type OverlayStylePatch = {
+  color?: string;
+  opacity?: number;
+  lineWidth?: number;
+};
+type OverlayListDetail = { overlays?: OverlayLike[] };
+type OverlayRemoteAddDetail = { manifest?: OverlayLike; content?: OverlayContent };
+type OverlayImportResult = { bounds?: BoundsLike | null } | null;
+
+function asOverlayBounds(value: BoundsLike | null | undefined): OverlayBounds | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const sw = value[0];
+  const ne = value[1];
+  if (!Array.isArray(sw) || !Array.isArray(ne)) return null;
+  const minLng = Number(sw[0]);
+  const minLat = Number(sw[1]);
+  const maxLng = Number(ne[0]);
+  const maxLat = Number(ne[1]);
+  if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
+  return [[minLng, minLat], [maxLng, maxLat]];
+}
 
 function randomOverlaySyncId() {
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `overlay-${id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 80)}`;
 }
 
-function el(tagName, className, parent) {
+function el<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className?: string,
+  parent?: Element | null,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tagName);
   if (className) node.className = className;
   if (parent) parent.appendChild(node);
   return node;
 }
 
-function appendIcon(parent, icon, className = 'overlay-manager-icon') {
+function appendIcon(parent: Element, icon: LucideIcon, className = 'overlay-manager-icon') {
   const svg = createIconElement(icon, {
     class: className,
     'aria-hidden': 'true',
@@ -39,58 +139,58 @@ function appendIcon(parent, icon, className = 'overlay-manager-icon') {
   return svg;
 }
 
-function appendIconLabel(parent, icon, label) {
+function appendIconLabel(parent: Element, icon: LucideIcon, label: string) {
   appendIcon(parent, icon);
   const labelNode = el('span', 'overlay-manager-action-label', parent);
   labelNode.textContent = label;
   return labelNode;
 }
 
-function stopMapControlPropagation(node) {
-  node.addEventListener('contextmenu', (event) => event.stopPropagation());
-  node.addEventListener('dblclick', (event) => event.stopPropagation());
-  node.addEventListener('mousedown', (event) => event.stopPropagation());
-  node.addEventListener('touchstart', (event) => event.stopPropagation(), { passive: true });
-  node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
+function stopMapControlPropagation(node: Element) {
+  node.addEventListener('contextmenu', (event: Event) => event.stopPropagation());
+  node.addEventListener('dblclick', (event: Event) => event.stopPropagation());
+  node.addEventListener('mousedown', (event: Event) => event.stopPropagation());
+  node.addEventListener('touchstart', (event: Event) => event.stopPropagation(), { passive: true });
+  node.addEventListener('wheel', (event: Event) => event.stopPropagation(), { passive: true });
 }
 
-function clamp(value, min, max) {
+function clamp(value: number | string | null | undefined, min: number, max: number) {
   const number = Number(value);
   if (!Number.isFinite(number)) return min;
   return Math.min(max, Math.max(min, number));
 }
 
-function normalizeColor(value, fallback = DEFAULT_COLOR) {
-  return /^#[0-9a-fA-F]{6}$/.test(value || '') ? value.toLowerCase() : fallback;
+function normalizeColor(value: string | null | undefined, fallback = DEFAULT_COLOR) {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value) ? value.toLowerCase() : fallback;
 }
 
-function formatOverlayType(type) {
+function formatOverlayType(type: OverlayType | string | null | undefined) {
   return type === 'gpx' ? 'GPX' : 'GeoJSON';
 }
 
-function formatOverlayMeta(overlay) {
+function formatOverlayMeta(overlay: OverlayLike) {
   if (overlay.subType === 'osrm') {
-    const parts = [overlay.distanceText, overlay.durationText].filter(Boolean);
+    const parts = [overlay.distanceText, overlay.durationText].filter(Boolean) as string[];
     if (Number.isFinite(overlay.stepCount)) parts.push(`${overlay.stepCount} steps`);
     if (Number.isFinite(overlay.annotationSegmentCount)) parts.push(`${overlay.annotationSegmentCount} speed segments`);
     return parts.join(' - ') || 'OSRM route';
   }
 
   if (overlay.type === 'gpx') {
-    const parts = [];
+    const parts: string[] = [];
     if (Number.isFinite(overlay.points)) parts.push(`${overlay.points} pts`);
     if (Number.isFinite(overlay.p99Speed) && overlay.p99Speed > 0) parts.push(`p99 ${overlay.p99Speed} km/h`);
     return parts.join(' - ') || 'GPX track';
   }
 
-  const parts = [];
+  const parts: string[] = [];
   if (overlay.lines) parts.push(`${overlay.lines} lines`);
   if (overlay.points) parts.push(`${overlay.points} points`);
   if (overlay.polygons) parts.push(`${overlay.polygons} polygons`);
   return parts.join(' - ') || `${overlay.features || 0} features`;
 }
 
-function fitOverlayBounds(map, overlay) {
+function fitOverlayBounds(map: OverlayMap, overlay: OverlayLike | null | undefined) {
   if (!overlay?.bounds) return;
   const [[minLng, minLat], [maxLng, maxLat]] = overlay.bounds;
   if (minLng === maxLng && minLat === maxLat) {
@@ -104,7 +204,13 @@ function fitOverlayBounds(map, overlay) {
   });
 }
 
-function withFallbackColor(expression, color) {
+function isOverlayStyleValue(value: unknown): value is OverlayStyleValue {
+  return value == null || ['string', 'number', 'boolean'].includes(typeof value)
+    || (Array.isArray(value) && value.every(isOverlayStyleValue));
+}
+
+function withFallbackColor(expression: unknown, color: string): OverlayStyleValue {
+  if (!isOverlayStyleValue(expression)) return color;
   if (Array.isArray(expression)) {
     if (expression[0] === 'get' && (expression[1] === 'color' || expression[1] === 'stroke')) return color;
     return expression.map((item) => withFallbackColor(item, color));
@@ -113,19 +219,19 @@ function withFallbackColor(expression, color) {
   return expression;
 }
 
-function exportJson(data, filename) {
+function exportJson(data: OverlayData, filename: string) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/geo+json' });
-  const url = URL.createObjectURL(blob);
+  const objectUrl = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
-  anchor.href = url;
+  anchor.href = objectUrl;
   anchor.download = filename;
-  document.body.append(anchor);
+  document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  globalThis.setTimeout(() => URL.revokeObjectURL(String(objectUrl)), 1000);
 }
 
-function inferOverlayTypeFromUrl(url) {
+function inferOverlayTypeFromUrl(url: string): OverlayType {
   try {
     const parsed = new URL(url, window.location.href);
     const path = parsed.protocol === 'data:' ? parsed.pathname : parsed.pathname.toLowerCase();
@@ -136,7 +242,7 @@ function inferOverlayTypeFromUrl(url) {
   }
 }
 
-function importNameFromUrl(url, fallback) {
+function importNameFromUrl(url: string, fallback: string) {
   try {
     const parsed = new URL(url, window.location.href);
     if (parsed.protocol === 'data:') return fallback;
@@ -146,7 +252,7 @@ function importNameFromUrl(url, fallback) {
   }
 }
 
-function ensureMarkerIcon(map, color) {
+function ensureMarkerIcon(map: OverlayMap, color: string) {
   const imageName = `marker-dot-${color}`;
   if (map.hasImage(imageName)) return imageName;
 
@@ -171,20 +277,65 @@ function ensureMarkerIcon(map, color) {
   return imageName;
 }
 
-function isManagedLayer(layer) {
+function isManagedLayer(layer: OverlayLayer | undefined) {
   return layer?.source && /^(gpx-track-|geojson-layer-)/.test(layer.source);
 }
 
-function hasSyncOrigin(overlay) {
+function hasSyncOrigin(overlay: OverlayLike | null | undefined) {
   return Boolean(overlay?.syncOverlayId || overlay?.remoteOverlayId);
 }
 
-function manifestOverlayMetadata(manifest) {
+function manifestOverlayMetadata(manifest: OverlayLike) {
   const { id, ...metadata } = overlayManifestPatch(manifest);
   return metadata;
 }
 
 class OverlayManagerControl {
+  _map: OverlayMap;
+  _control: HTMLElement;
+  _button: HTMLButtonElement;
+  _panel: HTMLElement;
+  _title: HTMLElement;
+  _summary: HTMLElement;
+  _importButton: HTMLButtonElement;
+  _closeButton: HTMLButtonElement;
+  _dropZone: HTMLButtonElement;
+  _fileInput: HTMLInputElement;
+  _urlForm: HTMLFormElement;
+  _urlInput: HTMLInputElement;
+  _urlSubmit: HTMLButtonElement;
+  _status: HTMLElement;
+  _empty: HTMLElement;
+  _list: HTMLElement;
+  _details: HTMLElement;
+  _detailsTitle: HTMLElement;
+  _nameInput: HTMLInputElement;
+  _colorField: HTMLElement;
+  _swatches: HTMLElement;
+  _customColor: HTMLInputElement;
+  _widthField: HTMLElement;
+  _widthValue: HTMLElement;
+  _widthInput: HTMLInputElement;
+  _opacityField: HTMLElement;
+  _opacityValue: HTMLElement;
+  _opacityInput: HTMLInputElement;
+  _zoomButton: HTMLButtonElement;
+  _exportButton: HTMLButtonElement;
+  _deleteButton: HTMLButtonElement;
+  _overlays: OverlayLike[];
+  _selectedId: string | null;
+  _expanded: boolean;
+  _importStatusTimer: number;
+  _isImportingUrl: boolean;
+  _dragState: OverlayDragState | null;
+  _boundOverlayAdded: (event: CustomEvent<OverlayLike>) => void;
+  _boundOverlayRemoteAdd: (event: CustomEvent<OverlayRemoteAddDetail>) => void;
+  _boundOverlayRemoteList: (event: CustomEvent<OverlayListDetail>) => void;
+  _boundOverlayRemoteDelete: (event: CustomEvent<{ overlayId?: string }>) => void;
+  _boundKeydown: (event: KeyboardEvent) => void;
+  _boundViewportChange: () => void;
+  _boundRoutingPanelOpen: () => void;
+
   constructor() {
     this._overlays = [];
     this._selectedId = null;
@@ -201,7 +352,7 @@ class OverlayManagerControl {
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
   }
 
-  onAdd(map) {
+  onAdd(map: OverlayMap) {
     this._map = map;
     this._control = el('div', 'maplibregl-ctrl maplibregl-ctrl-group overlay-manager-control');
     this._button = el('button', 'maplibregl-ctrl-overlays', this._control);
@@ -386,7 +537,7 @@ class OverlayManagerControl {
     this._map = undefined;
   }
 
-  setExpanded(expanded) {
+  setExpanded(expanded: boolean) {
     this._expanded = Boolean(expanded);
     if (this._expanded) {
       this._map.getContainer().dispatchEvent(new CustomEvent('overlay-manager:panelopen'));
@@ -401,8 +552,8 @@ class OverlayManagerControl {
 
   _syncPanelInteractivity() {
     if (!this._panel) return;
-    for (const element of this._panel.querySelectorAll('button, input, a, select, textarea')) {
-      element.disabled = !this._expanded;
+    for (const element of this._panel.querySelectorAll('button, input, select, textarea')) {
+      (element as Element & { disabled: boolean }).disabled = !this._expanded;
     }
     if (this._expanded && this._isImportingUrl) {
       this._urlInput.disabled = true;
@@ -410,7 +561,7 @@ class OverlayManagerControl {
     }
   }
 
-  _registerOverlay(overlay) {
+  _registerOverlay(overlay: OverlayLike) {
     if (!overlay || !overlay.id || !OVERLAY_SOURCE_TYPES.has(overlay.type)) return;
     const remote = isRemoteOverlayEvent(overlay);
     const syncOverlayId = overlay.syncOverlayId || overlay.remoteOverlayId || (remote ? overlay.id : randomOverlaySyncId());
@@ -418,7 +569,7 @@ class OverlayManagerControl {
       item.id === overlay.id ||
       (hasSyncOrigin(item) && item.syncOverlayId === syncOverlayId)
     ));
-    const normalized = {
+    const normalized: OverlayLike = {
       color: DEFAULT_COLOR,
       opacity: 0.95,
       lineWidth: 5,
@@ -440,14 +591,14 @@ class OverlayManagerControl {
     if (!remote) this._emitOverlaySyncUpsert(normalized);
   }
 
-  _emitOverlaySyncUpsert(overlay) {
+  _emitOverlaySyncUpsert(overlay: OverlayLike) {
     if (!overlay?.data) return;
     this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-upsert', {
       detail: { overlay },
     }));
   }
 
-  _emitOverlaySyncPatch(overlay, patch) {
+  _emitOverlaySyncPatch(overlay: OverlayLike, patch: OverlayStylePatch | { name?: string; visible?: boolean }) {
     if (!overlay?.syncOverlayId) return;
     this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-patch', {
       detail: { overlayId: overlay.syncOverlayId, patch },
@@ -462,25 +613,25 @@ class OverlayManagerControl {
     }));
   }
 
-  _emitOverlaySyncDelete(overlay) {
+  _emitOverlaySyncDelete(overlay: OverlayLike) {
     if (!overlay?.syncOverlayId) return;
     this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-delete', {
       detail: { overlayId: overlay.syncOverlayId },
     }));
   }
 
-  _applyRemoteOverlayList(detail) {
+  _applyRemoteOverlayList(detail: OverlayListDetail) {
     const manifests = Array.isArray(detail?.overlays) ? detail.overlays : [];
-    const order = new Map(manifests.map((manifest, index) => [manifest.id, index]));
-    const remoteIds = new Set(manifests.map((manifest) => manifest.id));
+    const order = new Map(manifests.map((manifest: OverlayLike, index: number) => [manifest.id, index]));
+    const remoteIds = new Set(manifests.map((manifest: OverlayLike) => manifest.id));
     for (const overlay of this._overlays.slice()) {
       if (overlay.remoteOverlayId && !remoteIds.has(overlay.remoteOverlayId)) {
         this._removeOverlay(overlay, { emit: false });
       }
     }
     this._overlays.sort((a, b) => {
-      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId) ? order.get(a.remoteOverlayId || a.syncOverlayId) : Number.MAX_SAFE_INTEGER;
-      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId) ? order.get(b.remoteOverlayId || b.syncOverlayId) : Number.MAX_SAFE_INTEGER;
+      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId) ? Number(order.get(a.remoteOverlayId || a.syncOverlayId)) : Number.MAX_SAFE_INTEGER;
+      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId) ? Number(order.get(b.remoteOverlayId || b.syncOverlayId)) : Number.MAX_SAFE_INTEGER;
       return aOrder - bOrder;
     });
     for (const manifest of manifests) {
@@ -504,13 +655,13 @@ class OverlayManagerControl {
     this._render();
   }
 
-  _addRemoteOverlay(detail) {
+  _addRemoteOverlay(detail: OverlayRemoteAddDetail) {
     const manifest = detail?.manifest;
     const content = detail?.content;
     if (!manifest || !content) return;
     if (this._overlays.some((overlay) => overlay.remoteOverlayId === manifest.id || overlay.syncOverlayId === manifest.id)) return;
 
-    const overlay = manifest.type === 'gpx'
+    const overlay = manifest.type === 'gpx' && typeof content === 'string'
       ? addGpxToMap(this._map, content, {
         name: manifest.name,
         remote: true,
@@ -545,7 +696,7 @@ class OverlayManagerControl {
     }
   }
 
-  async _importFiles(files) {
+  async _importFiles(files: File[]) {
     const supported = files.filter((file) => /\.(gpx|geojson|json)$/i.test(file.name));
     if (supported.length === 0) {
       this._setStatus('No supported files');
@@ -553,7 +704,7 @@ class OverlayManagerControl {
     }
 
     let imported = 0;
-    let bounds = null;
+    let bounds: OverlayBounds | null = null;
     this._setStatus('Importing...');
 
     for (const file of supported) {
@@ -563,13 +714,13 @@ class OverlayManagerControl {
           const result = await processOrQueueGpx(this._map, text, { name: file.name });
           if (result) {
             imported += 1;
-            bounds = mergeBounds(bounds, result.bounds);
+            bounds = mergeBounds(bounds, asOverlayBounds(result.bounds));
           }
         } else {
           const result = processOrQueueGeoJson(this._map, JSON.parse(text), { name: file.name });
           if (result) {
             imported += 1;
-            bounds = mergeBounds(bounds, result.bounds);
+            bounds = mergeBounds(bounds, asOverlayBounds(result.bounds));
           }
         }
       } catch (error) {
@@ -581,7 +732,7 @@ class OverlayManagerControl {
     this._setStatus(imported > 0 ? `Imported ${imported}` : 'Import failed');
   }
 
-  async _importUrl(value) {
+  async _importUrl(value: string | null | undefined) {
     const url = String(value || '').trim();
     if (!url) {
       this._setStatus('Enter a URL');
@@ -597,15 +748,16 @@ class OverlayManagerControl {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const name = importNameFromUrl(url, type === 'gpx' ? 'GPX URL' : 'GeoJSON URL');
-      const result = type === 'gpx'
+      const result: OverlayImportResult = type === 'gpx'
         ? await processOrQueueGpx(this._map, await response.text(), { name })
-        : processOrQueueGeoJson(this._map, await response.json(), { name });
+        : processOrQueueGeoJson(this._map, await response.json(), { name }) as OverlayImportResult;
 
       if (!result) {
         this._setStatus('Import failed');
         return;
       }
-      if (result.bounds) this._map.fitBounds(result.bounds, { padding: 60, maxZoom: 15 });
+      const bounds = asOverlayBounds(result.bounds);
+      if (bounds) this._map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
       this._urlInput.value = '';
       this._setStatus('Imported URL');
     } catch (error) {
@@ -621,12 +773,12 @@ class OverlayManagerControl {
     return this._overlays.find((overlay) => overlay.id === this._selectedId) || null;
   }
 
-  _selectOverlay(id) {
+  _selectOverlay(id: string) {
     this._selectedId = id;
     this._render();
   }
 
-  _renameSelected(name) {
+  _renameSelected(name: string) {
     const overlay = this._selectedOverlay();
     if (!overlay) return;
     overlay.name = name.replace(/\s+/g, ' ').trimStart() || formatOverlayType(overlay.type);
@@ -635,7 +787,7 @@ class OverlayManagerControl {
     this._emitOverlaySyncPatch(overlay, { name: overlay.name });
   }
 
-  _updateSelectedStyle(changes) {
+  _updateSelectedStyle(changes: OverlayStylePatch) {
     const overlay = this._selectedOverlay();
     if (!overlay) return;
     if (overlay.type === 'gpx' || overlay.subType === 'osrm') return;
@@ -652,7 +804,7 @@ class OverlayManagerControl {
     });
   }
 
-  _toggleOverlayVisibility(overlay) {
+  _toggleOverlayVisibility(overlay: OverlayLike) {
     overlay.visible = !overlay.visible;
     for (const layerId of overlay.layerIds) {
       if (this._map.getLayer(layerId)) {
@@ -664,7 +816,7 @@ class OverlayManagerControl {
     this._emitOverlaySyncPatch(overlay, { visible: overlay.visible });
   }
 
-  _applyOverlayStyle(overlay) {
+  _applyOverlayStyle(overlay: OverlayLike) {
     if (overlay.type === 'gpx') return;
     const color = normalizeColor(overlay.color);
     const opacity = clamp(overlay.opacity, 0.2, 1);
@@ -727,7 +879,7 @@ class OverlayManagerControl {
     this._removeOverlay(overlay, { emit: true });
   }
 
-  _removeOverlay(overlay, { emit = true } = {}) {
+  _removeOverlay(overlay: OverlayLike, { emit = true }: OverlayMutationOptions = {}) {
     for (const layerId of overlay.layerIds.slice().reverse()) {
       if (this._map.getLayer(layerId)) this._map.removeLayer(layerId);
     }
@@ -738,7 +890,7 @@ class OverlayManagerControl {
     if (emit) this._emitOverlaySyncDelete(overlay);
   }
 
-  _deleteRemoteOverlay(remoteOverlayId) {
+  _deleteRemoteOverlay(remoteOverlayId?: string) {
     if (!remoteOverlayId) return;
     const overlay = this._overlays.find((item) => item.remoteOverlayId === remoteOverlayId || item.syncOverlayId === remoteOverlayId);
     if (overlay) this._removeOverlay(overlay, { emit: false });
@@ -765,7 +917,11 @@ class OverlayManagerControl {
     }
   }
 
-  _moveOverlayToIndex(overlayId, destinationIndex, { render = true, sync = true } = {}) {
+  _moveOverlayToIndex(
+    overlayId: string,
+    destinationIndex: number,
+    { render = true, sync = true }: MoveOverlayOptions = {},
+  ) {
     const fromIndex = this._overlays.findIndex((overlay) => overlay.id === overlayId);
     if (fromIndex === -1) return false;
 
@@ -785,17 +941,18 @@ class OverlayManagerControl {
     return true;
   }
 
-  _focusReorderHandle(overlayId) {
-    const row = Array.from(this._list.querySelectorAll('.overlay-manager-item'))
+  _focusReorderHandle(overlayId: string) {
+    const list = this._list as HTMLElement;
+    const row = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item'))
       .find((item) => item.dataset.overlayId === overlayId);
-    row?.querySelector('.overlay-manager-reorder-handle')?.focus();
+    row?.querySelector<HTMLElement>('.overlay-manager-reorder-handle')?.focus();
   }
 
-  _handleReorderKeydown(event, overlayId) {
+  _handleReorderKeydown(event: KeyboardEvent, overlayId: string) {
     const index = this._overlays.findIndex((overlay) => overlay.id === overlayId);
     if (index === -1) return;
 
-    let destinationIndex = null;
+    let destinationIndex: number | null = null;
     if (event.key === 'ArrowUp') destinationIndex = index - 1;
     if (event.key === 'ArrowDown') destinationIndex = index + 1;
     if (event.key === 'Home') destinationIndex = 0;
@@ -810,14 +967,15 @@ class OverlayManagerControl {
   }
 
   _syncListSelection() {
-    for (const row of this._list.querySelectorAll('.overlay-manager-item')) {
+    for (const row of this._list.querySelectorAll<HTMLElement>('.overlay-manager-item')) {
       row.classList.toggle('selected', row.dataset.overlayId === this._selectedId);
     }
   }
 
-  _beginReorder(event, overlayId) {
+  _beginReorder(event: PointerEvent, overlayId: string) {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    const row = event.currentTarget.closest('.overlay-manager-item');
+    const handle = event.currentTarget as HTMLElement;
+    const row = handle.closest<HTMLElement>('.overlay-manager-item');
     if (!row) return;
 
     event.preventDefault();
@@ -827,21 +985,22 @@ class OverlayManagerControl {
     this._dragState = {
       id: overlayId,
       pointerId: event.pointerId,
-      handle: event.currentTarget,
+      handle,
       row,
     };
     row.classList.add('reordering');
     this._list.classList.add('overlay-manager-list-reordering');
-    event.currentTarget.setPointerCapture?.(event.pointerId);
+    handle.setPointerCapture?.(event.pointerId);
   }
 
-  _updateReorder(event) {
+  _updateReorder(event: PointerEvent) {
     const state = this._dragState;
     if (!state || state.pointerId !== event.pointerId) return;
 
     event.preventDefault();
     event.stopPropagation();
-    const rows = Array.from(this._list.querySelectorAll('.overlay-manager-item'))
+    const list = this._list as HTMLElement;
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item'))
       .filter((row) => row !== state.row);
     let destinationIndex = rows.length;
     for (let index = 0; index < rows.length; index += 1) {
@@ -859,7 +1018,7 @@ class OverlayManagerControl {
     this._moveOverlayToIndex(state.id, destinationIndex, { render: false, sync: false });
   }
 
-  _finishReorder(event) {
+  _finishReorder(event: PointerEvent | null) {
     const state = this._dragState;
     if (!state || (event && state.pointerId !== event.pointerId)) return;
 
@@ -877,7 +1036,7 @@ class OverlayManagerControl {
     this._syncDetails();
   }
 
-  _setStatus(message) {
+  _setStatus(message: string) {
     window.clearTimeout(this._importStatusTimer);
     this._status.textContent = message;
     this._status.classList.toggle('visible', Boolean(message));
@@ -889,10 +1048,10 @@ class OverlayManagerControl {
     }
   }
 
-  _handleKeydown(event) {
+  _handleKeydown(event: KeyboardEvent) {
     if (event.key !== 'Escape') return;
     if (this._dragState) {
-      this._finishReorder();
+      this._finishReorder(null);
       return;
     }
     if (this._expanded) this.setExpanded(false);
@@ -980,7 +1139,7 @@ class OverlayManagerControl {
     this._opacityField.hidden = hasDataDrivenStyle;
     const color = normalizeColor(overlay.color);
     this._customColor.value = color;
-    for (const swatch of this._swatches.querySelectorAll('.overlay-manager-swatch')) {
+    for (const swatch of this._swatches.querySelectorAll<HTMLElement>('.overlay-manager-swatch')) {
       swatch.classList.toggle('selected', swatch.dataset.color === color);
     }
 
@@ -995,15 +1154,16 @@ class OverlayManagerControl {
   }
 }
 
-function mergeBounds(a, b) {
-  if (!a) return b;
-  if (!b) return a;
+function mergeBounds(a: OverlayBounds | null, b: BoundsLike | null | undefined): OverlayBounds | null {
+  const next = asOverlayBounds(b);
+  if (!a) return next;
+  if (!next) return a;
   return [
-    [Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],
-    [Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])],
+    [Math.min(a[0][0], next[0][0]), Math.min(a[0][1], next[0][1])],
+    [Math.max(a[1][0], next[1][0]), Math.max(a[1][1], next[1][1])],
   ];
 }
 
-export function installOverlayManager(map) {
+export function installOverlayManager(map: OverlayMap) {
   map.addControl(new OverlayManagerControl(), 'top-right');
 }

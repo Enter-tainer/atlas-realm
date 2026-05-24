@@ -5,6 +5,7 @@ import {
   encodeOverlayBinaryMessage,
   materializeOverlayContent,
 } from './overlay-sync.js';
+import type { OverlayContent, OverlayManifest, OverlaySyncAsset } from './overlay-sync.js';
 
 const PARTY_NAME = 'map-collaboration';
 const DEFAULT_ROOM = 'main';
@@ -16,7 +17,80 @@ const STALE_PEER_MS = 45_000;
 const EARTH_RADIUS_METERS = 6_378_137;
 const LOCATION_ACCURACY_SEGMENTS = 48;
 const SVG_NS = 'http://www.w3.org/2000/svg';
-const EMPTY_LOCATION = {
+type JsonRecord = Record<string, unknown>;
+type LngLatTuple = [number, number];
+type PointLike = { x: number; y: number };
+type EaseToOptions = {
+  center: LngLatTuple;
+  zoom: number;
+  bearing: number;
+  pitch: number;
+  duration: number;
+  essential: boolean;
+};
+type UserProfile = { userId: string; name: string; color: string };
+type PeerUser = { id?: string; name: string; color: string };
+type CursorState = { visible: boolean; lngLat: LngLatTuple | null };
+type LocationState = {
+  enabled: boolean;
+  lngLat: LngLatTuple | null;
+  accuracy: number | null;
+  heading: number | null;
+  speed: number | null;
+  updatedAt: number | null;
+};
+type ViewportSnapshot = {
+  center: LngLatTuple;
+  zoom: number;
+  bearing: number;
+  pitch: number;
+  corners: LngLatTuple[];
+};
+type CollaborationViewState = { terrain?: boolean; satellite?: boolean };
+type Peer = {
+  id: string;
+  user: PeerUser;
+  viewport?: ViewportSnapshot;
+  cursor?: CursorState;
+  location?: LocationState;
+  followingId?: string | null;
+  viewState?: CollaborationViewState;
+  updatedAt?: number;
+};
+type LocalOverlay = JsonRecord & {
+  id: string;
+  data?: OverlayContent;
+  syncOverlayId?: string;
+  remoteOverlayId?: string | null;
+};
+type CollaborationMessage = JsonRecord & {
+  type?: string;
+  id?: string;
+  peer?: Peer;
+  peers?: Peer[];
+  overlays?: OverlayManifest[];
+  persistence?: 'ephemeral' | 'persistent';
+  contentHash?: string;
+  overlayId?: string;
+  patch?: JsonRecord;
+};
+type CollaborationMap = {
+  getContainer(): HTMLElement;
+  getCanvas(): HTMLCanvasElement;
+  project(lngLat: LngLatTuple): PointLike;
+  unproject(point: [number, number]): { toArray(): LngLatTuple };
+  getCenter(): { toArray(): LngLatTuple };
+  getZoom(): number;
+  getBearing(): number;
+  getPitch(): number;
+  easeTo(options: EaseToOptions): void;
+  on(event: string, handler: (event: { lngLat: { toArray(): LngLatTuple } }) => void): void;
+  getCollaborationViewState?: () => { terrain: boolean; satellite: boolean };
+  setCollaborationViewState?: (viewState: CollaborationViewState, options?: { silent?: boolean }) => void;
+};
+type AttributeValue = string | number | boolean | null | undefined;
+
+const EMPTY_LOCATION: LocationState = {
   enabled: false,
   lngLat: null,
   accuracy: null,
@@ -36,7 +110,11 @@ const PROFILE_COLORS = [
   '#4f46e5',
 ];
 
-function safeGetStorage(storage, key) {
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function safeGetStorage(storage: Storage, key: string) {
   try {
     return storage.getItem(key);
   } catch {
@@ -44,7 +122,7 @@ function safeGetStorage(storage, key) {
   }
 }
 
-function safeSetStorage(storage, key, value) {
+function safeSetStorage(storage: Storage, key: string, value: string) {
   try {
     storage.setItem(key, value);
   } catch {
@@ -52,7 +130,7 @@ function safeSetStorage(storage, key, value) {
   }
 }
 
-function randomId(prefix) {
+function randomId(prefix: string) {
   const id = globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 48)}`;
 }
@@ -65,12 +143,18 @@ function getSessionId() {
   return id;
 }
 
-function getProfile() {
+function getProfile(): UserProfile {
   const stored = safeGetStorage(localStorage, PROFILE_KEY);
   if (stored) {
     try {
-      const profile = JSON.parse(stored);
-      if (profile?.userId && profile?.name && profile?.color) return profile;
+      const profile = JSON.parse(stored) as Partial<UserProfile>;
+      if (profile?.userId && profile?.name && profile?.color) {
+        return {
+          userId: profile.userId,
+          name: profile.name,
+          color: profile.color,
+        };
+      }
     } catch {
       // Fall through to a new local profile.
     }
@@ -87,7 +171,7 @@ function getProfile() {
   return profile;
 }
 
-function sanitizeProfileName(value, fallback = 'Guest') {
+function sanitizeProfileName(value: unknown, fallback = 'Guest') {
   const name = String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
@@ -95,7 +179,7 @@ function sanitizeProfileName(value, fallback = 'Guest') {
   return name || fallback;
 }
 
-function normalizeRoom(value) {
+function normalizeRoom(value: unknown) {
   const normalized = String(value || '')
     .trim()
     .toLowerCase()
@@ -111,22 +195,29 @@ function getInitialRoom() {
   return raw ? normalizeRoom(raw) : null;
 }
 
-function updateRoomUrl(room) {
+function updateRoomUrl(room: string) {
   const nextUrl = new URL(window.location.href);
   nextUrl.searchParams.set('room', room);
   window.history.replaceState(null, '', nextUrl);
 }
 
-function createElement(tag, className, attributes = {}) {
+function createElement<K extends keyof HTMLElementTagNameMap>(
+  tag: K,
+  className?: string,
+  attributes: Record<string, AttributeValue> = {},
+): HTMLElementTagNameMap[K] {
   const el = document.createElement(tag);
   if (className) el.className = className;
   for (const [name, value] of Object.entries(attributes)) {
-    if (value !== undefined && value !== null) el.setAttribute(name, value);
+    if (value !== undefined && value !== null) el.setAttribute(name, String(value));
   }
   return el;
 }
 
-function createSvgElement(tag, attributes = {}) {
+function createSvgElement<K extends keyof SVGElementTagNameMap>(
+  tag: K,
+  attributes: Record<string, AttributeValue> = {},
+): SVGElementTagNameMap[K] {
   const el = document.createElementNS(SVG_NS, tag);
   for (const [name, value] of Object.entries(attributes)) {
     if (value !== undefined && value !== null) el.setAttribute(name, String(value));
@@ -134,35 +225,37 @@ function createSvgElement(tag, attributes = {}) {
   return el;
 }
 
-function safeColor(color) {
-  return /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : PROFILE_COLORS[0];
+function safeColor(color: unknown) {
+  return typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : PROFILE_COLORS[0];
 }
 
-function initials(name) {
+function initials(name: unknown) {
   const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
   const letters = parts.length > 1 ? [parts[0][0], parts[1][0]] : [parts[0]?.[0] || '?'];
   return letters.join('').toUpperCase();
 }
 
-function pointString(point) {
+function pointString(point: PointLike | null | undefined) {
   if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
   return `${point.x.toFixed(1)},${point.y.toFixed(1)}`;
 }
 
-function optionalNumber(value, min, max) {
+function optionalNumber(value: unknown, min: number, max: number) {
   if (value === null || value === undefined) return null;
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.min(max, Math.max(min, number));
 }
 
-function normalizeLocalLocation(value) {
-  if (!value || value.enabled === false) {
+function normalizeLocalLocation(value: unknown): LocationState {
+  const record = isRecord(value) ? value : null;
+  if (!record || record.enabled === false) {
     return { ...EMPTY_LOCATION, updatedAt: Date.now() };
   }
 
-  const lng = Number(value.lngLat?.[0]);
-  const lat = Number(value.lngLat?.[1]);
+  const lngLat = Array.isArray(record.lngLat) ? record.lngLat : [];
+  const lng = Number(lngLat[0]);
+  const lat = Number(lngLat[1]);
   if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
     return { ...EMPTY_LOCATION, updatedAt: Date.now() };
   }
@@ -173,18 +266,22 @@ function normalizeLocalLocation(value) {
       Math.min(180, Math.max(-180, lng)),
       Math.min(85, Math.max(-85, lat)),
     ],
-    accuracy: optionalNumber(value.accuracy, 0, 50_000),
-    heading: optionalNumber(value.heading, 0, 360),
-    speed: optionalNumber(value.speed, 0, 200),
-    updatedAt: optionalNumber(value.timestamp, 0, Number.MAX_SAFE_INTEGER) || Date.now(),
+    accuracy: optionalNumber(record.accuracy, 0, 50_000),
+    heading: optionalNumber(record.heading, 0, 360),
+    speed: optionalNumber(record.speed, 0, 200),
+    updatedAt: optionalNumber(record.timestamp, 0, Number.MAX_SAFE_INTEGER) || Date.now(),
   };
 }
 
-function normalizeLongitude(lng) {
+function normalizeLongitude(lng: number) {
   return ((((lng + 180) % 360) + 360) % 360) - 180;
 }
 
-function destinationLngLat(lngLat, distanceMeters, bearingDegrees) {
+function destinationLngLat(
+  lngLat: LngLatTuple,
+  distanceMeters: number,
+  bearingDegrees: number,
+): LngLatTuple {
   const angularDistance = distanceMeters / EARTH_RADIUS_METERS;
   const bearing = (bearingDegrees * Math.PI) / 180;
   const lat1 = (Number(lngLat[1]) * Math.PI) / 180;
@@ -206,11 +303,11 @@ function destinationLngLat(lngLat, distanceMeters, bearingDegrees) {
   ];
 }
 
-function accuracyRingPoints(map, lngLat, accuracyMeters) {
+function accuracyRingPoints(map: CollaborationMap, lngLat: LngLatTuple, accuracyMeters: number | null | undefined) {
   const accuracy = Number(accuracyMeters);
   if (!Number.isFinite(accuracy) || accuracy <= 0) return null;
 
-  const points = [];
+  const points: string[] = [];
   for (let i = 0; i < LOCATION_ACCURACY_SEGMENTS; i += 1) {
     const bearing = (i / LOCATION_ACCURACY_SEGMENTS) * 360;
     const projected = map.project(destinationLngLat(lngLat, accuracy, bearing));
@@ -221,16 +318,17 @@ function accuracyRingPoints(map, lngLat, accuracyMeters) {
   return points.join(' ');
 }
 
-function buildViewportSnapshot(map) {
+function buildViewportSnapshot(map: CollaborationMap): ViewportSnapshot {
   const canvas = map.getCanvas();
   const width = canvas.clientWidth || canvas.width || 0;
   const height = canvas.clientHeight || canvas.height || 0;
-  const corners = [
+  const cornerPoints: [number, number][] = [
     [0, 0],
     [width, 0],
     [width, height],
     [0, height],
-  ].map((point) => map.unproject(point).toArray());
+  ];
+  const corners = cornerPoints.map((point) => map.unproject(point).toArray());
 
   return {
     center: map.getCenter().toArray(),
@@ -241,43 +339,43 @@ function buildViewportSnapshot(map) {
   };
 }
 
-function buildShareUrl(room) {
+function buildShareUrl(room: string) {
   const url = new URL(window.location.href);
   url.searchParams.set('room', room);
   return url.toString();
 }
 
-function readViewState(map) {
+function readViewState(map: CollaborationMap) {
   return map.getCollaborationViewState?.() || { terrain: false, satellite: false };
 }
 
-function applyViewState(map, viewState) {
-  if (!viewState || typeof viewState !== 'object') return;
+function applyViewState(map: CollaborationMap, viewState: CollaborationViewState | null | undefined) {
+  if (!viewState) return;
   map.setCollaborationViewState?.({
     terrain: Boolean(viewState.terrain),
     satellite: Boolean(viewState.satellite),
   }, { silent: true });
 }
 
-export function installMapCollaboration(map) {
+export function installMapCollaboration(map: CollaborationMap) {
   const mapContainer = map.getContainer();
   const clientId = getSessionId();
   const profile = getProfile();
-  const peers = new Map();
-  const overlayManifests = new Map();
-  const overlayContentBytes = new Map();
-  const pendingOverlayAssets = new Map();
-  const requestedOverlayContent = new Set();
-  const localOverlayIds = new Set();
-  const knownLocalOverlays = new Map();
-  const uploadedLocalOverlayHashes = new Map();
+  const peers = new Map<string, Peer>();
+  const overlayManifests = new Map<string, OverlayManifest>();
+  const overlayContentBytes = new Map<string, Uint8Array>();
+  const pendingOverlayAssets = new Map<string, Map<string, OverlaySyncAsset>>();
+  const requestedOverlayContent = new Set<string>();
+  const localOverlayIds = new Set<string>();
+  const knownLocalOverlays = new Map<string, LocalOverlay>();
+  const uploadedLocalOverlayHashes = new Map<string, string>();
 
-  let socket = null;
+  let socket: PartySocket | null = null;
   let currentRoom = getInitialRoom();
-  let localCursor = { visible: false, lngLat: null };
-  let localLocation = { ...EMPTY_LOCATION };
+  let localCursor: CursorState = { visible: false, lngLat: null };
+  let localLocation: LocationState = { ...EMPTY_LOCATION };
   let ownConnectionId = clientId;
-  let followedPeerId = null;
+  let followedPeerId: string | null = null;
   let applyingRemoteView = false;
   let destroyed = false;
   let lastSentAt = 0;
@@ -295,7 +393,9 @@ export function installMapCollaboration(map) {
   const viewportLayer = createSvgElement('g', { class: 'collab-overlay-viewports' });
   const locationLayer = createSvgElement('g', { class: 'collab-overlay-locations' });
   const cursorLayer = createSvgElement('g', { class: 'collab-overlay-cursors' });
-  overlay.append(viewportLayer, locationLayer, cursorLayer);
+  overlay.appendChild(viewportLayer);
+  overlay.appendChild(locationLayer);
+  overlay.appendChild(cursorLayer);
 
   const panel = createElement('section', 'collab-panel', {
     'aria-label': 'Map collaboration',
@@ -311,8 +411,10 @@ export function installMapCollaboration(map) {
   const compactSummary = createElement('span', 'collab-compact-summary');
   const compactTitle = createElement('span', 'collab-compact-title');
   const compactMeta = createElement('span', 'collab-compact-meta');
-  compactSummary.append(compactTitle, compactMeta);
-  compactToggle.append(compactAvatars, compactSummary);
+  compactSummary.appendChild(compactTitle);
+  compactSummary.appendChild(compactMeta);
+  compactToggle.appendChild(compactAvatars);
+  compactToggle.appendChild(compactSummary);
 
   const panelBody = createElement('div', 'collab-panel-body');
 
@@ -332,7 +434,9 @@ export function installMapCollaboration(map) {
     placeholder: 'How others see you',
   });
   nameInput.value = profile.name;
-  nameField.append(nameLabel, nameInput, nameHint);
+  nameField.appendChild(nameLabel);
+  nameField.appendChild(nameInput);
+  nameField.appendChild(nameHint);
 
   const roomField = createElement('label', 'collab-field collab-room-field');
   const roomLabel = createElement('span', 'collab-field-label');
@@ -349,7 +453,9 @@ export function installMapCollaboration(map) {
     placeholder: 'main',
   });
   roomInput.value = currentRoom || '';
-  roomField.append(roomLabel, roomInput, roomHint);
+  roomField.appendChild(roomLabel);
+  roomField.appendChild(roomInput);
+  roomField.appendChild(roomHint);
 
   const actionGroup = createElement('div', 'collab-action-group');
 
@@ -359,22 +465,30 @@ export function installMapCollaboration(map) {
   const shareButton = createElement('button', 'collab-button collab-button-secondary collab-share-button', { type: 'button' });
   shareButton.textContent = 'Copy invite link';
   shareButton.hidden = true;
-  actionGroup.append(joinButton, shareButton);
+  actionGroup.appendChild(joinButton);
+  actionGroup.appendChild(shareButton);
 
   const presenceBar = createElement('div', 'collab-presence-bar');
   const presenceSummary = createElement('span', 'collab-presence-summary');
   const avatars = createElement('div', 'collab-avatars', { 'aria-label': 'People in room' });
-  presenceBar.append(presenceSummary, avatars);
+  presenceBar.appendChild(presenceSummary);
+  presenceBar.appendChild(avatars);
 
   const followBar = createElement('div', 'collab-follow-bar');
   const followLabel = createElement('span', 'collab-follow-label');
   const stopFollowButton = createElement('button', 'collab-follow-stop', { type: 'button' });
   stopFollowButton.textContent = 'Stop following';
-  followBar.append(followLabel, stopFollowButton);
+  followBar.appendChild(followLabel);
+  followBar.appendChild(stopFollowButton);
 
-  roomForm.append(nameField, roomField, actionGroup);
-  panelBody.append(roomForm, presenceBar, followBar);
-  panel.append(compactToggle, panelBody);
+  roomForm.appendChild(nameField);
+  roomForm.appendChild(roomField);
+  roomForm.appendChild(actionGroup);
+  panelBody.appendChild(roomForm);
+  panelBody.appendChild(presenceBar);
+  panelBody.appendChild(followBar);
+  panel.appendChild(compactToggle);
+  panel.appendChild(panelBody);
 
   function isMobileViewport() {
     return window.innerWidth <= 760;
@@ -432,7 +546,7 @@ export function installMapCollaboration(map) {
     safeSetStorage(localStorage, PROFILE_KEY, JSON.stringify(profile));
   }
 
-  function updateProfileName(value) {
+  function updateProfileName(value: unknown) {
     const nextName = sanitizeProfileName(value, profile.name);
     nameInput.value = nextName;
     if (profile.name === nextName) return;
@@ -464,14 +578,14 @@ export function installMapCollaboration(map) {
     shareButton.disabled = !canCopyLink;
   }
 
-  function setPanelExpanded(expanded) {
+  function setPanelExpanded(expanded: boolean) {
     panelExpanded = Boolean(expanded);
     panel.dataset.expanded = panelExpanded ? 'true' : 'false';
     compactToggle.setAttribute('aria-expanded', String(panelExpanded));
     renderCompactSummary();
   }
 
-  function setStatus(text, state) {
+  function setStatus(text: string, state: string) {
     panel.dataset.connection = state;
     updateActionState();
     renderPresenceSummary();
@@ -479,7 +593,7 @@ export function installMapCollaboration(map) {
     renderCompactSummary();
   }
 
-  function createAvatarNode(peer, className = 'collab-avatar') {
+  function createAvatarNode(peer: Peer, className = 'collab-avatar') {
     const avatar = createElement('button', className, {
       type: 'button',
       title: `Follow ${peer.user.name}`,
@@ -501,14 +615,14 @@ export function installMapCollaboration(map) {
     const local = createElement('span', 'collab-compact-avatar');
     local.style.setProperty('--peer-color', safeColor(profile.color));
     local.textContent = initials(profile.name);
-    compactAvatars.append(local);
+    compactAvatars.appendChild(local);
 
     for (const peer of [...peers.values()].slice(0, 3)) {
       const avatar = createElement('span', 'collab-compact-avatar');
       avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
       avatar.textContent = initials(peer.user.name);
       avatar.classList.toggle('following', peer.id === followedPeerId);
-      compactAvatars.append(avatar);
+      compactAvatars.appendChild(avatar);
     }
   }
 
@@ -518,13 +632,13 @@ export function installMapCollaboration(map) {
     if (!socket) {
       const empty = createElement('span', 'collab-empty');
       empty.textContent = 'Offline';
-      avatars.append(empty);
+      avatars.appendChild(empty);
     } else if (peers.size === 0) {
       const empty = createElement('span', 'collab-empty');
       empty.textContent = 'Just you';
-      avatars.append(empty);
+      avatars.appendChild(empty);
     } else {
-      for (const peer of peers.values()) avatars.append(createAvatarNode(peer));
+      for (const peer of peers.values()) avatars.appendChild(createAvatarNode(peer));
     }
 
     const followedPeer = followedPeerId ? peers.get(followedPeerId) : null;
@@ -543,9 +657,9 @@ export function installMapCollaboration(map) {
   function renderOverlay() {
     overlayFrame = 0;
     const now = Date.now();
-    const viewportNodes = [];
-    const locationNodes = [];
-    const cursorNodes = [];
+    const viewportNodes: SVGElement[] = [];
+    const locationNodes: SVGElement[] = [];
+    const cursorNodes: SVGElement[] = [];
 
     for (const peer of peers.values()) {
       const color = safeColor(peer.user?.color);
@@ -553,7 +667,7 @@ export function installMapCollaboration(map) {
       const shouldShowViewport = peer.id !== followedPeerId && !peer.followingId;
 
       if (shouldShowViewport && peer.viewport?.corners?.length === 4) {
-        const points = peer.viewport.corners.map((lngLat) => pointString(map.project(lngLat)));
+        const points = peer.viewport.corners.map((lngLat: LngLatTuple) => pointString(map.project(lngLat)));
         if (points.every(Boolean)) {
           const polygon = createSvgElement('polygon', {
             class: `collab-viewport${staleClass}`,
@@ -584,7 +698,7 @@ export function installMapCollaboration(map) {
             transform: `translate(${point.x.toFixed(1)} ${point.y.toFixed(1)})`,
           });
           group.style.setProperty('--peer-color', color);
-          group.append(
+          group.appendChild(
             createSvgElement('path', {
               class: 'collab-cursor-pointer',
               d: 'M0 0 L0 20 L5 15 L8 23 L12 21 L9 13 L17 13 Z',
@@ -596,7 +710,7 @@ export function installMapCollaboration(map) {
             y: 16,
           });
           label.textContent = peer.user.name;
-          group.append(label);
+          group.appendChild(label);
           cursorNodes.push(group);
         }
       }
@@ -620,13 +734,13 @@ export function installMapCollaboration(map) {
           });
           group.style.setProperty('--peer-color', color);
           if (Number.isFinite(Number(peer.location.heading))) {
-            group.append(createSvgElement('path', {
+            group.appendChild(createSvgElement('path', {
               class: 'collab-location-heading',
               d: 'M0 -24 L5 -10 L0 -13 L-5 -10 Z',
               transform: `rotate(${Number(peer.location.heading).toFixed(1)})`,
             }));
           }
-          group.append(createSvgElement('circle', {
+          group.appendChild(createSvgElement('circle', {
             class: 'collab-location-dot',
             cx: 0,
             cy: 0,
@@ -638,7 +752,7 @@ export function installMapCollaboration(map) {
             y: 4,
           });
           label.textContent = peer.user.name;
-          group.append(label);
+          group.appendChild(label);
           locationNodes.push(group);
         }
       }
@@ -668,32 +782,35 @@ export function installMapCollaboration(map) {
     }));
   }
 
-  function sendOverlayMessage(message) {
+  function sendOverlayMessage(message: JsonRecord) {
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
     socket.send(JSON.stringify(message));
     return true;
   }
 
-  function dispatchRemoteOverlayList(manifests, persistence = 'ephemeral') {
+  function dispatchRemoteOverlayList(
+    manifests: OverlayManifest[],
+    persistence: 'ephemeral' | 'persistent' = 'ephemeral',
+  ) {
     mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-list', {
       detail: { overlays: manifests, persistence },
     }));
   }
 
-  function dispatchRemoteOverlayDelete(overlayId) {
+  function dispatchRemoteOverlayDelete(overlayId: string) {
     mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-delete', {
       detail: { overlayId },
     }));
   }
 
-  function rememberOverlayManifests(manifests) {
+  function rememberOverlayManifests(manifests: OverlayManifest[]) {
     overlayManifests.clear();
     for (const manifest of manifests || []) {
       if (manifest?.id && manifest?.contentHash) overlayManifests.set(manifest.id, manifest);
     }
   }
 
-  function requestMissingOverlayContent(manifests) {
+  function requestMissingOverlayContent(manifests: OverlayManifest[]) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     for (const manifest of manifests || []) {
       const hash = manifest?.contentHash;
@@ -706,7 +823,10 @@ export function installMapCollaboration(map) {
     }
   }
 
-  async function dispatchRemoteOverlayAdd(manifest, contentBytes) {
+  async function dispatchRemoteOverlayAdd(
+    manifest: OverlayManifest,
+    contentBytes: Uint8Array,
+  ) {
     if (!manifest || !contentBytes || localOverlayIds.has(manifest.id)) return;
     try {
       const content = await materializeOverlayContent(manifest, contentBytes);
@@ -718,7 +838,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  function applyOverlayManifestList(message) {
+  function applyOverlayManifestList(message: CollaborationMessage) {
     const manifests = Array.isArray(message.overlays) ? message.overlays : [];
     rememberOverlayManifests(manifests);
     dispatchRemoteOverlayList(manifests, message.persistence || 'ephemeral');
@@ -730,7 +850,7 @@ export function installMapCollaboration(map) {
     requestMissingOverlayContent(manifests);
   }
 
-  async function handleOverlayBinaryMessage(data) {
+  async function handleOverlayBinaryMessage(data: unknown) {
     const frame = decodeOverlayBinaryMessage(data);
     if (!frame) return;
     overlayContentBytes.set(frame.contentHash, frame.content);
@@ -742,7 +862,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  async function syncLocalOverlay(overlay) {
+  async function syncLocalOverlay(overlay: LocalOverlay | undefined) {
     if (!overlay?.id || !overlay?.data) return;
     knownLocalOverlays.set(overlay.syncOverlayId || overlay.remoteOverlayId || overlay.id, overlay);
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
@@ -777,7 +897,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  function completePendingOverlayUpload(contentHash) {
+  function completePendingOverlayUpload(contentHash: string | undefined) {
     const assets = pendingOverlayAssets.get(contentHash);
     if (!assets) return;
     pendingOverlayAssets.delete(contentHash);
@@ -789,7 +909,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  function patchPendingOverlayAsset(overlayId, patch) {
+  function patchPendingOverlayAsset(overlayId: string, patch: JsonRecord) {
     const localOverlay = knownLocalOverlays.get(overlayId);
     if (localOverlay) Object.assign(localOverlay, patch);
     for (const assets of pendingOverlayAssets.values()) {
@@ -808,7 +928,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  function resendPendingOverlayContent(contentHash) {
+  function resendPendingOverlayContent(contentHash: string | undefined) {
     const asset = pendingOverlayAssets.get(contentHash)?.values().next().value;
     if (!asset || !socket || socket.readyState !== WebSocket.OPEN) return;
     socket.send(encodeOverlayBinaryMessage(contentHash, asset.content));
@@ -838,7 +958,7 @@ export function installMapCollaboration(map) {
     scheduleSend(true);
   }
 
-  function applyFollow(peer, immediate = false) {
+  function applyFollow(peer: Peer | undefined, immediate = false) {
     if (!peer?.viewport) return;
     const viewport = peer.viewport;
     const duration = immediate ? 260 : 180;
@@ -857,7 +977,7 @@ export function installMapCollaboration(map) {
     }, duration + 80);
   }
 
-  function scheduleFollow(peer) {
+  function scheduleFollow(peer: Peer | undefined) {
     if (!peer || peer.id !== followedPeerId) return;
     const elapsed = Date.now() - lastFollowAt;
     if (elapsed >= FOLLOW_INTERVAL_MS) {
@@ -869,12 +989,12 @@ export function installMapCollaboration(map) {
       followTimer = window.setTimeout(() => {
         followTimer = 0;
         lastFollowAt = Date.now();
-        applyFollow(peers.get(followedPeerId));
+        applyFollow(followedPeerId ? peers.get(followedPeerId) : undefined);
       }, FOLLOW_INTERVAL_MS - elapsed);
     }
   }
 
-  function followPeer(peerId, immediate = false) {
+  function followPeer(peerId: string, immediate = false) {
     const peer = peers.get(peerId);
     if (!peer) return;
     followedPeerId = peerId;
@@ -884,7 +1004,7 @@ export function installMapCollaboration(map) {
     applyFollow(peer, immediate);
   }
 
-  function upsertPeer(peer) {
+  function upsertPeer(peer: Peer | undefined) {
     if (!peer?.id || peer.id === ownConnectionId) return;
     peers.set(peer.id, peer);
     renderPeople();
@@ -892,15 +1012,15 @@ export function installMapCollaboration(map) {
     if (peer.id === followedPeerId) scheduleFollow(peer);
   }
 
-  async function handleMessage(event) {
+  async function handleMessage(event: MessageEvent) {
     if (typeof event.data !== 'string') {
       await handleOverlayBinaryMessage(event.data);
       return;
     }
 
-    let message;
+    let message: CollaborationMessage;
     try {
-      message = JSON.parse(event.data);
+      message = JSON.parse(event.data) as CollaborationMessage;
     } catch {
       return;
     }
@@ -955,7 +1075,7 @@ export function installMapCollaboration(map) {
     }
   }
 
-  function connect(roomValue) {
+  function connect(roomValue: string) {
     const room = normalizeRoom(roomValue);
     currentRoom = room;
     roomInput.value = room;
@@ -1005,7 +1125,7 @@ export function installMapCollaboration(map) {
       if (socket !== nextSocket) return;
       setStatus('Offline', 'offline');
     });
-    nextSocket.addEventListener('message', (event) => {
+    nextSocket.addEventListener('message', (event: MessageEvent) => {
       if (socket !== nextSocket) return;
       handleMessage(event).catch((error) => {
         console.error('Failed to handle collaboration message:', error);
@@ -1057,16 +1177,16 @@ export function installMapCollaboration(map) {
     }
     connect(nextRoom);
   });
-  const handleDocumentPointerDown = (event) => {
+  const handleDocumentPointerDown = (event: PointerEvent) => {
     if (destroyed || !panelExpanded) return;
-    if (!panel.contains(event.target)) setPanelExpanded(false);
+    if (event.target instanceof Node && !panel.contains(event.target)) setPanelExpanded(false);
   };
   compactToggle.addEventListener('click', () => setPanelExpanded(!panelExpanded));
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
 
   nameInput.addEventListener('change', () => updateProfileName(nameInput.value));
   nameInput.addEventListener('blur', () => updateProfileName(nameInput.value));
-  nameInput.addEventListener('keydown', (event) => {
+  nameInput.addEventListener('keydown', (event: KeyboardEvent) => {
     if (event.key === 'Escape') {
       nameInput.value = profile.name;
       nameInput.blur();
@@ -1098,16 +1218,19 @@ export function installMapCollaboration(map) {
     if (!applyingRemoteView && followedPeerId) stopFollowing();
     scheduleSend(true);
   });
-  const handleLocationChange = (event) => {
-    localLocation = normalizeLocalLocation(event.detail);
+  const handleLocationChange = (event: Event) => {
+    const detail = event instanceof CustomEvent ? event.detail : undefined;
+    localLocation = normalizeLocalLocation(detail);
     scheduleSend(true);
   };
-  const handleLocalOverlayUpsert = (event) => {
-    syncLocalOverlay(event.detail?.overlay);
+  const handleLocalOverlayUpsert = (event: Event) => {
+    const detail = event instanceof CustomEvent ? event.detail : undefined;
+    syncLocalOverlay(detail?.overlay);
   };
-  const handleLocalOverlayPatch = (event) => {
-    const overlayId = event.detail?.overlayId;
-    const patch = event.detail?.patch;
+  const handleLocalOverlayPatch = (event: Event) => {
+    const detail = event instanceof CustomEvent ? event.detail : undefined;
+    const overlayId = typeof detail?.overlayId === 'string' ? detail.overlayId : '';
+    const patch = isRecord(detail?.patch) ? detail.patch : null;
     if (!overlayId || !patch) return;
     patchPendingOverlayAsset(overlayId, patch);
     sendOverlayMessage({
@@ -1116,12 +1239,13 @@ export function installMapCollaboration(map) {
       patch,
     });
   };
-  const handleLocalOverlayReorder = (event) => {
-    const orderedIds = Array.isArray(event.detail?.orderedIds)
-      ? event.detail.orderedIds.filter(Boolean)
+  const handleLocalOverlayReorder = (event: Event) => {
+    const detail = event instanceof CustomEvent ? event.detail : undefined;
+    const orderedIds = Array.isArray(detail?.orderedIds)
+      ? detail.orderedIds.filter(Boolean).map(String)
       : [];
     if (pendingOverlayAssets.size > 0) {
-      const order = new Map(orderedIds.map((id, index) => [id, index]));
+      const order = new Map(orderedIds.map((id: string, index: number) => [id, index]));
       for (const assets of pendingOverlayAssets.values()) {
         for (const asset of assets.values()) {
           const id = asset.envelope.manifest.id;
@@ -1140,8 +1264,9 @@ export function installMapCollaboration(map) {
       orderedIds,
     });
   };
-  const handleLocalOverlayDelete = (event) => {
-    const overlayId = event.detail?.overlayId;
+  const handleLocalOverlayDelete = (event: Event) => {
+    const detail = event instanceof CustomEvent ? event.detail : undefined;
+    const overlayId = typeof detail?.overlayId === 'string' ? detail.overlayId : '';
     if (!overlayId) return;
     localOverlayIds.delete(overlayId);
     knownLocalOverlays.delete(overlayId);
@@ -1161,7 +1286,7 @@ export function installMapCollaboration(map) {
   mapContainer.addEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
 
   for (const eventName of ['mousedown', 'dblclick', 'wheel', 'touchstart']) {
-    panel.addEventListener(eventName, (event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
+    panel.addEventListener(eventName, (event: Event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
   }
 
   map.on('move', () => {
@@ -1170,7 +1295,7 @@ export function installMapCollaboration(map) {
   });
   map.on('moveend', () => scheduleSend(true));
   map.on('render', scheduleOverlayRender);
-  map.on('mousemove', (event) => {
+  map.on('mousemove', (event: { lngLat: { toArray(): LngLatTuple } }) => {
     localCursor = {
       visible: true,
       lngLat: event.lngLat.toArray(),
@@ -1188,7 +1313,8 @@ export function installMapCollaboration(map) {
     });
   }
 
-  mapContainer.append(overlay, panel);
+  mapContainer.appendChild(overlay);
+  mapContainer.appendChild(panel);
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
   renderPeople();

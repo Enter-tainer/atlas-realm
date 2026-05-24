@@ -35,11 +35,22 @@
  * `setStyle()`.
  */
 
+type StyleReadyMap = {
+  _styleInitialized?: boolean;
+  isStyleLoaded(): boolean | void;
+  setGlobalStateProperty(propertyName: string, value: unknown): void;
+  once(event: 'load', callback: () => void): void;
+};
+
 /**
  * Set a global state property on the map.
  * Once the style has been initialised, always sets synchronously.
  */
-export function setGlobalStatePropertyWhenReady(map, propertyName, value) {
+export function setGlobalStatePropertyWhenReady(
+  map: StyleReadyMap,
+  propertyName: string,
+  value: unknown,
+) {
   if (map.isStyleLoaded()) {
     map._styleInitialized = true;
     map.setGlobalStateProperty(propertyName, value);
@@ -59,7 +70,7 @@ export function setGlobalStatePropertyWhenReady(map, propertyName, value) {
  * Run a callback once the style infrastructure is ready.
  * After the first load, runs synchronously (tile loading state ignored).
  */
-export function runWhenStyleReady(map, callback) {
+export function runWhenStyleReady(map: StyleReadyMap, callback: () => void) {
   if (map.isStyleLoaded()) {
     map._styleInitialized = true;
     callback();
