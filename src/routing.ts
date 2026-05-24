@@ -20,14 +20,141 @@ const OSRM_STEP_KIND = 'osrm_step';
 const OSRM_MANEUVER_KIND = 'osrm_maneuver';
 const OSRM_SEGMENT_KIND = 'osrm_segment';
 
-function el(tagName, className, parent) {
+type LngLatLike = { lng: number; lat: number };
+type RoutePointKind = 'from' | 'to';
+type RoutingMapClickEvent = {
+  lngLat: LngLatLike;
+  originalEvent?: Event & { routingHandled?: boolean };
+};
+type OverlayBounds = [[number, number], [number, number]];
+type FitBoundsOptions = {
+  padding?: number | { top: number; right: number; bottom: number; left: number };
+  maxZoom?: number;
+  duration?: number;
+};
+type RoutingControl = {
+  onAdd(map: RoutingMap): HTMLElement;
+  onRemove(): void;
+};
+function asOverlayBounds(value: readonly (readonly number[])[] | null | undefined): OverlayBounds | null {
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const sw = value[0];
+  const ne = value[1];
+  if (!Array.isArray(sw) || !Array.isArray(ne)) return null;
+  const minLng = Number(sw[0]);
+  const minLat = Number(sw[1]);
+  const maxLng = Number(ne[0]);
+  const maxLat = Number(ne[1]);
+  if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
+  return [[minLng, minLat], [maxLng, maxLat]];
+}
+type RoutingMap = {
+  addControl(control: RoutingControl, position?: string): void;
+  on(event: 'click', handler: (event: RoutingMapClickEvent) => void): void;
+  off(event: 'click', handler: (event: RoutingMapClickEvent) => void): void;
+  getContainer(): HTMLElement;
+  addSource(id: string, source: object): void;
+  addLayer(layer: object): void;
+  hasImage(name: string): boolean;
+  addImage(name: string, image: ImageData, options?: { pixelRatio?: number }): void;
+  fitBounds(bounds: OverlayBounds, options?: FitBoundsOptions): void;
+};
+type RoutingMarker = {
+  on(event: 'dragend', handler: () => void): void;
+  getLngLat(): LngLatLike;
+  setLngLat(lngLat: [number, number]): RoutingMarker;
+  addTo(map: RoutingMap): RoutingMarker;
+  remove(): void;
+};
+type RoutingMarkerOptions = {
+  color?: string;
+  draggable?: boolean;
+};
+type RoutingMaplibre = {
+  Marker: new (options?: RoutingMarkerOptions) => RoutingMarker;
+};
+type Coordinates = [number, number];
+type NumericValue = number | string | null;
+type OsrmNodeId = number | string;
+type OsrmLineStringGeometry = { type?: string; coordinates?: Coordinates[] };
+type OsrmWaypoint = {
+  name?: string;
+  location?: number[];
+  distance?: number;
+};
+type OsrmStep = {
+  name?: string;
+  ref?: string;
+  mode?: string;
+  distance?: number;
+  duration?: number;
+  geometry?: OsrmLineStringGeometry;
+  maneuver?: {
+    type?: string;
+    modifier?: string;
+    exit?: number;
+    location?: number[];
+  };
+};
+type OsrmAnnotation = {
+  distance?: NumericValue[];
+  duration?: NumericValue[];
+  speed?: NumericValue[];
+  nodes?: OsrmNodeId[];
+};
+type OsrmLeg = {
+  steps?: OsrmStep[];
+  annotation?: OsrmAnnotation;
+};
+type OsrmRoute = {
+  geometry?: OsrmLineStringGeometry;
+  distance?: number;
+  duration?: number;
+  weight?: number;
+  weight_name?: string;
+  legs?: OsrmLeg[];
+};
+type CompactStep = {
+  leg: number;
+  index: number;
+  name: string;
+  ref: string;
+  mode: string;
+  distance: number | null;
+  duration: number | null;
+  maneuver: string;
+  modifier: string;
+  exit: number | null;
+  location: Coordinates | null;
+};
+type StepRecord = { raw: OsrmStep; compact: CompactStep };
+type OsrmRouteResponse = {
+  code?: string;
+  message?: string;
+  routes?: OsrmRoute[];
+  waypoints?: OsrmWaypoint[];
+};
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className?: string,
+  parent?: Element,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tagName);
   if (className) node.className = className;
   if (parent) parent.appendChild(node);
   return node;
 }
 
-function appendIcon(parent, icon, className = 'routing-icon') {
+function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
+}
+
+function errorName(error: unknown) {
+  return error instanceof Error ? error.name : '';
+}
+
+function appendIcon(parent: Element, icon: LucideIcon, className = 'routing-icon') {
   const svg = createIconElement(icon, {
     class: className,
     'aria-hidden': 'true',
@@ -37,22 +164,22 @@ function appendIcon(parent, icon, className = 'routing-icon') {
   return svg;
 }
 
-function appendIconLabel(parent, icon, label) {
+function appendIconLabel(parent: Element, icon: LucideIcon, label: string) {
   appendIcon(parent, icon);
   const labelNode = el('span', 'routing-action-label', parent);
   labelNode.textContent = label;
   return labelNode;
 }
 
-function stopMapControlPropagation(node) {
-  node.addEventListener('contextmenu', (event) => event.stopPropagation());
-  node.addEventListener('dblclick', (event) => event.stopPropagation());
-  node.addEventListener('mousedown', (event) => event.stopPropagation());
-  node.addEventListener('touchstart', (event) => event.stopPropagation(), { passive: true });
-  node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
+function stopMapControlPropagation(node: Element) {
+  node.addEventListener('contextmenu', (event: Event) => event.stopPropagation());
+  node.addEventListener('dblclick', (event: Event) => event.stopPropagation());
+  node.addEventListener('mousedown', (event: Event) => event.stopPropagation());
+  node.addEventListener('touchstart', (event: Event) => event.stopPropagation(), { passive: true });
+  node.addEventListener('wheel', (event: Event) => event.stopPropagation(), { passive: true });
 }
 
-function safeGetStorage(key, fallback) {
+function safeGetStorage(key: string, fallback: string) {
   try {
     return localStorage.getItem(key) || fallback;
   } catch {
@@ -60,7 +187,7 @@ function safeGetStorage(key, fallback) {
   }
 }
 
-function safeSetStorage(key, value) {
+function safeSetStorage(key: string, value: string) {
   try {
     localStorage.setItem(key, value);
   } catch {
@@ -68,7 +195,7 @@ function safeSetStorage(key, value) {
   }
 }
 
-function normalizeEndpoint(value) {
+function normalizeEndpoint(value: string | null | undefined) {
   const endpoint = String(value || '').trim().replace(/\/+$/, '');
   if (!endpoint) return DEFAULT_OSRM_ENDPOINT;
   try {
@@ -79,7 +206,7 @@ function normalizeEndpoint(value) {
   }
 }
 
-function parseLngLatInput(value) {
+function parseLngLatInput(value: string | number | null | undefined): LngLatLike | null {
   const matches = String(value || '').match(/-?\d+(?:\.\d+)?/g);
   if (!matches || matches.length < 2) return null;
   const a = Number(matches[0]);
@@ -91,12 +218,12 @@ function parseLngLatInput(value) {
   return null;
 }
 
-function formatCoord(point) {
+function formatCoord(point: LngLatLike | null) {
   if (!point) return '';
   return `${point.lng.toFixed(6)}, ${point.lat.toFixed(6)}`;
 }
 
-function formatDistance(meters) {
+function formatDistance(meters: number | string | null | undefined) {
   if (meters == null) return '';
   const value = Number(meters);
   if (!Number.isFinite(value)) return '';
@@ -105,7 +232,7 @@ function formatDistance(meters) {
   return `${Math.round(value / 1000)} km`;
 }
 
-function formatDuration(seconds) {
+function formatDuration(seconds: number | string | null | undefined) {
   if (seconds == null) return '';
   const value = Number(seconds);
   if (!Number.isFinite(value)) return '';
@@ -116,7 +243,7 @@ function formatDuration(seconds) {
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
-function buildRouteUrl(endpoint, from, to) {
+function buildRouteUrl(endpoint: string, from: LngLatLike, to: LngLatLike) {
   const coordinates = `${from.lng.toFixed(6)},${from.lat.toFixed(6)};${to.lng.toFixed(6)},${to.lat.toFixed(6)}`;
   const url = new URL(`/route/v1/driving/${coordinates}`, normalizeEndpoint(endpoint));
   url.searchParams.set('alternatives', 'false');
@@ -127,7 +254,7 @@ function buildRouteUrl(endpoint, from, to) {
   return url.href;
 }
 
-function normalizeOsrmLocation(value, fallback) {
+function normalizeOsrmLocation(value: number[] | null | undefined, fallback: Coordinates | null): Coordinates | null {
   if (!Array.isArray(value) || value.length < 2) return fallback;
   const lng = Number(value[0]);
   const lat = Number(value[1]);
@@ -135,13 +262,13 @@ function normalizeOsrmLocation(value, fallback) {
   return [lng, lat];
 }
 
-function roundedNumber(value, digits = 1) {
+function roundedNumber(value: number | string | null | undefined, digits = 1) {
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Number(number.toFixed(digits));
 }
 
-function compactWaypoint(waypoint, fallback) {
+function compactWaypoint(waypoint: OsrmWaypoint | undefined, fallback: Coordinates) {
   const location = normalizeOsrmLocation(waypoint?.location, fallback);
   return {
     name: String(waypoint?.name || ''),
@@ -150,7 +277,7 @@ function compactWaypoint(waypoint, fallback) {
   };
 }
 
-function compactStep(step, legIndex, stepIndex) {
+function compactStep(step: OsrmStep, legIndex: number, stepIndex: number): CompactStep {
   const maneuver = step?.maneuver || {};
   const location = normalizeOsrmLocation(maneuver.location, null);
   return {
@@ -168,7 +295,7 @@ function compactStep(step, legIndex, stepIndex) {
   };
 }
 
-function getRouteStepRecords(route) {
+function getRouteStepRecords(route: OsrmRoute): StepRecord[] {
   return (route.legs || []).flatMap((leg, legIndex) => (
     (leg.steps || []).map((step, stepIndex) => ({
       raw: step,
@@ -177,17 +304,17 @@ function getRouteStepRecords(route) {
   ));
 }
 
-function getRoadNames(steps) {
+function getRoadNames(steps: CompactStep[]) {
   return Array.from(new Set(steps.map((step) => step.name).filter(Boolean))).slice(0, 16);
 }
 
-function formatManeuverTitle(step) {
+function formatManeuverTitle(step: CompactStep) {
   const words = [step.maneuver, step.modifier].filter(Boolean).join(' ');
   if (!words) return 'Route step';
-  return words.replace(/\b\w/g, (char) => char.toUpperCase());
+  return words.replace(/\b\w/g, (char: string) => char.toUpperCase());
 }
 
-function stepProperties(step, kind) {
+function stepProperties(step: CompactStep, kind: string) {
   return {
     kind,
     source: 'OSRM',
@@ -208,7 +335,7 @@ function stepProperties(step, kind) {
   };
 }
 
-function buildStepFeatures(stepRecords) {
+function buildStepFeatures(stepRecords: StepRecord[]) {
   return stepRecords.flatMap(({ raw, compact }) => {
     if (raw?.geometry?.type !== 'LineString' || !Array.isArray(raw.geometry.coordinates) || raw.geometry.coordinates.length < 2) {
       return [];
@@ -221,7 +348,7 @@ function buildStepFeatures(stepRecords) {
   });
 }
 
-function buildManeuverFeatures(stepRecords) {
+function buildManeuverFeatures(stepRecords: StepRecord[]) {
   return stepRecords.flatMap(({ compact }) => {
     if (!compact.location) return [];
     return [{
@@ -235,21 +362,23 @@ function buildManeuverFeatures(stepRecords) {
   });
 }
 
-function getRouteAnnotationArrays(route) {
+function getRouteAnnotationArrays(route: OsrmRoute) {
   const annotations = (route.legs || []).map((leg) => leg.annotation).filter(Boolean);
   return {
-    distances: annotations.flatMap((annotation) => annotation.distance || []),
-    durations: annotations.flatMap((annotation) => annotation.duration || []),
-    speeds: annotations.flatMap((annotation) => annotation.speed || []),
-    nodes: annotations.flatMap((annotation) => annotation.nodes || []),
+    distances: annotations.flatMap((annotation: OsrmAnnotation) => annotation.distance || []),
+    durations: annotations.flatMap((annotation: OsrmAnnotation) => annotation.duration || []),
+    speeds: annotations.flatMap((annotation: OsrmAnnotation) => annotation.speed || []),
+    nodes: annotations.flatMap((annotation: OsrmAnnotation) => annotation.nodes || []),
   };
 }
 
-function summarizeAnnotations(route) {
+function summarizeAnnotations(route: OsrmRoute) {
   const { distances, durations, speeds: rawSpeeds, nodes } = getRouteAnnotationArrays(route);
-  const speeds = rawSpeeds.filter((speed) => Number.isFinite(Number(speed)));
+  const speeds = rawSpeeds
+    .map((speed) => Number(speed))
+    .filter((speed) => Number.isFinite(speed));
   const avgSpeed = speeds.length > 0
-    ? speeds.reduce((sum, speed) => sum + Number(speed), 0) / speeds.length
+    ? speeds.reduce((sum: number, speed: number) => sum + speed, 0) / speeds.length
     : null;
 
   return {
@@ -262,7 +391,7 @@ function summarizeAnnotations(route) {
   };
 }
 
-function buildSegmentFeatures(route) {
+function buildSegmentFeatures(route: OsrmRoute) {
   const coordinates = route.geometry?.coordinates || [];
   const { distances, durations, speeds, nodes } = getRouteAnnotationArrays(route);
   if (!Array.isArray(coordinates) || coordinates.length < 2) return [];
@@ -307,7 +436,12 @@ function buildSegmentFeatures(route) {
   return features;
 }
 
-function routeToGeoJson(route, waypoints, from, to) {
+function routeToGeoJson(
+  route: OsrmRoute,
+  waypoints: OsrmWaypoint[] | undefined,
+  from: LngLatLike,
+  to: LngLatLike,
+) {
   const distance = Number(route.distance);
   const duration = Number(route.duration);
   const distanceText = formatDistance(distance);
@@ -320,7 +454,7 @@ function routeToGeoJson(route, waypoints, from, to) {
     compactWaypoint(waypoints?.[waypoints.length - 1], [to.lng, to.lat]),
   ];
   const stepRecords = getRouteStepRecords(route);
-  const steps = stepRecords.map((record) => record.compact);
+  const steps = stepRecords.map((record: StepRecord) => record.compact);
   const storedSteps = steps.slice(0, MAX_STORED_STEPS);
   const roadNames = getRoadNames(steps);
   const annotation = summarizeAnnotations(route);
@@ -384,7 +518,35 @@ function routeToGeoJson(route, waypoints, from, to) {
 }
 
 class OsrmRoutingControl {
-  constructor(maplibregl) {
+  _maplibregl: RoutingMaplibre;
+  _map: RoutingMap;
+  _control: HTMLElement;
+  _button: HTMLButtonElement;
+  _panel: HTMLElement;
+  _title: HTMLElement;
+  _summary: HTMLElement;
+  _closeButton: HTMLButtonElement;
+  _endpointInput: HTMLInputElement;
+  _fromInput: HTMLInputElement;
+  _toInput: HTMLInputElement;
+  _fromPickButton: HTMLButtonElement;
+  _toPickButton: HTMLButtonElement;
+  _routeButton: HTMLButtonElement;
+  _clearButton: HTMLButtonElement;
+  _status: HTMLElement;
+  _expanded: boolean;
+  _from: LngLatLike | null;
+  _to: LngLatLike | null;
+  _picking: RoutePointKind | null;
+  _isRouting: boolean;
+  _abortController: AbortController | null;
+  _markers: Record<RoutePointKind, RoutingMarker | null>;
+  _boundKeydown: (event: KeyboardEvent) => void;
+  _boundMapClick: (event: RoutingMapClickEvent) => void;
+  _boundViewportChange: () => void;
+  _boundOverlayPanelOpen: () => void;
+
+  constructor(maplibregl: RoutingMaplibre) {
     this._maplibregl = maplibregl;
     this._expanded = false;
     this._from = null;
@@ -399,7 +561,7 @@ class OsrmRoutingControl {
     this._boundOverlayPanelOpen = () => this.setExpanded(false);
   }
 
-  onAdd(map) {
+  onAdd(map: RoutingMap) {
     this._map = map;
     this._control = el('div', 'maplibregl-ctrl maplibregl-ctrl-group routing-control');
     this._button = el('button', 'maplibregl-ctrl-routing', this._control);
@@ -486,7 +648,12 @@ class OsrmRoutingControl {
     this._map = undefined;
   }
 
-  _appendPointField(parent, kind, label, color) {
+  _appendPointField(
+    parent: Element,
+    kind: RoutePointKind,
+    label: string,
+    color: string,
+  ) {
     const field = el('label', 'routing-field', parent);
     const header = el('span', 'routing-field-row', field);
     const labelNode = el('span', 'routing-field-label', header);
@@ -502,7 +669,7 @@ class OsrmRoutingControl {
     input.spellcheck = false;
     input.placeholder = '116.391000, 39.907000';
     input.addEventListener('change', () => this._commitPointInput(kind));
-    input.addEventListener('keydown', (event) => {
+    input.addEventListener('keydown', (event: KeyboardEvent) => {
       if (event.key === 'Enter') {
         event.preventDefault();
         this._commitPointInput(kind);
@@ -520,7 +687,7 @@ class OsrmRoutingControl {
     return input;
   }
 
-  setExpanded(expanded) {
+  setExpanded(expanded: boolean) {
     this._expanded = Boolean(expanded);
     if (this._expanded) {
       this._map.getContainer().dispatchEvent(new CustomEvent('routing:panelopen'));
@@ -536,8 +703,8 @@ class OsrmRoutingControl {
 
   _syncPanelInteractivity() {
     if (!this._panel) return;
-    for (const element of this._panel.querySelectorAll('button, input, a, select, textarea')) {
-      element.disabled = !this._expanded || this._isRouting;
+    for (const element of this._panel.querySelectorAll('button, input, select, textarea')) {
+      (element as Element & { disabled: boolean }).disabled = !this._expanded || this._isRouting;
     }
     if (this._expanded && this._isRouting) {
       this._closeButton.disabled = false;
@@ -548,7 +715,7 @@ class OsrmRoutingControl {
     this._panel.dataset.compact = window.matchMedia?.('(max-width: 640px)').matches ? 'true' : 'false';
   }
 
-  _handleKeydown(event) {
+  _handleKeydown(event: KeyboardEvent) {
     if (event.key === 'Escape' && this._picking) {
       this._setPicking(null);
       return;
@@ -556,7 +723,7 @@ class OsrmRoutingControl {
     if (event.key === 'Escape' && this._expanded) this.setExpanded(false);
   }
 
-  _handleMapClick(event) {
+  _handleMapClick(event: RoutingMapClickEvent) {
     if (!this._picking) return;
     if (this._map.getContainer().dataset.weatherPickerActive === 'true') return;
     if (event.originalEvent) event.originalEvent.routingHandled = true;
@@ -570,12 +737,12 @@ class OsrmRoutingControl {
     }
   }
 
-  _startPicking(kind) {
+  _startPicking(kind: RoutePointKind) {
     if (!this._expanded) this.setExpanded(true);
     this._setPicking(this._picking === kind ? null : kind);
   }
 
-  _setPicking(kind) {
+  _setPicking(kind: RoutePointKind | null) {
     this._picking = kind === 'from' || kind === 'to' ? kind : null;
     if (this._map) {
       this._map.getContainer().dataset[ROUTING_PICKER_DATASET_KEY] = this._picking ? 'true' : 'false';
@@ -583,7 +750,7 @@ class OsrmRoutingControl {
     this._sync();
   }
 
-  _commitPointInput(kind) {
+  _commitPointInput(kind: RoutePointKind) {
     const input = kind === 'from' ? this._fromInput : this._toInput;
     const point = parseLngLatInput(input.value);
     if (!point) {
@@ -594,7 +761,7 @@ class OsrmRoutingControl {
     this._setPoint(kind, point);
   }
 
-  _setPoint(kind, lngLat) {
+  _setPoint(kind: RoutePointKind, lngLat: LngLatLike) {
     const point = { lng: Number(lngLat.lng), lat: Number(lngLat.lat) };
     if (!Number.isFinite(point.lng) || !Number.isFinite(point.lat)) return;
 
@@ -609,7 +776,7 @@ class OsrmRoutingControl {
     this._sync();
   }
 
-  _syncMarker(kind) {
+  _syncMarker(kind: RoutePointKind) {
     const point = kind === 'from' ? this._from : this._to;
     if (!point) {
       this._markers[kind]?.remove();
@@ -675,7 +842,7 @@ class OsrmRoutingControl {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const data = await response.json();
+      const data = await response.json() as OsrmRouteResponse;
       if (data.code !== 'Ok') throw new Error(data.message || data.code || 'Route failed');
       const route = data.routes?.[0];
       if (!route?.geometry || route.geometry.type !== 'LineString') throw new Error('No route geometry');
@@ -685,7 +852,8 @@ class OsrmRoutingControl {
         name: result.name,
         color: ROUTE_COLOR,
       });
-      if (overlay?.bounds) this._map.fitBounds(overlay.bounds, { padding: 70, maxZoom: 16 });
+      const bounds = asOverlayBounds(overlay?.bounds);
+      if (bounds) this._map.fitBounds(bounds, { padding: 70, maxZoom: 16 });
       this._removeMarkers();
       this._setPicking(null);
       this._setStatus([
@@ -694,10 +862,10 @@ class OsrmRoutingControl {
         result.durationText,
         result.stepCount ? `${result.stepCount} steps` : '',
       ].filter(Boolean).join(' - '));
-    } catch (error) {
-      if (error.name === 'AbortError') return;
+    } catch (error: unknown) {
+      if (errorName(error) === 'AbortError') return;
       console.error('OSRM route failed:', error);
-      this._setStatus(error.message || 'Route failed');
+      this._setStatus(errorMessage(error, 'Route failed'));
     } finally {
       this._isRouting = false;
       this._abortController = null;
@@ -706,7 +874,7 @@ class OsrmRoutingControl {
     }
   }
 
-  _setStatus(message) {
+  _setStatus(message: string) {
     this._status.textContent = message;
     this._status.classList.toggle('visible', Boolean(message));
   }
@@ -734,6 +902,6 @@ class OsrmRoutingControl {
   }
 }
 
-export function installOsrmRouting(map, maplibregl) {
+export function installOsrmRouting(map: RoutingMap, maplibregl: RoutingMaplibre) {
   map.addControl(new OsrmRoutingControl(maplibregl), 'top-right');
 }

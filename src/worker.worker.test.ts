@@ -2,6 +2,48 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { reset, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import { decodeOverlayBinaryMessage, encodeOverlayBinaryMessage } from './overlay-sync.js';
+import type { MapCollaboration } from './worker.js';
+import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
+
+type TestMessage = string | Uint8Array | ArrayBuffer;
+type TestSqlValue = string | number | boolean | null | ArrayBuffer;
+type TestSqlRow = Record<string, TestSqlValue>;
+type TestConnectionState = Record<string, unknown> | null;
+
+interface TestConnection {
+  id: string;
+  state: TestConnectionState;
+  sent: TestMessage[];
+  send(message: TestMessage): void;
+  setState(update: TestConnectionState | ((previous: TestConnectionState) => TestConnectionState)): TestConnectionState;
+}
+
+type TestMapCollaboration = MapCollaboration & {
+  _listOverlayManifests(): Array<Record<string, unknown>>;
+  sql<T extends TestSqlRow = TestSqlRow>(
+    strings: TemplateStringsArray,
+    ...values: (string | number | boolean | null)[]
+  ): T[];
+};
+type WorkerConnection = Parameters<MapCollaboration['onMessage']>[0];
+
+interface OverlayManifestFixture extends Record<string, unknown> {
+  id: string;
+  type: 'geojson';
+  name: string;
+  visible: boolean;
+  color: string;
+  opacity: number;
+  lineWidth: number;
+  bounds: [[number, number], [number, number]];
+  contentHash: string;
+  contentType: string;
+  contentEncoding: 'identity';
+  contentByteLength: number;
+  rawByteLength: number;
+  syncVersion: 1;
+  persistence: 'ephemeral';
+}
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -12,37 +54,81 @@ afterEach(async () => {
   await reset();
 });
 
-function roomStub(name) {
-  return env.MapCollaboration.get(env.MapCollaboration.idFromName(name));
+function roomStub(name: string): DurableObjectStub<TestMapCollaboration> {
+  const namespace = env.MapCollaboration as DurableObjectNamespace<TestMapCollaboration>;
+  return namespace.get(namespace.idFromName(name));
 }
 
-function createConnection(id = 'client-a') {
+function runInDO<R>(
+  stub: DurableObjectStub<TestMapCollaboration>,
+  callback: (instance: TestMapCollaboration, state: DurableObjectState) => R | Promise<R>,
+): Promise<R> {
+  return runInDurableObject(stub, callback);
+}
+
+function runAlarm(stub: DurableObjectStub<TestMapCollaboration>): Promise<boolean> {
+  return runDurableObjectAlarm(stub as unknown as DurableObjectStub);
+}
+
+function createConnection(id = 'client-a'): TestConnection {
   return {
     id,
     state: null,
     sent: [],
-    send(message) {
+    send(message: TestMessage) {
       this.sent.push(message);
     },
-    setState(update) {
+    setState(update: TestConnectionState | ((previous: TestConnectionState) => TestConnectionState)) {
       this.state = typeof update === 'function' ? update(this.state) : update;
       return this.state;
     },
   };
 }
 
-function jsonMessage(type, payload = {}) {
+function jsonMessage(type: string, payload: Record<string, unknown> = {}): string {
   return JSON.stringify({ type, ...payload });
 }
 
-function sentJson(connection, type) {
-  return connection.sent
-    .filter((message) => typeof message === 'string')
-    .map((message) => JSON.parse(message))
-    .filter((message) => message.type === type);
+function workerConnection(connection: TestConnection): WorkerConnection {
+  return connection as unknown as WorkerConnection;
 }
 
-function manifest(id, contentHash, extra = {}) {
+async function sendWorkerMessage(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  message: WSMessage,
+): Promise<void> {
+  await instance.onMessage(workerConnection(connection), message);
+}
+
+async function connectWorker(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  context: ConnectionContext,
+): Promise<void> {
+  await instance.onConnect(connection as unknown as Connection, context);
+}
+
+function sentJson(connection: TestConnection, type: string): Array<Record<string, unknown>> {
+  return connection.sent
+    .filter((message) => typeof message === 'string')
+    .map((message) => JSON.parse(message) as unknown)
+    .filter((message): message is Record<string, unknown> => (
+      Boolean(message && typeof message === 'object' && 'type' in message && message.type === type)
+    ));
+}
+
+function asRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
+    : [];
+}
+
+function manifest(
+  id: string,
+  contentHash: string,
+  extra: Record<string, unknown> = {},
+): OverlayManifestFixture {
   return {
     id,
     type: 'geojson',
@@ -63,26 +149,35 @@ function manifest(id, contentHash, extra = {}) {
   };
 }
 
-async function storeContent(instance, connection, contentHash = HASH_A, content = CONTENT_A) {
-  await instance.onMessage(connection, encodeOverlayBinaryMessage(contentHash, content));
+async function storeContent(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  contentHash = HASH_A,
+  content = CONTENT_A,
+): Promise<void> {
+  await sendWorkerMessage(instance, connection, encodeOverlayBinaryMessage(contentHash, content));
 }
 
-async function upsertOverlay(instance, connection, overlayManifest) {
-  await instance.onMessage(connection, jsonMessage('overlay:upsert', { manifest: overlayManifest }));
+async function upsertOverlay(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  overlayManifest: OverlayManifestFixture,
+): Promise<void> {
+  await sendWorkerMessage(instance, connection, jsonMessage('overlay:upsert', { manifest: overlayManifest }));
 }
 
-function overlayList(instance) {
+function overlayList(instance: TestMapCollaboration): Array<Record<string, unknown>> {
   return instance._listOverlayManifests();
 }
 
-function contentHashes(instance) {
-  return instance.sql`
+function contentHashes(instance: TestMapCollaboration): TestSqlValue[] {
+  return instance.sql<{ content_hash: string }>`
     SELECT content_hash FROM overlay_contents ORDER BY content_hash ASC
   `.map((row) => row.content_hash);
 }
 
-function contentCount(instance) {
-  return Number(instance.sql`
+function contentCount(instance: TestMapCollaboration): number {
+  return Number(instance.sql<{ count: number }>`
     SELECT COUNT(*) AS count FROM overlay_contents
   `[0]?.count || 0);
 }
@@ -90,7 +185,7 @@ function contentCount(instance) {
 describe('MapCollaboration overlay state machine', () => {
   it('stores binary overlay content and acknowledges the content hash', async () => {
     const stub = roomStub('binary-store');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
       await storeContent(instance, connection);
@@ -106,7 +201,7 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('stores sanitized overlay manifests only after content exists', async () => {
     const stub = roomStub('upsert-sanitize');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
@@ -147,12 +242,12 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('ignores malformed binary, JSON, and invalid overlay manifests', async () => {
     const stub = roomStub('invalid-inputs');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
-      await instance.onMessage(connection, new Uint8Array([2, 0]));
-      await instance.onMessage(connection, '{not-json');
+      await sendWorkerMessage(instance, connection, new Uint8Array([2, 0]));
+      await sendWorkerMessage(instance, connection, '{not-json');
       await upsertOverlay(instance, connection, manifest('../bad', HASH_A));
       await upsertOverlay(instance, connection, manifest('overlay-a', 'not-a-hash'));
       await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { type: 'kml' }));
@@ -171,13 +266,13 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('returns stored content as a binary frame when requested', async () => {
     const stub = roomStub('content-request');
-    const response = await runInDurableObject(stub, async (instance) => {
+    const response = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
       await storeContent(instance, connection);
       connection.sent = [];
-      await instance.onMessage(connection, jsonMessage('overlay:content:request', { contentHash: HASH_A }));
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:content:request', { contentHash: HASH_A }));
 
       const binary = connection.sent.find((message) => typeof message !== 'string');
       return binary ? Array.from(new Uint8Array(binary)) : null;
@@ -190,13 +285,13 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('patches editable manifest fields while preserving identity and content', async () => {
     const stub = roomStub('patch-overlay');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
       await storeContent(instance, connection);
       await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      await instance.onMessage(connection, jsonMessage('overlay:patch', {
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:patch', {
         overlayId: 'overlay-a',
         patch: {
           id: 'wrong-id',
@@ -227,7 +322,7 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('reorders overlays by explicit ordered ids', async () => {
     const stub = roomStub('reorder-overlays');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
@@ -237,7 +332,7 @@ describe('MapCollaboration overlay state machine', () => {
       await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
 
       const before = overlayList(instance).map((overlay) => overlay.id);
-      await instance.onMessage(connection, jsonMessage('overlay:reorder', {
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:reorder', {
         orderedIds: ['overlay-b', 'bad/id', 'overlay-a'],
       }));
       const after = overlayList(instance).map((overlay) => overlay.id);
@@ -250,7 +345,7 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('deletes overlays and prunes content only when it is unreferenced', async () => {
     const stub = roomStub('delete-prune');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
@@ -258,10 +353,10 @@ describe('MapCollaboration overlay state machine', () => {
       await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
       await upsertOverlay(instance, connection, manifest('overlay-b', HASH_A, { pendingOrderIndex: 1 }));
 
-      await instance.onMessage(connection, jsonMessage('overlay:delete', { overlayId: 'overlay-a' }));
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-a' }));
       const afterFirstDelete = { overlays: overlayList(instance), contentCount: contentCount(instance) };
 
-      await instance.onMessage(connection, jsonMessage('overlay:delete', { overlayId: 'overlay-b' }));
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-b' }));
       const afterSecondDelete = { overlays: overlayList(instance), contentCount: contentCount(instance) };
 
       return { afterFirstDelete, afterSecondDelete };
@@ -275,7 +370,7 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('replaces existing overlay content and removes the old unreferenced blob', async () => {
     const stub = roomStub('replace-content');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
@@ -297,7 +392,7 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('prunes old orphaned content on the next overlay mutation', async () => {
     const stub = roomStub('old-orphans');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
@@ -318,14 +413,14 @@ describe('MapCollaboration overlay state machine', () => {
 
   it('sends presence and overlay initialization on connect', async () => {
     const stub = roomStub('connect-init');
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const seedConnection = createConnection('seed-client');
       await storeContent(instance, seedConnection);
       await upsertOverlay(instance, seedConnection, manifest('overlay-a', HASH_A));
 
       const connection = createConnection('joining-client');
-      await instance.onConnect(connection, {
+      await connectWorker(instance, connection, {
         request: new Request('https://example.com/parties/map-collaboration/connect-init?name=Alice&color=%23ef4444&userId=user-a'),
       });
 
@@ -343,7 +438,7 @@ describe('MapCollaboration overlay state machine', () => {
       room: 'connect-init',
       peers: [],
     });
-    expect(result.overlay.overlays.map((overlay) => overlay.id)).toEqual(['overlay-a']);
+    expect(asRecordArray(result.overlay.overlays).map((overlay) => overlay.id)).toEqual(['overlay-a']);
   });
 });
 
@@ -351,7 +446,7 @@ describe('MapCollaboration room lifecycle', () => {
   it('clears expired ephemeral room storage when the alarm runs', async () => {
     const stub = roomStub('expired-room');
 
-    await runInDurableObject(stub, async (instance) => {
+    await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
       await storeContent(instance, connection);
@@ -363,9 +458,9 @@ describe('MapCollaboration room lifecycle', () => {
       `;
     });
 
-    await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+    await expect(runAlarm(stub)).resolves.toBe(true);
 
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       return {
         overlays: overlayList(instance),
@@ -382,7 +477,7 @@ describe('MapCollaboration room lifecycle', () => {
   it('keeps persistent room storage when the alarm runs', async () => {
     const stub = roomStub('persistent-room');
 
-    await runInDurableObject(stub, async (instance) => {
+    await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
       await storeContent(instance, connection);
@@ -394,9 +489,9 @@ describe('MapCollaboration room lifecycle', () => {
       `;
     });
 
-    await expect(runDurableObjectAlarm(stub)).resolves.toBe(true);
+    await expect(runAlarm(stub)).resolves.toBe(true);
 
-    const result = await runInDurableObject(stub, async (instance) => {
+    const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       return {
         overlays: overlayList(instance),

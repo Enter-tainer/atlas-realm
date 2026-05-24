@@ -1,6 +1,17 @@
 import { describe, it, expect, vi } from 'vitest';
 import { runWhenStyleReady, setGlobalStatePropertyWhenReady } from './style-ready.js';
 
+type MockStyleMap = {
+  _styleLoaded: boolean;
+  _styleInitialized?: boolean;
+  _globalState: Record<string, unknown>;
+  isStyleLoaded(): boolean;
+  once(event: string, callback: () => void): void;
+  setGlobalStateProperty(name: string, value: unknown): void;
+  _setStyleLoaded(loaded: boolean): void;
+  _emit(event: string): void;
+};
+
 /**
  * Create a mock maplibregl.Map that exercises the style-ready helpers.
  *
@@ -9,30 +20,30 @@ import { runWhenStyleReady, setGlobalStatePropertyWhenReady } from './style-read
  * visibility kicks off new tile fetches.  The mock's `_setStyleLoaded()`
  * simulates this transient false.
  */
-function createMockMap({ styleLoaded = false } = {}) {
-  const listeners = new Map();
+function createMockMap({ styleLoaded = false }: { styleLoaded?: boolean } = {}) {
+  const listeners = new Map<string, Array<() => void>>();
 
-  const mock = {
+  const mock: MockStyleMap = {
     _styleLoaded: styleLoaded,
     _styleInitialized: undefined,
-    _globalState: {},
+    _globalState: {} as Record<string, unknown>,
 
     isStyleLoaded() {
       return this._styleLoaded;
     },
-    once(event, callback) {
+    once(event: string, callback: () => void) {
       if (!listeners.has(event)) listeners.set(event, []);
-      listeners.get(event).push(callback);
+      listeners.get(event)?.push(callback);
     },
-    setGlobalStateProperty(name, value) {
+    setGlobalStateProperty(name: string, value: unknown) {
       this._globalState[name] = value;
     },
 
     /** Simulate isStyleLoaded() flipping after tile fetches start. */
-    _setStyleLoaded(loaded) {
+    _setStyleLoaded(loaded: boolean) {
       this._styleLoaded = loaded;
     },
-    _emit(event) {
+    _emit(event: string) {
       for (const cb of listeners.get(event) || []) cb();
     },
   };
@@ -117,7 +128,7 @@ describe('runWhenStyleReady', () => {
   it('rapid toggles after initialisation: all run synchronously', () => {
     const map = createMockMap({ styleLoaded: true });
 
-    const calls = [];
+    const calls: number[] = [];
     for (let i = 0; i < 10; i++) {
       runWhenStyleReady(map, () => calls.push(i));
     }

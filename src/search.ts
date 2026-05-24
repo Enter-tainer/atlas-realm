@@ -6,16 +6,54 @@ const SEARCH_DEBOUNCE_MS = 320;
 const COMPACT_RESULTS_MEDIA_QUERY = '(max-width: 640px)';
 const PHOTON_SUPPORTED_LANGUAGES = new Set(['de', 'en', 'fr']);
 
-const EMPTY_FEATURE_COLLECTION = {
+const EMPTY_FEATURE_COLLECTION: { type: 'FeatureCollection'; features: PhotonPointFeature[] } = {
   type: 'FeatureCollection',
   features: [],
 };
 
-function el(tagName, className, parent) {
+type PhotonPointFeature = {
+  type: 'Feature';
+  geometry: {
+    type: 'Point';
+    coordinates: [number, number, ...number[]];
+  };
+  properties?: Record<string, unknown>;
+};
+
+type PhotonProperties = Record<string, unknown>;
+type LngLatLike = { lng: number; lat: number };
+type SearchGeoJsonSource = { setData?: (data: unknown) => void };
+type SearchMap = {
+  getCenter(): LngLatLike;
+  getZoom(): number;
+  getSource(id: string): unknown;
+  flyTo(options: Record<string, unknown>): void;
+  addControl(control: unknown, position?: string): void;
+  once(event: string, callback: () => void): void;
+};
+type PopupLike = {
+  setLngLat(lngLat: [number, number]): PopupLike;
+  setDOMContent(node: Node): PopupLike;
+  addTo(map: SearchMap): PopupLike;
+  remove(): void;
+};
+type SearchMaplibre = {
+  Popup: new (options?: Record<string, unknown>) => PopupLike;
+};
+
+function el<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className?: string,
+  parent?: Element,
+): HTMLElementTagNameMap[K] {
   const node = document.createElement(tagName);
   if (className) node.className = className;
   if (parent) parent.appendChild(node);
   return node;
+}
+
+function errorName(error: unknown) {
+  return error instanceof Error ? error.name : '';
 }
 
 function getPhotonLanguage() {
@@ -28,34 +66,39 @@ function isCompactViewport() {
   return window.matchMedia?.(COMPACT_RESULTS_MEDIA_QUERY).matches ?? false;
 }
 
-function formatCategory(properties) {
+function textValue(value: unknown): string {
+  return value === undefined || value === null ? '' : String(value);
+}
+
+function formatCategory(properties?: PhotonProperties) {
   if (!properties?.osm_key && !properties?.osm_value) return '';
   return [properties.osm_key, properties.osm_value].filter(Boolean).join(':');
 }
 
-function formatAddress(properties) {
-  const street = [properties.street, properties.housenumber].filter(Boolean).join(' ');
+function formatAddress(properties?: PhotonProperties) {
+  const data = properties || {};
+  const street = [data.street, data.housenumber].filter(Boolean).join(' ');
   const parts = [
     street,
-    properties.district,
-    properties.city,
-    properties.county,
-    properties.state,
-    properties.postcode,
-    properties.country,
+    data.district,
+    data.city,
+    data.county,
+    data.state,
+    data.postcode,
+    data.country,
   ].filter((part, index, arr) => part && arr.indexOf(part) === index);
   return parts.join(', ');
 }
 
-function formatDistance(meters) {
+function formatDistance(meters: number) {
   if (!Number.isFinite(meters)) return '';
   if (meters < 1000) return `${Math.round(meters)} m`;
   if (meters < 10000) return `${(meters / 1000).toFixed(1)} km`;
   return `${Math.round(meters / 1000)} km`;
 }
 
-function haversineDistanceMeters(a, b) {
-  const toRad = (value) => (value * Math.PI) / 180;
+function haversineDistanceMeters(a: LngLatLike, b: LngLatLike) {
+  const toRad = (value: number) => (value * Math.PI) / 180;
   const radius = 6371000;
   const dLat = toRad(b.lat - a.lat);
   const dLon = toRad(b.lng - a.lng);
@@ -65,15 +108,26 @@ function haversineDistanceMeters(a, b) {
   return radius * 2 * Math.atan2(Math.sqrt(q), Math.sqrt(1 - q));
 }
 
-function isPointFeature(feature) {
-  return feature?.type === 'Feature'
-    && feature.geometry?.type === 'Point'
-    && Array.isArray(feature.geometry.coordinates)
-    && feature.geometry.coordinates.length >= 2
-    && feature.geometry.coordinates.every(Number.isFinite);
+function isPointFeature(feature: unknown): feature is PhotonPointFeature {
+  if (!feature || typeof feature !== 'object') return false;
+  const candidate = feature as {
+    type?: unknown;
+    geometry?: { type?: unknown; coordinates?: unknown };
+  };
+  return candidate.type === 'Feature'
+    && candidate.geometry?.type === 'Point'
+    && Array.isArray(candidate.geometry.coordinates)
+    && candidate.geometry.coordinates.length >= 2
+    && candidate.geometry.coordinates.every(Number.isFinite);
 }
 
-function getFeatureKey(feature) {
+function photonFeatures(data: unknown): PhotonPointFeature[] {
+  return Array.isArray((data as { features?: unknown }).features)
+    ? (data as { features: unknown[] }).features.filter(isPointFeature)
+    : [];
+}
+
+function getFeatureKey(feature: PhotonPointFeature) {
   const properties = feature.properties || {};
   const [lng, lat] = feature.geometry.coordinates;
   return [
@@ -85,7 +139,7 @@ function getFeatureKey(feature) {
   ].filter((value) => value != null).join('|');
 }
 
-function buildPhotonUrl(query, map) {
+function buildPhotonUrl(query: string, map: SearchMap) {
   const center = map.getCenter();
   const params = new URLSearchParams({
     q: query,
@@ -100,8 +154,8 @@ function buildPhotonUrl(query, map) {
   return `${PHOTON_API_URL}?${params.toString()}`;
 }
 
-function setSearchFeature(map, feature) {
-  const source = map.getSource(SEARCH_SOURCE_ID);
+function setSearchFeature(map: SearchMap, feature: PhotonPointFeature | null) {
+  const source = map.getSource(SEARCH_SOURCE_ID) as SearchGeoJsonSource | undefined;
   if (!source?.setData) return;
   source.setData({
     type: 'FeatureCollection',
@@ -109,15 +163,15 @@ function setSearchFeature(map, feature) {
   });
 }
 
-function clearNode(node) {
+function clearNode(node: Element) {
   while (node.firstChild) node.firstChild.remove();
 }
 
-function buildPopupContent(feature) {
+function buildPopupContent(feature: PhotonPointFeature) {
   const properties = feature.properties || {};
   const container = el('div', 'poi-search-popup');
   const title = el('div', 'poi-search-popup-title', container);
-  title.textContent = properties.name || 'Selected place';
+  title.textContent = textValue(properties.name) || 'Selected place';
 
   const category = formatCategory(properties);
   if (category) {
@@ -135,7 +189,24 @@ function buildPopupContent(feature) {
 }
 
 class PhotonSearchControl {
-  constructor(maplibregl) {
+  _maplibregl: SearchMaplibre;
+  _map: SearchMap;
+  _container: HTMLElement;
+  _input: HTMLInputElement;
+  _clearButton: HTMLButtonElement;
+  _status: HTMLElement;
+  _resultsToggle: HTMLButtonElement;
+  _results: HTMLElement;
+  _abortController: AbortController | null;
+  _activeRequestId: number;
+  _debounceTimer: number;
+  _popup: PopupLike | null;
+  _lastResults: PhotonPointFeature[];
+  _selectedFeatureKey: string | null;
+  _resultsCollapsed: boolean;
+  _handleViewportChange: () => void;
+
+  constructor(maplibregl: SearchMaplibre) {
     this._maplibregl = maplibregl;
     this._abortController = null;
     this._activeRequestId = 0;
@@ -147,14 +218,14 @@ class PhotonSearchControl {
     this._handleViewportChange = () => this._syncResultsVisibility();
   }
 
-  onAdd(map) {
+  onAdd(map: SearchMap) {
     this._map = map;
     this._container = el('div', 'maplibregl-ctrl poi-search');
-    this._container.addEventListener('contextmenu', (e) => e.stopPropagation());
-    this._container.addEventListener('dblclick', (e) => e.stopPropagation());
-    this._container.addEventListener('mousedown', (e) => e.stopPropagation());
-    this._container.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-    this._container.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
+    this._container.addEventListener('contextmenu', (e: Event) => e.stopPropagation());
+    this._container.addEventListener('dblclick', (e: Event) => e.stopPropagation());
+    this._container.addEventListener('mousedown', (e: Event) => e.stopPropagation());
+    this._container.addEventListener('touchstart', (e: Event) => e.stopPropagation(), { passive: true });
+    this._container.addEventListener('wheel', (e: Event) => e.stopPropagation(), { passive: true });
 
     const form = el('form', 'poi-search-form', this._container);
     this._input = el('input', 'poi-search-input', form);
@@ -193,7 +264,7 @@ class PhotonSearchControl {
       }
     });
     this._input.addEventListener('input', () => this._scheduleSearch());
-    this._input.addEventListener('keydown', (e) => this._handleInputKeydown(e));
+    this._input.addEventListener('keydown', (e: KeyboardEvent) => this._handleInputKeydown(e));
     this._clearButton.addEventListener('click', () => this._clear());
     window.addEventListener('resize', this._handleViewportChange, { passive: true });
 
@@ -209,7 +280,7 @@ class PhotonSearchControl {
     this._map = undefined;
   }
 
-  _handleInputKeydown(e) {
+  _handleInputKeydown(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault();
       this._clear();
@@ -221,7 +292,7 @@ class PhotonSearchControl {
       this._resultsCollapsed = false;
       this._syncResultsVisibility();
     }
-    const firstResult = this._results.querySelector('.poi-search-result');
+    const firstResult = this._results.querySelector<HTMLElement>('.poi-search-result');
     if (!firstResult) return;
     e.preventDefault();
     firstResult.focus();
@@ -257,14 +328,14 @@ class PhotonSearchControl {
         headers: { Accept: 'application/json' },
       });
       if (!response.ok) throw new Error(`Photon request failed: ${response.status}`);
-      const data = await response.json();
+      const data: unknown = await response.json();
       if (requestId !== this._activeRequestId) return;
 
-      const features = (data.features || []).filter(isPointFeature);
+      const features = photonFeatures(data);
       this._setResults(features);
       this._setStatus(features.length > 0 ? '' : 'No results');
-    } catch (error) {
-      if (error.name === 'AbortError') return;
+    } catch (error: unknown) {
+      if (errorName(error) === 'AbortError') return;
       console.error(error);
       if (requestId === this._activeRequestId) {
         this._setResults([]);
@@ -273,12 +344,12 @@ class PhotonSearchControl {
     }
   }
 
-  _setStatus(message) {
+  _setStatus(message: string) {
     this._status.textContent = message;
     this._status.classList.toggle('visible', Boolean(message));
   }
 
-  _setResults(features) {
+  _setResults(features: PhotonPointFeature[]) {
     this._lastResults = features;
     this._resultsCollapsed = false;
     clearNode(this._results);
@@ -291,7 +362,7 @@ class PhotonSearchControl {
       button.dataset.featureKey = getFeatureKey(feature);
 
       const name = el('span', 'poi-search-result-name', button);
-      name.textContent = feature.properties?.name || 'Unnamed place';
+      name.textContent = textValue(feature.properties?.name) || 'Unnamed place';
 
       const meta = el('span', 'poi-search-result-meta', button);
       const distance = formatDistance(haversineDistanceMeters(center, {
@@ -307,7 +378,7 @@ class PhotonSearchControl {
       }
 
       button.addEventListener('click', () => this._selectFeature(feature));
-      button.addEventListener('keydown', (e) => this._handleResultKeydown(e, button));
+      button.addEventListener('keydown', (e: KeyboardEvent) => this._handleResultKeydown(e, button));
     }
 
     this._syncSelectedResultState();
@@ -326,7 +397,7 @@ class PhotonSearchControl {
   }
 
   _syncSelectedResultState() {
-    const buttons = this._results.querySelectorAll('.poi-search-result');
+    const buttons = this._results.querySelectorAll<HTMLElement>('.poi-search-result');
     for (const button of buttons) {
       const selected = Boolean(this._selectedFeatureKey) && button.dataset.featureKey === this._selectedFeatureKey;
       button.classList.toggle('selected', selected);
@@ -334,7 +405,7 @@ class PhotonSearchControl {
     }
   }
 
-  _handleResultKeydown(e, button) {
+  _handleResultKeydown(e: KeyboardEvent, button: HTMLButtonElement) {
     if (e.key === 'Escape') {
       e.preventDefault();
       this._input.focus();
@@ -347,11 +418,11 @@ class PhotonSearchControl {
     if (!move) return;
 
     e.preventDefault();
-    const target = button[move] || (e.key === 'ArrowUp' ? this._input : null);
+    const target = button[move] as HTMLElement | null || (e.key === 'ArrowUp' ? this._input : null);
     target?.focus();
   }
 
-  _selectFeature(feature) {
+  _selectFeature(feature: PhotonPointFeature) {
     const [lng, lat] = feature.geometry.coordinates;
     this._selectedFeatureKey = getFeatureKey(feature);
     setSearchFeature(this._map, feature);
@@ -393,10 +464,10 @@ class PhotonSearchControl {
   }
 }
 
-export function installPhotonSearch(map, maplibregl) {
+export function installPhotonSearch(map: SearchMap, maplibregl: SearchMaplibre) {
   map.addControl(new PhotonSearchControl(maplibregl), 'top-left');
   map.once('load', () => {
-    const source = map.getSource(SEARCH_SOURCE_ID);
+    const source = map.getSource(SEARCH_SOURCE_ID) as SearchGeoJsonSource | undefined;
     source?.setData?.(EMPTY_FEATURE_COLLECTION);
   });
 }

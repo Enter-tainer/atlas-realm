@@ -1,5 +1,10 @@
+type TrackPoint = { lat: number; lon: number; time: number | null; ele: number | null };
+type Waypoint = { lat: number; lon: number; name: string; ele: number | null };
+type PendingGpxItem = { xml: string; hash: string; options: OverlayOptions };
+type PendingGeoJsonItem = { geojson: GeoJsonFeatureCollection; options: OverlayOptions };
+
 // Turbo colormap (polynomial approximation per channel)
-function turboColor(t) {
+function turboColor(t: number) {
   t = Math.max(0, Math.min(1, t));
   const r = Math.max(0, Math.min(255, Math.round(34.61 + t * (1172.33 - t * (10793.56 - t * (33300.12 - t * (38394.49 - t * 14825.05)))))));
   const g = Math.max(0, Math.min(255, Math.round(23.31 + t * (557.33 + t * (1225.33 - t * (3574.96 - t * (1073.77 + t * 707.56)))))));
@@ -7,20 +12,20 @@ function turboColor(t) {
   return [r, g, b];
 }
 
-function haversineDistance(lat1, lng1, lat2, lng2) {
+function haversineDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
   const R = 6371000;
-  const toRad = (x) => (x * Math.PI) / 180;
+  const toRad = (x: number) => (x * Math.PI) / 180;
   const dLat = toRad(lat2 - lat1);
   const dLng = toRad(lng2 - lng1);
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-function parseGpx(xmlString) {
+function parseGpx(xmlString: string) {
   const parser = new DOMParser();
   const doc = parser.parseFromString(xmlString, 'application/xml');
-  const points = [];
-  const waypoints = [];
+  const points: TrackPoint[] = [];
+  const waypoints: Waypoint[] = [];
 
   const trkpts = doc.querySelectorAll('trkpt');
   for (const pt of trkpts) {
@@ -71,7 +76,7 @@ function parseGpx(xmlString) {
 
 const MIN_SEGMENT_LENGTH_M = 10;
 
-function computeSpeeds(points) {
+function computeSpeeds(points: TrackPoint[]) {
   const speeds = [0];
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
@@ -100,14 +105,14 @@ function computeSpeeds(points) {
   return speeds;
 }
 
-function percentile(arr, p) {
+function percentile(arr: number[], p: number) {
   const sorted = [...arr].filter((v) => v > 0).sort((a, b) => a - b);
   if (sorted.length === 0) return 1;
   const idx = Math.ceil(sorted.length * p) - 1;
   return sorted[Math.max(0, idx)] || 1;
 }
 
-export function gpxToGeoJson(xmlString) {
+export function gpxToGeoJson(xmlString: string) {
   const { points, waypoints } = parseGpx(xmlString);
   if (points.length < 2 && waypoints.length === 0) return null;
 
@@ -118,7 +123,7 @@ export function gpxToGeoJson(xmlString) {
 
   const GAP_TIME_THRESHOLD = 1800; // 30 minutes in seconds
 
-  const features = [];
+  const features: GeoJsonFeature[] = [];
   for (let i = 1; i < points.length; i++) {
     const prev = points[i - 1];
     const curr = points[i];
@@ -206,35 +211,70 @@ export function gpxToGeoJson(xmlString) {
 }
 
 // ── SHA-256 dedup ─────────────────────────────────────────
-const loadedGpxHashes = new Set();
+const loadedGpxHashes = new Set<string>();
 const DEFAULT_OVERLAY_COLOR = '#3b82f6';
 const OSRM_ROUTE_COLOR = '#0f766e';
 const OSRM_KIND_PREFIX = 'osrm_';
 const REMOTE_OVERLAY_EVENT_KEY = Symbol('remoteOverlayEvent');
+type JsonRecord = Record<string | symbol, unknown>;
+type Bounds = [[number, number], [number, number]];
+type BoundsLike = number[][];
+type GeoJsonGeometry = {
+  type?: string | null;
+  coordinates?: unknown;
+  geometries?: GeoJsonGeometry[];
+};
+type GeoJsonFeature = {
+  type: 'Feature';
+  properties: JsonRecord;
+  geometry: GeoJsonGeometry | null;
+};
+type GeoJsonFeatureCollection = {
+  type: 'FeatureCollection';
+  features: GeoJsonFeature[];
+};
+type OverlayOptions = JsonRecord & {
+  name?: string;
+  remote?: boolean;
+  syncOverlayId?: string;
+  remoteOverlayId?: string;
+  contentHash?: string;
+  color?: string;
+};
+type OverlayMap = {
+  _overlayStyleReady?: boolean;
+  loaded?: () => boolean;
+  getContainer(): HTMLElement;
+  addSource(id: string, source: unknown): void;
+  addLayer(layer: unknown): void;
+  hasImage(name: string): boolean;
+  addImage(name: string, image: ImageData, options?: Record<string, unknown>): void;
+  fitBounds(bounds: Bounds, options?: Record<string, unknown>): void;
+};
 
-function normalizeOverlayName(name, fallback) {
+function normalizeOverlayName(name: unknown, fallback: string) {
   const normalized = String(name || '').replace(/\s+/g, ' ').trim();
   return normalized || fallback;
 }
 
-function dispatchOverlayAdded(map, overlay, options = {}) {
-  const detail = { ...overlay };
+function dispatchOverlayAdded(map: OverlayMap, overlay: JsonRecord, options: OverlayOptions = {}) {
+  const detail: JsonRecord = { ...overlay };
   if (options.remote) detail[REMOTE_OVERLAY_EVENT_KEY] = true;
   map.getContainer()?.dispatchEvent(new CustomEvent('overlay:add', { detail }));
 }
 
-export function isRemoteOverlayEvent(overlay) {
-  return Boolean(overlay?.[REMOTE_OVERLAY_EVENT_KEY]);
+export function isRemoteOverlayEvent(overlay: unknown) {
+  return Boolean(overlay && typeof overlay === 'object' && (overlay as JsonRecord)[REMOTE_OVERLAY_EVENT_KEY]);
 }
 
-function visitGeometryCoordinates(geometry, callback) {
+function visitGeometryCoordinates(geometry: GeoJsonGeometry | null | undefined, callback: (lng: number, lat: number) => void) {
   if (!geometry) return;
   if (geometry.type === 'GeometryCollection') {
     for (const child of geometry.geometries || []) visitGeometryCoordinates(child, callback);
     return;
   }
 
-  const walk = (coords) => {
+  const walk = (coords: unknown) => {
     if (!Array.isArray(coords)) return;
     if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
       const [lng, lat] = coords;
@@ -247,7 +287,7 @@ function visitGeometryCoordinates(geometry, callback) {
   walk(geometry.coordinates);
 }
 
-function flattenGeometry(geometry, properties = {}) {
+function flattenGeometry(geometry: GeoJsonGeometry | null | undefined, properties: JsonRecord = {}): GeoJsonFeature[] {
   if (!geometry) return [{ type: 'Feature', properties, geometry: null }];
   if (geometry.type !== 'GeometryCollection') {
     return [{ type: 'Feature', properties, geometry }];
@@ -255,15 +295,20 @@ function flattenGeometry(geometry, properties = {}) {
   return (geometry.geometries || []).flatMap((child) => flattenGeometry(child, properties));
 }
 
-function normalizeGeoJson(geojson) {
-  if (!geojson) return null;
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function normalizeGeoJson(geojson: unknown): GeoJsonFeatureCollection | null {
+  if (!isRecord(geojson)) return null;
 
   if (geojson.type === 'FeatureCollection') {
+    const features = Array.isArray(geojson.features) ? geojson.features : [];
     return {
       type: 'FeatureCollection',
-      features: (geojson.features || []).flatMap((feature) => {
-        if (!feature || feature.type !== 'Feature') return [];
-        return flattenGeometry(feature.geometry, feature.properties || {});
+      features: features.flatMap((feature) => {
+        if (!isRecord(feature) || feature.type !== 'Feature') return [];
+        return flattenGeometry(feature.geometry as GeoJsonGeometry | null, isRecord(feature.properties) ? feature.properties : {});
       }),
     };
   }
@@ -271,21 +316,21 @@ function normalizeGeoJson(geojson) {
   if (geojson.type === 'Feature') {
     return {
       type: 'FeatureCollection',
-      features: flattenGeometry(geojson.geometry, geojson.properties || {}),
+      features: flattenGeometry(geojson.geometry as GeoJsonGeometry | null, isRecord(geojson.properties) ? geojson.properties : {}),
     };
   }
 
   if (typeof geojson.type === 'string') {
     return {
       type: 'FeatureCollection',
-      features: flattenGeometry(geojson, {}),
+      features: flattenGeometry(geojson as GeoJsonGeometry, {}),
     };
   }
 
   return null;
 }
 
-function getGeometryFamily(geometry) {
+function getGeometryFamily(geometry: GeoJsonGeometry | null | undefined) {
   if (!geometry) return null;
   if (geometry.type === 'Point' || geometry.type === 'MultiPoint') return 'point';
   if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') return 'line';
@@ -293,23 +338,23 @@ function getGeometryFamily(geometry) {
   return null;
 }
 
-function getFeatureKind(feature) {
+function getFeatureKind(feature: GeoJsonFeature) {
   return String(feature?.properties?.kind || '');
 }
 
-function isOsrmFeature(feature) {
+function isOsrmFeature(feature: GeoJsonFeature) {
   return feature?.properties?.source === 'OSRM' || getFeatureKind(feature).startsWith(OSRM_KIND_PREFIX);
 }
 
-function hasOsrmFeatures(geojson) {
+function hasOsrmFeatures(geojson: GeoJsonFeatureCollection) {
   return (geojson.features || []).some(isOsrmFeature);
 }
 
-function osrmKindFilter(kind) {
+function osrmKindFilter(kind: string) {
   return ['==', ['get', 'kind'], kind];
 }
 
-function summarizeGeoJson(geojson) {
+function summarizeGeoJson(geojson: GeoJsonFeatureCollection) {
   let minLng = Infinity;
   let minLat = Infinity;
   let maxLng = -Infinity;
@@ -343,19 +388,19 @@ function summarizeGeoJson(geojson) {
   };
 }
 
-async function sha256(text) {
+async function sha256(text: string) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
-function isMapReadyForOverlay(map) {
+function isMapReadyForOverlay(map: OverlayMap) {
   return Boolean(map._overlayStyleReady || map.loaded?.());
 }
 
 /** Merge two [[sw],[ne]] bounds into one, returns first if second is null */
-export function mergeBounds(a, b) {
-  if (!a) return b;
-  if (!b) return a;
+export function mergeBounds(a: BoundsLike | null | undefined, b: BoundsLike | null | undefined): Bounds | null | undefined {
+  if (!a) return b as Bounds | null | undefined;
+  if (!b) return a as Bounds;
   return [
     [Math.min(a[0][0], b[0][0]), Math.min(a[0][1], b[0][1])],
     [Math.max(a[1][0], b[1][0]), Math.max(a[1][1], b[1][1])],
@@ -364,7 +409,7 @@ export function mergeBounds(a, b) {
 
 let gpxLayerCount = 0;
 
-export function addGpxToMap(map, xmlString, options = {}) {
+export function addGpxToMap(map: OverlayMap, xmlString: string, options: OverlayOptions = {}) {
   const result = gpxToGeoJson(xmlString);
   if (!result) return;
 
@@ -524,7 +569,7 @@ let geojsonLayerCount = 0;
  *   - LineString features → rendered as colored tracks
  *   - Point features → rendered as circle markers with name labels
  */
-export function addGeoJsonToMap(map, geojson, options = {}) {
+export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: OverlayOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
   if (!normalized || !normalized.features || normalized.features.length === 0) return;
 
@@ -761,15 +806,15 @@ export function addGeoJsonToMap(map, geojson, options = {}) {
   return overlay;
 }
 
-let pendingGpxQueue = [];
-let pendingGeoJsonQueue = [];
+let pendingGpxQueue: PendingGpxItem[] = [];
+let pendingGeoJsonQueue: PendingGeoJsonItem[] = [];
 
 /**
  * Defer GPX processing until map is loaded. If map is already loaded,
  * process immediately; otherwise queue for later.
  * Returns the stats or null if skipped (duplicate).
  */
-export async function processOrQueueGpx(map, xmlString, options = {}) {
+export async function processOrQueueGpx(map: OverlayMap, xmlString: string, options: OverlayOptions = {}) {
   // SHA-256 dedup — skip if we've seen identical content before
   const hash = await sha256(xmlString);
   if (!options.remote && loadedGpxHashes.has(hash)) {
@@ -801,9 +846,9 @@ export async function processOrQueueGpx(map, xmlString, options = {}) {
  * Defer GeoJSON processing until map is loaded.
  * Also returns bounds immediately so the caller can zoom before map tiles load.
  */
-export function processOrQueueGeoJson(map, geojson, options = {}) {
+export function processOrQueueGeoJson(map: OverlayMap, geojson: unknown, options: OverlayOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
-  const summary = normalized ? summarizeGeoJson(normalized) : { bounds: null };
+  const summary = normalized ? summarizeGeoJson(normalized) : { bounds: null as Bounds | null };
   if (!normalized || normalized.features.length === 0) return null;
 
   if (isMapReadyForOverlay(map)) {
@@ -819,9 +864,9 @@ export function processOrQueueGeoJson(map, geojson, options = {}) {
   }
 }
 
-export function drainGpxQueue(map) {
+export function drainGpxQueue(map: OverlayMap) {
   map._overlayStyleReady = true;
-  let bounds = null;
+  let bounds: Bounds | null = null;
   for (const item of pendingGpxQueue) {
     const stats = addGpxToMap(map, item.xml, item.options);
     if (stats) {
@@ -845,7 +890,7 @@ export function drainGpxQueue(map) {
  * Generate a colored circle marker image and register it on the map.
  * The image is cached by color — subsequent calls with the same color are no-ops.
  */
-function ensureMarkerIcon(map, color = '#3b82f6') {
+function ensureMarkerIcon(map: OverlayMap, color = '#3b82f6') {
   const imageName = `marker-dot-${color}`;
   if (map.hasImage(imageName)) return;
 
@@ -875,7 +920,7 @@ function ensureMarkerIcon(map, color = '#3b82f6') {
  * Generate a small triangular arrow icon pointing upward (north).
  * Used as a direction indicator on lost-signal gap arcs.
  */
-function ensureGapArrowIcon(map) {
+function ensureGapArrowIcon(map: OverlayMap) {
   if (map.hasImage('gap-arrow')) return;
 
   const size = 14;
@@ -910,9 +955,15 @@ function ensureGapArrowIcon(map) {
  * Uses spherical linear interpolation (SLERP) for a natural curved path
  * on the Mercator projection.
  */
-function greatCircleInterpolate(lon1, lat1, lon2, lat2, numPoints) {
-  const toRad = (x) => (x * Math.PI) / 180;
-  const toDeg = (x) => (x * 180) / Math.PI;
+function greatCircleInterpolate(
+  lon1: number,
+  lat1: number,
+  lon2: number,
+  lat2: number,
+  numPoints: number,
+) {
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const toDeg = (x: number) => (x * 180) / Math.PI;
 
   const phi1 = toRad(lat1);
   const lambda1 = toRad(lon1);
@@ -931,7 +982,7 @@ function greatCircleInterpolate(lon1, lat1, lon2, lat2, numPoints) {
   const dot = Math.max(-1, Math.min(1, x1 * x2 + y1 * y2 + z1 * z2));
   const omega = Math.acos(dot);
 
-  const result = [];
+  const result: number[][] = [];
   if (omega < 1e-10) {
     // Nearly identical points — return straight line
     result.push([lon1, lat1], [lon2, lat2]);
@@ -954,9 +1005,9 @@ function greatCircleInterpolate(lon1, lat1, lon2, lat2, numPoints) {
 /**
  * Calculate initial bearing (in degrees clockwise from north) from point A to B.
  */
-function bearing(lon1, lat1, lon2, lat2) {
-  const toRad = (x) => (x * Math.PI) / 180;
-  const toDeg = (x) => (x * 180) / Math.PI;
+function bearing(lon1: number, lat1: number, lon2: number, lat2: number) {
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const toDeg = (x: number) => (x * 180) / Math.PI;
 
   const dLon = toRad(lon2 - lon1);
   const y = Math.sin(dLon) * Math.cos(toRad(lat2));
@@ -964,7 +1015,7 @@ function bearing(lon1, lat1, lon2, lat2) {
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
-export function installGpxDragDrop(map) {
+export function installGpxDragDrop(map: OverlayMap) {
   const container = map.getContainer();
 
   container.addEventListener('dragover', (e) => {
@@ -981,11 +1032,11 @@ export function installGpxDragDrop(map) {
     e.preventDefault();
     container.style.outline = '';
 
-    const supportedFiles = Array.from(e.dataTransfer.files)
+    const supportedFiles = (Array.from(e.dataTransfer?.files || []) as File[])
       .filter((f) => /\.(gpx|geojson|json)$/i.test(f.name));
     if (supportedFiles.length === 0) return;
 
-    let bounds = null;
+    let bounds: Bounds | null = null;
     let loaded = 0;
     for (const file of supportedFiles) {
       const text = await file.text();

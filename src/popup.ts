@@ -33,28 +33,165 @@ const FEATURE_LINKS = {
   edit: 'https://www.openstreetmap.org/edit?{osm_type}={osm_id}',
 };
 
+type JsonRecord = Record<string, unknown>;
+type OsmElementType = 'node' | 'way' | 'relation';
+type Coordinates = [number, number];
+type FeatureContent = {
+  name?: string;
+  type?: string;
+  country?: string;
+  index?: number;
+};
+type FormatSpec = {
+  map?: {
+    key?: { format?: FormatSpec };
+    value?: { format?: FormatSpec };
+  };
+  template?: string;
+  lookup?: string;
+  country_prefix?: unknown;
+};
+type ListSpec = {
+  colorProperty: string;
+  labelProperty: string;
+  properties: string[];
+  routeIdProperty?: string;
+};
+type FeatureLinks = typeof FEATURE_LINKS;
+type FeaturePropertyDefinition = {
+  name?: string;
+  format?: FormatSpec;
+  link?: string;
+  paragraph?: boolean;
+  list?: ListSpec;
+  description?: string;
+};
+type FeatureCatalog = {
+  featureProperty?: string;
+  colorProperty?: string;
+  labelProperties?: string[];
+  featureLinks?: FeatureLinks;
+  features?: Record<string, FeatureContent>;
+  properties?: Record<string, FeaturePropertyDefinition>;
+};
+type FeaturesCatalog = Record<string, FeatureCatalog>;
+type FormattedValue = string | Array<[string, string]>;
+type PopupPropertyValue = {
+  title: string;
+  value: unknown;
+  body: Array<[string | null, string]>;
+  paragraph?: boolean;
+  list?: ListSpec;
+  link?: string;
+  tooltip?: string;
+};
+type CommonsImageData = {
+  file_name: string;
+  thumbnail_url: string;
+  view_url: string;
+  description: string;
+  attribution: string;
+  license: string;
+  license_url: string;
+};
+type LngLatLike = {
+  distanceTo(other: LngLatLike): number;
+  toArray(): Coordinates;
+};
+type MaplibreLike = {
+  LngLat: {
+    convert(value: unknown): LngLatLike;
+  };
+  Popup: new (options?: JsonRecord) => PopupBuilderLike;
+};
+type PopupLike = {
+  remove(): void;
+};
+type PopupBuilderLike = PopupLike & {
+  setLngLat(coordinates: unknown): PopupBuilderLike;
+  setDOMContent(node: Node): PopupBuilderLike;
+  addTo(map: MapLike): PopupBuilderLike;
+  on(type: 'close', listener: () => void): unknown;
+};
+type RenderedFeatureLike = {
+  id?: string | number;
+  source: string;
+  sourceLayer?: string;
+  properties?: JsonRecord;
+  geometry: {
+    type: string;
+    coordinates?: unknown;
+  };
+};
+type FeatureStateTarget = {
+  source: string;
+  sourceLayer?: string;
+  id: string | number;
+};
+type PopupMapEvent = {
+  point: unknown;
+  lngLat: unknown;
+  originalEvent?: Event & {
+    weatherPickerHandled?: boolean;
+    routingHandled?: boolean;
+  };
+};
+type MapLike = {
+  getContainer(): HTMLElement;
+  getCanvas(): HTMLCanvasElement;
+  queryRenderedFeatures(point: unknown): RenderedFeatureLike[];
+  setFeatureState(feature: FeatureStateTarget, state: JsonRecord): void;
+  on(type: 'mousemove' | 'click', listener: (event: PopupMapEvent) => void): void;
+};
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringValue(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  return typeof value === 'string' ? value : String(value);
+}
+
+function firstRecord(value: unknown): JsonRecord | null {
+  return Array.isArray(value) && isRecord(value[0]) ? value[0] : null;
+}
+
+function stripHtml(value: unknown): string {
+  return stringValue(value).replace(/<[^>]*>/g, '');
+}
+
+function metadataValue(metadata: JsonRecord, key: string): string {
+  const item = metadata[key];
+  return isRecord(item) ? stringValue(item.value) : '';
+}
+
 // ---------------------------------------------------------------------------
 // Country flag emoji helper
 // ---------------------------------------------------------------------------
-function getFlagEmoji(countryCode) {
+function getFlagEmoji(countryCode: string) {
   const codePoints = countryCode
     .toUpperCase()
     .split('')
-    .map((char) => 127397 + char.charCodeAt());
-  return String.fromCodePoint(...codePoints);
+    .map((char) => 127397 + char.charCodeAt(0));
+  return codePoints.length ? String.fromCodePoint(...(codePoints as [number, ...number[]])) : '';
 }
 
 // ---------------------------------------------------------------------------
 // Natural sort comparator
 // ---------------------------------------------------------------------------
-function naturalSort(a, b) {
+function naturalSort(a: string | number, b: string | number) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
 // DOM helper — mirrors ORM's createDomElement()
 // ---------------------------------------------------------------------------
-function el(tagName, className, container) {
+function el<K extends keyof HTMLElementTagNameMap>(
+  tagName: K,
+  className?: string,
+  container?: Element,
+): HTMLElementTagNameMap[K] {
   const e = document.createElement(tagName);
   if (className !== undefined) e.className = className;
   if (container) container.appendChild(e);
@@ -65,22 +202,30 @@ function el(tagName, className, container) {
 // Construct catalog key from a property value
 // Removes variable parts in {} braces and icon position after @
 // ---------------------------------------------------------------------------
-function constructCatalogKey(propertyValue) {
-  const catalogKey =
-    propertyValue && typeof propertyValue === 'string'
-      ? propertyValue.replace(/\{[^}]+}/, '{}').replace(/@([^|]+|$)/g, '')
-      : propertyValue;
-  const keyVariable =
-    propertyValue && typeof propertyValue === 'string'
-      ? propertyValue.match(/\{([^}]+)}/)?.[1]
-      : null;
+function constructCatalogKey(propertyValue: unknown) {
+  if (typeof propertyValue !== 'string') {
+    return {
+      catalogKey:
+        propertyValue === undefined || propertyValue === null
+          ? undefined
+          : String(propertyValue),
+      keyVariable: null,
+    };
+  }
+  const catalogKey = propertyValue
+    .replace(/\{[^}]+}/, '{}')
+    .replace(/@([^|]+|$)/g, '');
+  const keyVariable = propertyValue.match(/\{([^}]+)}/)?.[1] ?? null;
   return { catalogKey, keyVariable };
 }
 
 // ---------------------------------------------------------------------------
 // Determine default OSM element type from properties / feature content
 // ---------------------------------------------------------------------------
-function determineDefaultOsmType(properties, featureContent) {
+function determineDefaultOsmType(
+  properties: JsonRecord,
+  featureContent?: FeatureContent,
+): OsmElementType {
   if (properties.osm_type) {
     return properties.osm_type === 'N'
       ? 'node'
@@ -100,7 +245,10 @@ function determineDefaultOsmType(properties, featureContent) {
 // Parse osm_id / osm_type into an array of {id, type} objects
 // Multiple IDs are separated by \u001e (record separator)
 // ---------------------------------------------------------------------------
-function determineOsmFeatures(properties, featureContent) {
+function determineOsmFeatures(
+  properties: JsonRecord,
+  featureContent?: FeatureContent,
+): Array<{ id: string; type: OsmElementType }> {
   const osmIds = properties.osm_id
     ? String(properties.osm_id).split('\u001e')
     : [];
@@ -110,7 +258,7 @@ function determineOsmFeatures(properties, featureContent) {
     : [];
 
   return osmIds.map((osm_id, index) => {
-    const osmType =
+    const osmType: OsmElementType =
       osmTypes.length > index
         ? osmTypes[index] === 'N'
           ? 'node'
@@ -125,17 +273,21 @@ function determineOsmFeatures(properties, featureContent) {
 // ---------------------------------------------------------------------------
 // Format a property value according to its format specification
 // ---------------------------------------------------------------------------
-function formatPropertyValue(value, format, features) {
-  if (format && format.map) {
-    let sortKey = (v) => v;
+function formatPropertyValue(
+  value: unknown,
+  format?: FormatSpec,
+  features?: FeaturesCatalog,
+): FormattedValue {
+  if (format?.map) {
+    const keyFormat = format.map.key?.format;
+    const valueFormat = format.map.value?.format;
+    let sortKey = (v: string): string | number => v;
     if (
-      format.map.key.format &&
-      format.map.key.format.lookup &&
-      features &&
-      features[format.map.key.format.lookup]
+      keyFormat?.lookup &&
+      features?.[keyFormat.lookup]?.features
     ) {
-      const catalog = features[format.map.key.format.lookup].features ?? {};
-      sortKey = (v) => (catalog[v] ?? {}).index ?? Number.MAX_SAFE_INTEGER;
+      const catalog = features[keyFormat.lookup].features ?? {};
+      sortKey = (v: string) => catalog[v]?.index ?? Number.MAX_SAFE_INTEGER;
     }
 
     return String(value)
@@ -143,8 +295,8 @@ function formatPropertyValue(value, format, features) {
       .map((item) => item.split('\u001e'))
       .toSorted(([keyA], [keyB]) => naturalSort(sortKey(keyA), sortKey(keyB)))
       .map(([key, val]) => [
-        formatPropertyValue(key, format.map.key.format, features),
-        formatPropertyValue(val, format.map.value.format, features),
+        String(formatPropertyValue(key, keyFormat, features)),
+        String(formatPropertyValue(val, valueFormat, features)),
       ]);
   }
 
@@ -158,17 +310,19 @@ function formatPropertyValue(value, format, features) {
           .replace('%s', () => stringValue)
           .replace(
             /%(\.(\d+))?d/,
-            (_1, _2, decimals) =>
+            (_1, _2, decimals: string | undefined) =>
               Number(value).toFixed(Number(decimals)),
           );
       } else if (format.lookup) {
-        const lookupCatalog = features && features[format.lookup];
+        const lookupCatalog = features?.[format.lookup];
         if (!lookupCatalog) {
           return stringValue;
         }
         const { catalogKey: lookUpCatalogKey, keyVariable: lookUpKeyVariable } =
           constructCatalogKey(value);
-        const lookedUpValue = lookupCatalog.features[lookUpCatalogKey];
+        const lookedUpValue = lookUpCatalogKey
+          ? lookupCatalog.features?.[lookUpCatalogKey]
+          : undefined;
         if (!lookedUpValue) {
           return stringValue;
         }
@@ -187,11 +341,18 @@ function formatPropertyValue(value, format, features) {
 // ---------------------------------------------------------------------------
 // Closest point on a line to a given point (for LineString popup placement)
 // ---------------------------------------------------------------------------
-function closestPointOnLine(maplibregl, point, line) {
+function closestPointOnLine(
+  maplibregl: MaplibreLike,
+  point: unknown,
+  line: unknown[],
+): Coordinates | null {
   const lngLatPoint = maplibregl.LngLat.convert(point);
-  let { closest0, closest1 } = line
-    .map(maplibregl.LngLat.convert)
-    .reduce(
+  const { closest0, closest1 } = line
+    .map((item) => maplibregl.LngLat.convert(item))
+    .reduce<{
+      closest0: LngLatLike | null;
+      closest1: LngLatLike | null;
+    }>(
       (acc, cur) => {
         const d = lngLatPoint.distanceTo(cur);
         if (acc.closest0 == null || d < lngLatPoint.distanceTo(acc.closest0)) {
@@ -209,17 +370,17 @@ function closestPointOnLine(maplibregl, point, line) {
 
   if (closest0 == null && closest1 == null) return null;
 
-  closest0 = closest0.toArray();
-  if (closest1 == null) return closest0;
-  closest1 = closest1.toArray();
+  const closest0Array = closest0.toArray();
+  if (closest1 == null) return closest0Array;
+  const closest1Array = closest1.toArray();
   const pt = lngLatPoint.toArray();
 
-  const abx = closest1[0] - closest0[0];
-  const aby = closest1[1] - closest0[1];
-  const acx = pt[0] - closest0[0];
-  const acy = pt[1] - closest0[1];
+  const abx = closest1Array[0] - closest0Array[0];
+  const aby = closest1Array[1] - closest0Array[1];
+  const acx = pt[0] - closest0Array[0];
+  const acy = pt[1] - closest0Array[1];
   const coeff = (abx * acx + aby * acy) / (abx * abx + aby * aby);
-  return [closest0[0] + abx * coeff, closest0[1] + aby * coeff];
+  return [closest0Array[0] + abx * coeff, closest0Array[1] + aby * coeff];
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +843,11 @@ export function buildFeatureCatalog() {
 // (replaces ORM backend proxy endpoints /api/wikidata/ and /api/wikimedia/)
 // ---------------------------------------------------------------------------
 
-function renderImageData(linkEl, data, abortController) {
+function renderImageData(
+  linkEl: HTMLAnchorElement,
+  data: CommonsImageData,
+  abortController: AbortController,
+) {
   const img = el('img', 'orm-popup-image', linkEl);
   img.style.display = 'none';
   img.onload = () => (img.style.display = 'block');
@@ -704,12 +869,15 @@ function renderImageData(linkEl, data, abortController) {
       attr.classList.toggle('collapsed');
     };
     if (data.license) {
-      const licEl = el(data.license_url ? 'a' : 'span', 'orm-hide-collapsed', attr);
       if (data.license_url) {
+        const licEl = el('a', 'orm-hide-collapsed', attr);
         licEl.href = data.license_url;
         licEl.target = '_blank';
+        licEl.innerText = data.license;
+      } else {
+        const licEl = el('span', 'orm-hide-collapsed', attr);
+        licEl.innerText = data.license;
       }
-      licEl.innerText = data.license;
     }
     if (data.attribution) {
       const attrEl = el('span', 'orm-hide-collapsed', attr);
@@ -718,30 +886,36 @@ function renderImageData(linkEl, data, abortController) {
   }
 }
 
-function fetchCommonsImageData(fileName, signal) {
+function fetchCommonsImageData(
+  fileName: string,
+  signal: AbortSignal,
+): Promise<CommonsImageData | null> {
   const url =
     'https://commons.wikimedia.org/w/api.php?action=query' +
     `&titles=File:${encodeURIComponent(fileName)}` +
     '&prop=imageinfo&iiprop=url|extmetadata&iiurlwidth=330&format=json&origin=*';
   return fetch(url, { signal })
     .then((r) => r.json())
-    .then((json) => {
-      const pages = json.query && json.query.pages;
+    .then((json: unknown) => {
+      const pages =
+        isRecord(json) && isRecord(json.query) && isRecord(json.query.pages)
+          ? json.query.pages
+          : null;
       if (!pages) return null;
-      const page = Object.values(pages)[0];
-      if (!page || !page.imageinfo || !page.imageinfo[0]) return null;
-      const info = page.imageinfo[0];
-      const meta = info.extmetadata || {};
-      const artist = meta.Artist ? meta.Artist.value.replace(/<[^>]*>/g, '') : '';
-      const license = meta.LicenseShortName ? meta.LicenseShortName.value : '';
-      const licenseUrl = meta.LicenseUrl ? meta.LicenseUrl.value : '';
-      const description = meta.ImageDescription
-        ? meta.ImageDescription.value.replace(/<[^>]*>/g, '').slice(0, 200)
-        : '';
+      const page = Object.values(pages).find(isRecord);
+      const info = firstRecord(page?.imageinfo);
+      if (!info) return null;
+      const meta = isRecord(info.extmetadata) ? info.extmetadata : {};
+      const artist = stripHtml(metadataValue(meta, 'Artist'));
+      const license = metadataValue(meta, 'LicenseShortName');
+      const licenseUrl = metadataValue(meta, 'LicenseUrl');
+      const description = stripHtml(metadataValue(meta, 'ImageDescription')).slice(0, 200);
+      const thumbnailUrl = stringValue(info.thumburl || info.url);
+      if (!thumbnailUrl) return null;
       return {
         file_name: fileName,
-        thumbnail_url: info.thumburl || info.url,
-        view_url: info.descriptionurl || `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(fileName)}`,
+        thumbnail_url: thumbnailUrl,
+        view_url: stringValue(info.descriptionurl) || `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(fileName)}`,
         description,
         attribution: artist,
         license,
@@ -750,17 +924,29 @@ function fetchCommonsImageData(fileName, signal) {
     });
 }
 
-function fetchWikidataImage(linkEl, wikidataId, abortController) {
+function fetchWikidataImage(
+  linkEl: HTMLAnchorElement,
+  wikidataId: string,
+  abortController: AbortController,
+) {
   const url =
     'https://www.wikidata.org/w/api.php?action=wbgetclaims' +
     `&entity=${encodeURIComponent(wikidataId)}` +
     '&property=P18&format=json&origin=*';
   fetch(url, { signal: abortController.signal })
     .then((r) => r.json())
-    .then((json) => {
-      const claims = json.claims && json.claims.P18;
-      if (!claims || !claims[0]) return;
-      const fileName = claims[0].mainsnak.datavalue.value;
+    .then((json: unknown) => {
+      const claims =
+        isRecord(json) &&
+        isRecord(json.claims) &&
+        Array.isArray(json.claims.P18)
+          ? json.claims.P18
+          : null;
+      const claim = firstRecord(claims);
+      const mainsnak = isRecord(claim?.mainsnak) ? claim.mainsnak : null;
+      const datavalue = isRecord(mainsnak?.datavalue) ? mainsnak.datavalue : null;
+      const fileName = stringValue(datavalue?.value);
+      if (!fileName) return null;
       return fetchCommonsImageData(fileName, abortController.signal);
     })
     .then((data) => {
@@ -776,7 +962,11 @@ function fetchWikidataImage(linkEl, wikidataId, abortController) {
     });
 }
 
-function fetchCommonsImage(linkEl, commonsFile, abortController) {
+function fetchCommonsImage(
+  linkEl: HTMLAnchorElement,
+  commonsFile: string,
+  abortController: AbortController,
+) {
   fetchCommonsImageData(commonsFile, abortController.signal)
     .then((data) => {
       if (data) renderImageData(linkEl, data, abortController);
@@ -788,8 +978,12 @@ function fetchCommonsImage(linkEl, commonsFile, abortController) {
     });
 }
 
-function popupContent(feature, featuresCatalog, abortController) {
-  const properties = feature.properties;
+function popupContent(
+  feature: RenderedFeatureLike,
+  featuresCatalog: FeaturesCatalog,
+  abortController: AbortController,
+) {
+  const properties = feature.properties || {};
   const layerSource = `${feature.source}${feature.sourceLayer ? `-${feature.sourceLayer}` : ''}`;
 
   const featureCatalog = featuresCatalog[layerSource];
@@ -818,7 +1012,7 @@ function popupContent(feature, featuresCatalog, abortController) {
   ];
   const featureDescription = featureContent
     ? `${featureContent.name}${keyVariable ? ` (${keyVariable})` : ''}${featureContent.country ? ` ${getFlagEmoji(featureContent.country)}` : ''}`
-    : properties[featureProperty] || 'Unknown feature';
+    : stringValue(properties[featureProperty]) || 'Unknown feature';
   const color = properties[colorProperty];
 
   // --- Build property values ---
@@ -830,15 +1024,26 @@ function popupContent(feature, featuresCatalog, abortController) {
         properties[property] !== '' &&
         properties[property] !== false,
     )
-    .map(([property, { name, format, link, paragraph, list, description: tooltip }]) => {
+    .map(([property, definition]): PopupPropertyValue => {
+      const { name, format, link, paragraph, list, description: tooltip } = definition;
       const value =
         properties[property] === true
           ? ''
           : formatPropertyValue(properties[property], format, featuresCatalog);
 
-      const body = Array.isArray(value) ? value : [[null, value]];
+      const body: Array<[string | null, string]> = Array.isArray(value)
+        ? value
+        : [[null, value]];
 
-      return { title: name, value: properties[property], body, paragraph, list, link, tooltip };
+      return {
+        title: name || property,
+        value: properties[property],
+        body,
+        paragraph,
+        list,
+        link,
+        tooltip,
+      };
     });
 
   const osmFeatures = determineOsmFeatures(properties, featureContent);
@@ -855,16 +1060,16 @@ function popupContent(feature, featuresCatalog, abortController) {
     const popupLabel = el('h6', 'orm-popup-label', popupContainer);
     if (properties.icon) {
       const span = el('span', undefined, popupLabel);
-      span.title = properties.railway || '';
-      span.innerText = properties.icon;
+      span.title = stringValue(properties.railway);
+      span.innerText = stringValue(properties.icon);
     } else {
-      if (color) {
+      if (typeof color === 'string') {
         const marker = el('span', 'orm-color-marker', popupLabel);
         marker.style.backgroundColor = color;
       }
       if (labels.length > 0) {
         const labelSpan = el('span', undefined, popupLabel);
-        labelSpan.innerText = labels.join(' \u2022 ');
+        labelSpan.innerText = labels.map(stringValue).join(' \u2022 ');
       }
     }
   }
@@ -915,21 +1120,22 @@ function popupContent(feature, featuresCatalog, abortController) {
     if (properties.wikidata) {
       const link = el('a', 'orm-popup-image-link', imgContainer);
       link.target = '_blank';
-      fetchWikidataImage(link, properties.wikidata, abortController);
+      fetchWikidataImage(link, stringValue(properties.wikidata), abortController);
     }
     if (properties.wikimedia_commons_file) {
       const link = el('a', 'orm-popup-image-link', imgContainer);
       link.target = '_blank';
-      fetchCommonsImage(link, properties.wikimedia_commons_file, abortController);
+      fetchCommonsImage(link, stringValue(properties.wikimedia_commons_file), abortController);
     }
     if (properties.image) {
       const link = el('a', undefined, imgContainer);
-      link.href = properties.image;
+      const imageUrl = stringValue(properties.image);
+      link.href = imageUrl;
       link.target = '_blank';
-      link.title = `Image: ${properties.image}`;
+      link.title = `Image: ${imageUrl}`;
       const img = el('img', 'orm-popup-image', link);
-      img.src = properties.image;
-      img.alt = `Image: ${properties.image}`;
+      img.src = imageUrl;
+      img.alt = `Image: ${imageUrl}`;
       img.style.display = 'none';
       img.onload = () => (img.style.display = 'block');
     }
@@ -1010,7 +1216,8 @@ function popupContent(feature, featuresCatalog, abortController) {
   if (listProps.length > 0) {
     const listContainer = el('div', 'orm-popup-lists', popupContainer);
     listProps.forEach(({ title, value, list }) => {
-      const groups = value
+      if (!list) return;
+      const groups = stringValue(value)
         .split('\u001d')
         .map((group) => {
           const split = group.split('\u001e');
@@ -1049,16 +1256,18 @@ function popupContent(feature, featuresCatalog, abortController) {
 // ---------------------------------------------------------------------------
 // Fallback popup for layers not in the catalog
 // ---------------------------------------------------------------------------
-function fallbackPopupContent(properties, layerSource) {
+function fallbackPopupContent(properties: JsonRecord, layerSource: string) {
   const container = el('div', 'orm-popup');
 
   const title = el('h5', 'orm-popup-title', container);
   title.innerText =
-    properties.localized_name ||
-    properties.name ||
-    properties.standard_label ||
-    properties.label ||
-    properties.ref ||
+    stringValue(
+      properties.localized_name ||
+      properties.name ||
+      properties.standard_label ||
+      properties.label ||
+      properties.ref,
+    ) ||
     'Railway feature';
 
   const badges = el('h6', 'orm-popup-badges', container);
@@ -1103,7 +1312,7 @@ function fallbackPopupContent(properties, layerSource) {
     icon.src = OSM_ICONS[osmType] || OSM_ICONS.node;
     icon.alt = osmType;
     const code = el('code', undefined, idBtn);
-    code.innerText = properties.osm_id;
+    code.innerText = stringValue(properties.osm_id);
     const viewLink = el('a', 'orm-btn orm-btn-action', group);
     viewLink.href = `https://www.openstreetmap.org/${osmType}/${properties.osm_id}`;
     viewLink.target = '_blank';
@@ -1113,7 +1322,7 @@ function fallbackPopupContent(properties, layerSource) {
   return container;
 }
 
-function addPopupBadge(container, label, value) {
+function addPopupBadge(container: Element, label: string, value: unknown) {
   if (value === undefined || value === null || value === '' || value === false) return;
   const badge = el('span', 'orm-badge', container);
   const titleSpan = el('span', 'orm-badge-title', badge);
@@ -1122,28 +1331,28 @@ function addPopupBadge(container, label, value) {
   valueSpan.innerText = value === true ? 'yes' : String(value);
 }
 
-function formatOsrmKind(kind) {
+function formatOsrmKind(kind: unknown) {
   return String(kind || '')
     .replace(/^osrm_/, '')
     .replace(/_/g, ' ')
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+    .replace(/\b\w/g, (char: string) => char.toUpperCase());
 }
 
-function formatOsrmSpeed(properties) {
+function formatOsrmSpeed(properties: JsonRecord) {
   const speed = Number(properties.speed_kmh ?? properties.speed);
   return Number.isFinite(speed) ? `${speed.toFixed(speed >= 10 ? 0 : 1)} km/h` : '';
 }
 
-function osrmPopupTitle(properties) {
+function osrmPopupTitle(properties: JsonRecord) {
   const kind = String(properties.kind || '');
-  if (kind === 'osrm_route') return properties.name || 'OSRM route';
+  if (kind === 'osrm_route') return stringValue(properties.name) || 'OSRM route';
   if (kind === 'osrm_segment') return 'Speed segment';
-  if (kind === 'osrm_maneuver') return properties.title || formatOsrmKind(properties.maneuver) || 'Maneuver';
-  if (kind === 'osrm_step') return properties.title || properties.name || 'Route step';
+  if (kind === 'osrm_maneuver') return stringValue(properties.title) || formatOsrmKind(properties.maneuver) || 'Maneuver';
+  if (kind === 'osrm_step') return stringValue(properties.title || properties.name) || 'Route step';
   return formatOsrmKind(kind) || 'OSRM feature';
 }
 
-function osrmPopupContent(feature) {
+function osrmPopupContent(feature: RenderedFeatureLike) {
   const properties = feature.properties || {};
   const kind = String(properties.kind || '');
   const container = el('div', 'orm-popup');
@@ -1153,7 +1362,7 @@ function osrmPopupContent(feature) {
 
   const label = el('h6', 'orm-popup-label', container);
   const marker = el('span', 'orm-color-marker', label);
-  marker.style.backgroundColor = properties.color || properties.stroke || '#0f766e';
+  marker.style.backgroundColor = stringValue(properties.color || properties.stroke) || '#0f766e';
   const labelText = el('span', undefined, label);
   labelText.innerText = kind === 'osrm_route' ? 'OSRM route' : formatOsrmKind(kind);
 
@@ -1187,9 +1396,13 @@ function osrmPopupContent(feature) {
 // ---------------------------------------------------------------------------
 // Install ORM-style popups on a MapLibre GL map
 // ---------------------------------------------------------------------------
-export function installOrmPopups(map, maplibregl, featuresCatalog) {
-  let popup = null;
-  let hoveredFeature = null;
+export function installOrmPopups(
+  map: MapLike,
+  maplibregl: MaplibreLike,
+  featuresCatalog: FeaturesCatalog,
+) {
+  let popup: PopupBuilderLike | null = null;
+  let hoveredFeature: FeatureStateTarget | null = null;
 
   // Build set of ORM source names for fast lookup
   const ormSources = new Set(
@@ -1197,11 +1410,11 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
       .filter((k) => k.includes('-'))
       .map((k) => k.split('-')[0]),
   );
-  const isOrmFeature = (f) => ormSources.has(f.source);
-  const isOsrmFeature = (f) => String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
+  const isOrmFeature = (f: RenderedFeatureLike) => ormSources.has(f.source);
+  const isOsrmFeature = (f: RenderedFeatureLike) => String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
   const isWeatherPickerActive = () => map.getContainer().dataset.weatherPickerActive === 'true';
   const isRoutingPickerActive = () => map.getContainer().dataset.routingPickerActive === 'true';
-  const osrmPriority = (feature) => {
+  const osrmPriority = (feature: RenderedFeatureLike) => {
     switch (feature?.properties?.kind) {
       case 'osrm_maneuver': return 0;
       case 'osrm_segment': return 1;
@@ -1218,7 +1431,7 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
   }
 
   // Hover cursor
-  map.on('mousemove', (event) => {
+  map.on('mousemove', (event: PopupMapEvent) => {
     if (isWeatherPickerActive() || isRoutingPickerActive()) {
       map.getCanvas().style.cursor = 'crosshair';
       clearHover();
@@ -1259,7 +1472,7 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
   });
 
   // Click popup
-  map.on('click', (event) => {
+  map.on('click', (event: PopupMapEvent) => {
     if (isWeatherPickerActive() || isRoutingPickerActive() || event.originalEvent?.weatherPickerHandled || event.originalEvent?.routingHandled) return;
 
     const renderedFeatures = map.queryRenderedFeatures(event.point);
@@ -1275,8 +1488,11 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
     // Determine popup coordinates
     const coordinates =
       feature.geometry.type === 'Point'
-        ? feature.geometry.coordinates.slice()
+        ? Array.isArray(feature.geometry.coordinates)
+          ? feature.geometry.coordinates.slice()
+          : event.lngLat
         : feature.geometry.type === 'LineString'
+          && Array.isArray(feature.geometry.coordinates)
           ? closestPointOnLine(
               maplibregl,
               event.lngLat,
@@ -1286,7 +1502,7 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
 
     const iconHeight = 20;
     const iconWidth = 10;
-    const popupOffsets = {
+    const popupOffsets: Record<string, Coordinates> = {
       top: [0, iconHeight],
       'top-left': [iconWidth, iconHeight],
       'top-right': [-iconWidth, iconHeight],
