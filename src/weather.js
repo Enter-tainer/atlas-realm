@@ -1,3 +1,6 @@
+import createIconElement from 'lucide/dist/esm/createElement.mjs';
+import CloudSunIcon from 'lucide/dist/esm/icons/cloud-sun.mjs';
+
 const WEATHER_DASHBOARD_URL = import.meta.env.VITE_WEATHER_DASHBOARD_URL || 'https://weather.mgt.moe/';
 const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 const PICKER_ACTIVE_DATASET_KEY = 'weatherPickerActive';
@@ -9,6 +12,16 @@ function el(tagName, className, parent) {
   if (className) node.className = className;
   if (parent) parent.appendChild(node);
   return node;
+}
+
+function appendIcon(parent, icon, className = 'weather-icon') {
+  const svg = createIconElement(icon, {
+    class: className,
+    'aria-hidden': 'true',
+    focusable: 'false',
+  });
+  parent.appendChild(svg);
+  return svg;
 }
 
 function formatDateLocal(date) {
@@ -112,7 +125,7 @@ class WeatherPointPicker {
     this._button.type = 'button';
     this._button.title = 'Pick a point for weather';
     this._button.setAttribute('aria-label', 'Pick a point for weather');
-    this._button.textContent = 'Wx';
+    appendIcon(this._button, CloudSunIcon);
     this._button.addEventListener('click', () => this.setActive(!this._active));
 
     this._panel = el('section', 'weather-panel', map.getContainer());
