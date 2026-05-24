@@ -11,10 +11,13 @@
     "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json",
     "verify:style-bitexact": "cp scripts/styles/styles.mjs /tmp/orm-styles.split.mjs && cp /tmp/style-refactor-backup/styles.mjs.orig scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cp standard.json /tmp/orm-standard.before.json && cp /tmp/orm-styles.split.mjs scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cmp -s standard.json /tmp/orm-standard.before.json",
     "deploy": "pnpm build && wrangler deploy",
-    "test": "vitest run --config vitest.config.js"
+    "test": "vitest run --config vitest.config.js",
+    "test:worker": "vitest run --config vitest.worker.config.js",
+    "test:all": "pnpm test && pnpm test:worker"
   },
   "devDependencies": {
     "@cloudflare/vite-plugin": "^1.28.0",
+    "@cloudflare/vitest-pool-workers": "^0.16.9",
     "vite": "^7.1.0",
     "vitest": "^4.1.7",
     "wrangler": "^4.73.0",
