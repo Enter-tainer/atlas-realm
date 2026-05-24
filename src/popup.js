@@ -1113,6 +1113,77 @@ function fallbackPopupContent(properties, layerSource) {
   return container;
 }
 
+function addPopupBadge(container, label, value) {
+  if (value === undefined || value === null || value === '' || value === false) return;
+  const badge = el('span', 'orm-badge', container);
+  const titleSpan = el('span', 'orm-badge-title', badge);
+  titleSpan.innerText = `${label}: `;
+  const valueSpan = el('span', undefined, badge);
+  valueSpan.innerText = value === true ? 'yes' : String(value);
+}
+
+function formatOsrmKind(kind) {
+  return String(kind || '')
+    .replace(/^osrm_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function formatOsrmSpeed(properties) {
+  const speed = Number(properties.speed_kmh ?? properties.speed);
+  return Number.isFinite(speed) ? `${speed.toFixed(speed >= 10 ? 0 : 1)} km/h` : '';
+}
+
+function osrmPopupTitle(properties) {
+  const kind = String(properties.kind || '');
+  if (kind === 'osrm_route') return properties.name || 'OSRM route';
+  if (kind === 'osrm_segment') return 'Speed segment';
+  if (kind === 'osrm_maneuver') return properties.title || formatOsrmKind(properties.maneuver) || 'Maneuver';
+  if (kind === 'osrm_step') return properties.title || properties.name || 'Route step';
+  return formatOsrmKind(kind) || 'OSRM feature';
+}
+
+function osrmPopupContent(feature) {
+  const properties = feature.properties || {};
+  const kind = String(properties.kind || '');
+  const container = el('div', 'orm-popup');
+
+  const title = el('h5', 'orm-popup-title', container);
+  title.innerText = osrmPopupTitle(properties);
+
+  const label = el('h6', 'orm-popup-label', container);
+  const marker = el('span', 'orm-color-marker', label);
+  marker.style.backgroundColor = properties.color || properties.stroke || '#0f766e';
+  const labelText = el('span', undefined, label);
+  labelText.innerText = kind === 'osrm_route' ? 'OSRM route' : formatOsrmKind(kind);
+
+  const badges = el('h6', 'orm-popup-badges', container);
+  if (kind === 'osrm_route') {
+    addPopupBadge(badges, 'Distance', properties.distance_text);
+    addPopupBadge(badges, 'Duration', properties.duration_text);
+    addPopupBadge(badges, 'Steps', properties.step_count);
+    addPopupBadge(badges, 'Roads', properties.road_names);
+    addPopupBadge(badges, 'Avg speed', properties.annotation_avg_speed_kmh ? `${properties.annotation_avg_speed_kmh} km/h` : '');
+    addPopupBadge(badges, 'OSM nodes', properties.annotation_node_count);
+  } else if (kind === 'osrm_segment') {
+    addPopupBadge(badges, 'Speed', formatOsrmSpeed(properties));
+    addPopupBadge(badges, 'Distance', properties.distance_text);
+    addPopupBadge(badges, 'Duration', properties.duration_text);
+    addPopupBadge(badges, 'Segment', properties.segment_index);
+    if (properties.node_from || properties.node_to) {
+      addPopupBadge(badges, 'Nodes', `${properties.node_from || '?'} -> ${properties.node_to || '?'}`);
+    }
+  } else {
+    addPopupBadge(badges, 'Road', properties.road_name || properties.name);
+    addPopupBadge(badges, 'Maneuver', [properties.maneuver, properties.modifier].filter(Boolean).join(' '));
+    addPopupBadge(badges, 'Distance', properties.distance_text);
+    addPopupBadge(badges, 'Duration', properties.duration_text);
+    addPopupBadge(badges, 'Step', properties.step_index);
+  }
+
+  return container;
+}
+
 // ---------------------------------------------------------------------------
 // Install ORM-style popups on a MapLibre GL map
 // ---------------------------------------------------------------------------
@@ -1127,7 +1198,18 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
       .map((k) => k.split('-')[0]),
   );
   const isOrmFeature = (f) => ormSources.has(f.source);
+  const isOsrmFeature = (f) => String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
   const isWeatherPickerActive = () => map.getContainer().dataset.weatherPickerActive === 'true';
+  const isRoutingPickerActive = () => map.getContainer().dataset.routingPickerActive === 'true';
+  const osrmPriority = (feature) => {
+    switch (feature?.properties?.kind) {
+      case 'osrm_maneuver': return 0;
+      case 'osrm_segment': return 1;
+      case 'osrm_step': return 2;
+      case 'osrm_route': return 3;
+      default: return 4;
+    }
+  };
 
   function clearHover() {
     if (!hoveredFeature) return;
@@ -1137,19 +1219,24 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
 
   // Hover cursor
   map.on('mousemove', (event) => {
-    if (isWeatherPickerActive()) {
+    if (isWeatherPickerActive() || isRoutingPickerActive()) {
       map.getCanvas().style.cursor = 'crosshair';
       clearHover();
       return;
     }
 
-    const features = map
-      .queryRenderedFeatures(event.point)
-      .filter(isOrmFeature);
-    if (features.length > 0) {
+    const renderedFeatures = map.queryRenderedFeatures(event.point);
+    const osrmFeatures = renderedFeatures.filter(isOsrmFeature);
+    const ormFeatures = renderedFeatures.filter(isOrmFeature);
+    if (osrmFeatures.length > 0 || ormFeatures.length > 0) {
       map.getCanvas().style.cursor = 'pointer';
 
-      const feature = features[0];
+      if (osrmFeatures.length > 0) {
+        clearHover();
+        return;
+      }
+
+      const feature = ormFeatures[0];
       if (hoveredFeature && hoveredFeature.id !== feature.id) {
         map.setFeatureState(hoveredFeature, { hover: false });
         hoveredFeature = null;
@@ -1173,14 +1260,17 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
 
   // Click popup
   map.on('click', (event) => {
-    if (isWeatherPickerActive() || event.originalEvent?.weatherPickerHandled) return;
+    if (isWeatherPickerActive() || isRoutingPickerActive() || event.originalEvent?.weatherPickerHandled || event.originalEvent?.routingHandled) return;
 
-    const features = map
-      .queryRenderedFeatures(event.point)
-      .filter(isOrmFeature);
-    if (features.length === 0) return;
+    const renderedFeatures = map.queryRenderedFeatures(event.point);
+    const osrmFeatures = renderedFeatures
+      .filter(isOsrmFeature)
+      .sort((a, b) => osrmPriority(a) - osrmPriority(b));
+    const ormFeatures = renderedFeatures.filter(isOrmFeature);
+    if (osrmFeatures.length === 0 && ormFeatures.length === 0) return;
 
-    const feature = features[0];
+    const feature = osrmFeatures[0] || ormFeatures[0];
+    const isOsrmPopup = osrmFeatures.length > 0;
 
     // Determine popup coordinates
     const coordinates =
@@ -1210,7 +1300,9 @@ export function installOrmPopups(map, maplibregl, featuresCatalog) {
     if (popup) popup.remove();
 
     const abortController = new AbortController();
-    const content = popupContent(feature, featuresCatalog, abortController);
+    const content = isOsrmPopup
+      ? osrmPopupContent(feature)
+      : popupContent(feature, featuresCatalog, abortController);
     if (!content) return;
 
     popup = new maplibregl.Popup({ offset: popupOffsets, maxWidth: '340px' })
