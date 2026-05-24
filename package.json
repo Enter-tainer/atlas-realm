@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.4",
+    "lucide": "^1.16.0",
     "maplibre-contour": "^0.0.5",
     "maplibre-gl": "^5.18.0",
     "partyserver": "^0.5.5",
