@@ -2,6 +2,8 @@ import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
 import mlcontour from 'maplibre-contour';
+import createIconElement from 'lucide/dist/esm/createElement.mjs';
+import SatelliteIcon from 'lucide/dist/esm/icons/satellite.mjs';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson, mergeBounds } from './gpx.js';
 import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
@@ -55,6 +57,16 @@ async function loadImage(url) {
     img.onerror = reject;
     img.src = url;
   });
+}
+
+function appendIcon(parent, icon, className = 'satellite-icon') {
+  const svg = createIconElement(icon, {
+    class: className,
+    'aria-hidden': 'true',
+    focusable: 'false',
+  });
+  parent.appendChild(svg);
+  return svg;
 }
 
 /**
@@ -507,7 +519,7 @@ async function init() {
         this._btn.title = 'Satellite Imagery';
         this._btn.setAttribute('aria-label', 'Satellite Imagery');
         this._btn.className = 'maplibregl-ctrl-satellite';
-        this._btn.textContent = 'Sat';
+        appendIcon(this._btn, SatelliteIcon);
         this._btn.addEventListener('click', () => this._toggle());
         this._container.appendChild(this._btn);
         return this._container;
