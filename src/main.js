@@ -7,6 +7,7 @@ import { installOrmPopups, buildFeatureCatalog } from './popup.js';
 import { installPhotonSearch } from './search.js';
 import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
+import { installOverlayManager } from './overlay-manager.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -27,6 +28,16 @@ const featuresCatalog = buildFeatureCatalog();
 
 function absoluteUrl(path) {
   return `${window.location.origin}${path}`;
+}
+
+function importNameFromUrl(url, fallback) {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.protocol === 'data:') return fallback;
+    return decodeURIComponent(parsed.pathname.split('/').filter(Boolean).pop() || '') || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 async function loadJson(url) {
@@ -379,6 +390,7 @@ async function init() {
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: 'metric' }), 'bottom-right');
     installPhotonSearch(map, maplibregl);
     installWeatherPointPicker(map, maplibregl);
+    installOverlayManager(map);
 
     installSpriteFallback(map, atlases);
 
@@ -397,7 +409,7 @@ async function init() {
             const res = await fetchWithSwr(gpxUrl);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const xml = await res.text();
-            const stats = await processOrQueueGpx(map, xml);
+            const stats = await processOrQueueGpx(map, xml, { name: importNameFromUrl(gpxUrl, 'GPX URL') });
             if (stats?.bounds) bounds = mergeBounds(bounds, stats.bounds);
           } catch (err) {
             console.error('Failed to load GPX from URL:', gpxUrl, err);
@@ -410,14 +422,22 @@ async function init() {
     // Load GeoJSON from URL parameters (?geojson=url1&geojson=url2)
     // Supports both LineString (tracks) and Point (waypoints) features
     const geojsonUrls = new URLSearchParams(window.location.search).getAll('geojson');
-    for (const geojsonUrl of geojsonUrls) {
-      fetchWithSwr(geojsonUrl)
-        .then((res) => {
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return res.json();
-        })
-        .then((data) => processOrQueueGeoJson(map, data))
-        .catch((err) => console.error('Failed to load GeoJSON from URL:', geojsonUrl, err));
+    if (geojsonUrls.length > 0) {
+      (async () => {
+        let bounds = null;
+        await Promise.allSettled(geojsonUrls.map(async (geojsonUrl) => {
+          try {
+            const res = await fetchWithSwr(geojsonUrl);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const result = processOrQueueGeoJson(map, data, { name: importNameFromUrl(geojsonUrl, 'GeoJSON URL') });
+            if (result?.bounds) bounds = mergeBounds(bounds, result.bounds);
+          } catch (err) {
+            console.error('Failed to load GeoJSON from URL:', geojsonUrl, err);
+          }
+        }));
+        if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
+      })();
     }
 
     let terrainControl = null;
@@ -536,7 +556,10 @@ async function init() {
     };
     installMapCollaboration(map);
 
-    map.on('load', () => {
+    let didRunMapReadySetup = false;
+    const runMapReadySetup = () => {
+      if (didRunMapReadySetup) return;
+      didRunMapReadySetup = true;
       installOrmPopups(map, maplibregl, featuresCatalog);
       drainGpxQueue(map);
       let resizeFrame = 0;
@@ -560,7 +583,9 @@ async function init() {
       syncFullscreenState();
       document.addEventListener('fullscreenchange', syncFullscreenState, { passive: true });
       document.addEventListener('webkitfullscreenchange', syncFullscreenState, { passive: true });
-    });
+    };
+    map.on('load', runMapReadySetup);
+    if (map.loaded()) runMapReadySetup();
 
     map.on('error', (e) => console.error('MapLibre error:', e));
   } catch (error) {

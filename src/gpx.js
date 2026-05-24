@@ -207,10 +207,124 @@ export function gpxToGeoJson(xmlString) {
 
 // ── SHA-256 dedup ─────────────────────────────────────────
 const loadedGpxHashes = new Set();
+const DEFAULT_OVERLAY_COLOR = '#3b82f6';
+
+function normalizeOverlayName(name, fallback) {
+  const normalized = String(name || '').replace(/\s+/g, ' ').trim();
+  return normalized || fallback;
+}
+
+function dispatchOverlayAdded(map, overlay) {
+  map.getContainer()?.dispatchEvent(new CustomEvent('overlay:add', { detail: overlay }));
+}
+
+function visitGeometryCoordinates(geometry, callback) {
+  if (!geometry) return;
+  if (geometry.type === 'GeometryCollection') {
+    for (const child of geometry.geometries || []) visitGeometryCoordinates(child, callback);
+    return;
+  }
+
+  const walk = (coords) => {
+    if (!Array.isArray(coords)) return;
+    if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+      const [lng, lat] = coords;
+      if (Number.isFinite(lng) && Number.isFinite(lat)) callback(lng, lat);
+      return;
+    }
+    for (const child of coords) walk(child);
+  };
+
+  walk(geometry.coordinates);
+}
+
+function flattenGeometry(geometry, properties = {}) {
+  if (!geometry) return [{ type: 'Feature', properties, geometry: null }];
+  if (geometry.type !== 'GeometryCollection') {
+    return [{ type: 'Feature', properties, geometry }];
+  }
+  return (geometry.geometries || []).flatMap((child) => flattenGeometry(child, properties));
+}
+
+function normalizeGeoJson(geojson) {
+  if (!geojson) return null;
+
+  if (geojson.type === 'FeatureCollection') {
+    return {
+      type: 'FeatureCollection',
+      features: (geojson.features || []).flatMap((feature) => {
+        if (!feature || feature.type !== 'Feature') return [];
+        return flattenGeometry(feature.geometry, feature.properties || {});
+      }),
+    };
+  }
+
+  if (geojson.type === 'Feature') {
+    return {
+      type: 'FeatureCollection',
+      features: flattenGeometry(geojson.geometry, geojson.properties || {}),
+    };
+  }
+
+  if (typeof geojson.type === 'string') {
+    return {
+      type: 'FeatureCollection',
+      features: flattenGeometry(geojson, {}),
+    };
+  }
+
+  return null;
+}
+
+function getGeometryFamily(geometry) {
+  if (!geometry) return null;
+  if (geometry.type === 'Point' || geometry.type === 'MultiPoint') return 'point';
+  if (geometry.type === 'LineString' || geometry.type === 'MultiLineString') return 'line';
+  if (geometry.type === 'Polygon' || geometry.type === 'MultiPolygon') return 'polygon';
+  return null;
+}
+
+function summarizeGeoJson(geojson) {
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  let lines = 0;
+  let points = 0;
+  let polygons = 0;
+
+  for (const feature of geojson.features || []) {
+    const family = getGeometryFamily(feature.geometry);
+    if (family === 'line') lines += 1;
+    if (family === 'point') points += 1;
+    if (family === 'polygon') polygons += 1;
+
+    visitGeometryCoordinates(feature.geometry, (lng, lat) => {
+      if (lng < minLng) minLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lng > maxLng) maxLng = lng;
+      if (lat > maxLat) maxLat = lat;
+    });
+  }
+
+  return {
+    lines,
+    points,
+    polygons,
+    features: geojson.features?.length || 0,
+    bounds: Number.isFinite(minLng) && Number.isFinite(maxLng)
+      ? [[minLng, minLat], [maxLng, maxLat]]
+      : null,
+  };
+}
 
 async function sha256(text) {
   const hash = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function isMapReadyForOverlay(map) {
+  return Boolean(map._overlayStyleReady || map.loaded?.());
 }
 
 /** Merge two [[sw],[ne]] bounds into one, returns first if second is null */
@@ -225,11 +339,13 @@ export function mergeBounds(a, b) {
 
 let gpxLayerCount = 0;
 
-export function addGpxToMap(map, xmlString) {
+export function addGpxToMap(map, xmlString, options = {}) {
   const result = gpxToGeoJson(xmlString);
   if (!result) return;
 
   const id = `gpx-track-${gpxLayerCount++}`;
+  const color = DEFAULT_OVERLAY_COLOR;
+  const layerIds = [];
 
   map.addSource(id, {
     type: 'geojson',
@@ -240,8 +356,9 @@ export function addGpxToMap(map, xmlString) {
   // Track: outline + speed-colored line (skip if no track points)
   const hasTrack = result.geojson.features.some((f) => f.geometry?.type === 'LineString' && !f.properties?.gap);
   if (hasTrack) {
+    const strokeLayerId = `${id}-stroke`;
     map.addLayer({
-      id: `${id}-stroke`,
+      id: strokeLayerId,
       type: 'line',
       source: id,
       filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'gap'], true]],
@@ -255,10 +372,12 @@ export function addGpxToMap(map, xmlString) {
         'line-opacity': 0.9,
       },
     });
+    layerIds.push(strokeLayerId);
 
     // Colored speed line
+    const lineLayerId = `${id}-line`;
     map.addLayer({
-      id: `${id}-line`,
+      id: lineLayerId,
       type: 'line',
       source: id,
       filter: ['all', ['==', ['geometry-type'], 'LineString'], ['!=', ['get', 'gap'], true]],
@@ -272,13 +391,15 @@ export function addGpxToMap(map, xmlString) {
         'line-opacity': 0.95,
       },
     });
+    layerIds.push(lineLayerId);
   }
 
   // Gap arcs: thin gray line for lost-signal segments
   const hasGaps = result.geojson.features.some((f) => f.properties?.gap);
   if (hasGaps) {
+    const gapLayerId = `${id}-gap-arc`;
     map.addLayer({
-      id: `${id}-gap-arc`,
+      id: gapLayerId,
       type: 'line',
       source: id,
       filter: ['==', ['get', 'gap'], true],
@@ -291,14 +412,16 @@ export function addGpxToMap(map, xmlString) {
         'line-width': 2.5,
       },
     });
+    layerIds.push(gapLayerId);
   }
 
   // Gap arrows: direction indicator at midpoint of each lost-signal segment
   const hasArrows = result.geojson.features.some((f) => f.properties?.arrow);
   if (hasArrows) {
     ensureGapArrowIcon(map);
+    const arrowLayerId = `${id}-gap-arrow`;
     map.addLayer({
-      id: `${id}-gap-arrow`,
+      id: arrowLayerId,
       type: 'symbol',
       source: id,
       filter: ['==', ['get', 'arrow'], true],
@@ -313,19 +436,21 @@ export function addGpxToMap(map, xmlString) {
         'icon-opacity': 0.85,
       },
     });
+    layerIds.push(arrowLayerId);
   }
 
   // Waypoints: symbol layer with collision detection (icon + text)
   const hasWaypoints = result.geojson.features.some((f) => f.geometry?.type === 'Point');
   if (hasWaypoints) {
-    ensureMarkerIcon(map, '#3b82f6');
+    ensureMarkerIcon(map, color);
+    const waypointLayerId = `${id}-wpt`;
     map.addLayer({
-      id: `${id}-wpt`,
+      id: waypointLayerId,
       type: 'symbol',
       source: id,
       filter: ['all', ['==', ['geometry-type'], 'Point'], ['!=', ['get', 'arrow'], true]],
       layout: {
-        'icon-image': 'marker-dot-#3b82f6',
+        'icon-image': `marker-dot-${color}`,
         'icon-size': 0.5,
         'icon-allow-overlap': false,
         'text-field': '{name}',
@@ -341,12 +466,25 @@ export function addGpxToMap(map, xmlString) {
         'text-halo-width': 2,
       },
     });
+    layerIds.push(waypointLayerId);
   }
 
-  return {
-    ...result.stats,
+  const overlay = {
+    type: 'gpx',
+    id,
+    sourceId: id,
+    layerIds,
+    name: normalizeOverlayName(options.name, `GPX ${gpxLayerCount}`),
+    color,
+    opacity: 0.95,
+    lineWidth: 5,
+    visible: true,
     bounds: result.bounds,
+    data: result.geojson,
+    ...result.stats,
   };
+  dispatchOverlayAdded(map, overlay);
+  return overlay;
 }
 
 let geojsonLayerCount = 0;
@@ -357,50 +495,64 @@ let geojsonLayerCount = 0;
  *   - LineString features → rendered as colored tracks
  *   - Point features → rendered as circle markers with name labels
  */
-export function addGeoJsonToMap(map, geojson) {
-  if (!geojson || !geojson.features || geojson.features.length === 0) return;
+export function addGeoJsonToMap(map, geojson, options = {}) {
+  const normalized = normalizeGeoJson(geojson);
+  if (!normalized || !normalized.features || normalized.features.length === 0) return;
 
-  const lineFeatures = geojson.features.filter((f) => f.geometry?.type === 'LineString');
-  const pointFeatures = geojson.features.filter((f) => f.geometry?.type === 'Point');
+  const summary = summarizeGeoJson(normalized);
+  const color = options.color || DEFAULT_OVERLAY_COLOR;
+  const lineFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'line');
+  const pointFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'point');
+  const polygonFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'polygon');
+  const layerIds = [];
 
   const id = `geojson-layer-${geojsonLayerCount++}`;
-
-  // Compute bounds across all features
-  let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-  for (const f of geojson.features) {
-    const coords = f.geometry?.coordinates;
-    if (!coords) continue;
-    if (f.geometry.type === 'LineString') {
-      for (const [lng, lat] of coords) {
-        if (lng < minLng) minLng = lng;
-        if (lat < minLat) minLat = lat;
-        if (lng > maxLng) maxLng = lng;
-        if (lat > maxLat) maxLat = lat;
-      }
-    } else if (f.geometry.type === 'Point') {
-      const [lng, lat] = coords;
-      if (lng < minLng) minLng = lng;
-      if (lat < minLat) minLat = lat;
-      if (lng > maxLng) maxLng = lng;
-      if (lat > maxLat) maxLat = lat;
-    }
-  }
-  const hasBounds = isFinite(minLng) && isFinite(maxLng);
 
   // Build a single source with all features (so they share fitBounds)
   map.addSource(id, {
     type: 'geojson',
-    data: geojson,
+    data: normalized,
     tolerance: 0,
   });
 
-  // LineString: track rendering
-  if (lineFeatures.length > 0) {
+  if (polygonFeatures.length > 0) {
+    const fillLayerId = `${id}-polygon-fill`;
     map.addLayer({
-      id: `${id}-line-stroke`,
+      id: fillLayerId,
+      type: 'fill',
+      source: id,
+      filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']],
+      paint: {
+        'fill-color': ['coalesce', ['get', 'fill'], ['get', 'marker-color'], color],
+        'fill-opacity': 0.18,
+      },
+    });
+    layerIds.push(fillLayerId);
+
+    const outlineLayerId = `${id}-polygon-outline`;
+    map.addLayer({
+      id: outlineLayerId,
       type: 'line',
       source: id,
-      filter: ['==', ['geometry-type'], 'LineString'],
+      filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']],
+      layout: { 'line-join': 'round', 'line-cap': 'round' },
+      paint: {
+        'line-color': ['coalesce', ['get', 'stroke'], color],
+        'line-width': ['coalesce', ['get', 'stroke-width'], 2],
+        'line-opacity': 0.8,
+      },
+    });
+    layerIds.push(outlineLayerId);
+  }
+
+  // LineString: track rendering
+  if (lineFeatures.length > 0) {
+    const strokeLayerId = `${id}-line-stroke`;
+    map.addLayer({
+      id: strokeLayerId,
+      type: 'line',
+      source: id,
+      filter: ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'MultiLineString']],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
         'line-color': ['coalesce', ['get', 'stroke'], '#000000'],
@@ -408,30 +560,35 @@ export function addGeoJsonToMap(map, geojson) {
         'line-opacity': 0.9,
       },
     });
+    layerIds.push(strokeLayerId);
+
+    const lineLayerId = `${id}-line`;
     map.addLayer({
-      id: `${id}-line`,
+      id: lineLayerId,
       type: 'line',
       source: id,
-      filter: ['==', ['geometry-type'], 'LineString'],
+      filter: ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'MultiLineString']],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
-        'line-color': ['coalesce', ['get', 'color'], ['get', 'stroke'], '#3b82f6'],
+        'line-color': ['coalesce', ['get', 'color'], ['get', 'stroke'], color],
         'line-width': ['coalesce', ['get', 'line-width'], 5],
         'line-opacity': 0.95,
       },
     });
+    layerIds.push(lineLayerId);
   }
 
   // Point: symbol layer with collision detection (icon + text)
   if (pointFeatures.length > 0) {
-    ensureMarkerIcon(map, '#3b82f6');
+    ensureMarkerIcon(map, color);
+    const pointLayerId = `${id}-point`;
     map.addLayer({
-      id: `${id}-point`,
+      id: pointLayerId,
       type: 'symbol',
       source: id,
-      filter: ['==', ['geometry-type'], 'Point'],
+      filter: ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
       layout: {
-        'icon-image': 'marker-dot-#3b82f6',
+        'icon-image': `marker-dot-${color}`,
         'icon-size': 0.5,
         'icon-allow-overlap': false,
         'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
@@ -447,14 +604,24 @@ export function addGeoJsonToMap(map, geojson) {
         'text-halo-width': 2,
       },
     });
+    layerIds.push(pointLayerId);
   }
 
-  return {
-    lines: lineFeatures.length,
-    points: pointFeatures.length,
+  const overlay = {
+    type: 'geojson',
     id,
-    bounds: hasBounds ? [[minLng, minLat], [maxLng, maxLat]] : null,
+    sourceId: id,
+    layerIds,
+    name: normalizeOverlayName(options.name, `GeoJSON ${geojsonLayerCount}`),
+    color,
+    opacity: 0.95,
+    lineWidth: 5,
+    visible: true,
+    data: normalized,
+    ...summary,
   };
+  dispatchOverlayAdded(map, overlay);
+  return overlay;
 }
 
 let pendingGpxQueue = [];
@@ -465,7 +632,7 @@ let pendingGeoJsonQueue = [];
  * process immediately; otherwise queue for later.
  * Returns the stats or null if skipped (duplicate).
  */
-export async function processOrQueueGpx(map, xmlString) {
+export async function processOrQueueGpx(map, xmlString, options = {}) {
   // SHA-256 dedup — skip if we've seen identical content before
   const hash = await sha256(xmlString);
   if (loadedGpxHashes.has(hash)) {
@@ -474,8 +641,8 @@ export async function processOrQueueGpx(map, xmlString) {
   }
   loadedGpxHashes.add(hash);
 
-  if (map.loaded()) {
-    const stats = addGpxToMap(map, xmlString);
+  if (isMapReadyForOverlay(map)) {
+    const stats = addGpxToMap(map, xmlString, options);
     if (stats) {
       console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
     }
@@ -484,7 +651,7 @@ export async function processOrQueueGpx(map, xmlString) {
     // Compute bounds now so caller can fitBounds immediately,
     // without waiting for the map tiles to finish loading.
     const result = gpxToGeoJson(xmlString);
-    pendingGpxQueue.push({ xml: xmlString, hash });
+    pendingGpxQueue.push({ xml: xmlString, hash, options });
     console.log('Map not yet loaded, queued GPX for after load');
     if (result) {
       return { bounds: result.bounds, points: result.stats.points, maxSpeed: result.stats.maxSpeed, p99Speed: result.stats.p99Speed };
@@ -497,59 +664,37 @@ export async function processOrQueueGpx(map, xmlString) {
  * Defer GeoJSON processing until map is loaded.
  * Also returns bounds immediately so the caller can zoom before map tiles load.
  */
-export function processOrQueueGeoJson(map, geojson) {
-  let bounds = null;
-  // Compute bounds ahead of time for early zoom
-  if (geojson && geojson.features && geojson.features.length > 0) {
-    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
-    for (const f of geojson.features) {
-      const coords = f.geometry?.coords ?? f.geometry?.coordinates;
-      if (!coords) continue;
-      if (f.geometry.type === 'LineString') {
-        for (const [lng, lat] of coords) {
-          if (lng < minLng) minLng = lng;
-          if (lat < minLat) minLat = lat;
-          if (lng > maxLng) maxLng = lng;
-          if (lat > maxLat) maxLat = lat;
-        }
-      } else if (f.geometry.type === 'Point') {
-        const [lng, lat] = coords;
-        if (lng < minLng) minLng = lng;
-        if (lat < minLat) minLat = lat;
-        if (lng > maxLng) maxLng = lng;
-        if (lat > maxLat) maxLat = lat;
-      }
-    }
-    if (isFinite(minLng) && isFinite(maxLng)) {
-      bounds = [[minLng, minLat], [maxLng, maxLat]];
-    }
-  }
+export function processOrQueueGeoJson(map, geojson, options = {}) {
+  const normalized = normalizeGeoJson(geojson);
+  const summary = normalized ? summarizeGeoJson(normalized) : { bounds: null };
+  if (!normalized || normalized.features.length === 0) return null;
 
-  if (map.loaded()) {
-    const result = addGeoJsonToMap(map, geojson);
+  if (isMapReadyForOverlay(map)) {
+    const result = addGeoJsonToMap(map, normalized, options);
     if (result) {
       console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points`);
     }
-    return bounds ? { bounds } : null;
+    return summary.bounds ? { bounds: summary.bounds } : null;
   } else {
-    pendingGeoJsonQueue.push(geojson);
+    pendingGeoJsonQueue.push({ geojson: normalized, options });
     console.log('Map not yet loaded, queued GeoJSON for after load');
-    return bounds ? { bounds } : null;
+    return summary.bounds ? { bounds: summary.bounds } : null;
   }
 }
 
 export function drainGpxQueue(map) {
+  map._overlayStyleReady = true;
   let bounds = null;
   for (const item of pendingGpxQueue) {
-    const stats = addGpxToMap(map, item.xml);
+    const stats = addGpxToMap(map, item.xml, item.options);
     if (stats) {
       console.log(`GPX loaded (deferred): ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
       bounds = mergeBounds(bounds, stats.bounds);
     }
   }
   pendingGpxQueue = [];
-  for (const geojson of pendingGeoJsonQueue) {
-    const result = addGeoJsonToMap(map, geojson);
+  for (const item of pendingGeoJsonQueue) {
+    const result = addGeoJsonToMap(map, item.geojson, item.options);
     if (result) {
       console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points`);
       bounds = mergeBounds(bounds, result.bounds);
@@ -699,28 +844,35 @@ export function installGpxDragDrop(map) {
     e.preventDefault();
     container.style.outline = '';
 
-    const gpxFiles = Array.from(e.dataTransfer.files)
-      .filter((f) => f.name.toLowerCase().endsWith('.gpx'));
-    if (gpxFiles.length === 0) return;
+    const supportedFiles = Array.from(e.dataTransfer.files)
+      .filter((f) => /\.(gpx|geojson|json)$/i.test(f.name));
+    if (supportedFiles.length === 0) return;
 
     let bounds = null;
     let loaded = 0;
-    for (const file of gpxFiles) {
+    for (const file of supportedFiles) {
       const text = await file.text();
-      const hash = await sha256(text);
-      if (loadedGpxHashes.has(hash)) {
-        console.log(`GPX skipped (duplicate): ${file.name}`);
-        continue;
-      }
-      loadedGpxHashes.add(hash);
-      const stats = addGpxToMap(map, text);
-      if (stats) {
-        loaded++;
-        console.log(`GPX loaded: ${file.name} — ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
-        bounds = mergeBounds(bounds, stats.bounds);
+      try {
+        if (/\.gpx$/i.test(file.name)) {
+          const stats = await processOrQueueGpx(map, text, { name: file.name });
+          if (stats) {
+            loaded++;
+            console.log(`GPX loaded: ${file.name} — ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
+            bounds = mergeBounds(bounds, stats.bounds);
+          }
+        } else {
+          const result = processOrQueueGeoJson(map, JSON.parse(text), { name: file.name });
+          if (result) {
+            loaded++;
+            console.log(`GeoJSON loaded: ${file.name}`);
+            bounds = mergeBounds(bounds, result.bounds);
+          }
+        }
+      } catch (error) {
+        console.error(`Failed to load overlay file: ${file.name}`, error);
       }
     }
     if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
-    if (loaded === 0) console.log('No new GPX files loaded (all were duplicates)');
+    if (loaded === 0) console.log('No overlay files loaded');
   });
 }
