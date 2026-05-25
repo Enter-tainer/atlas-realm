@@ -113,9 +113,9 @@ function sentJson(connection: TestConnection, type: string): Array<Record<string
   return connection.sent
     .filter((message) => typeof message === 'string')
     .map((message) => JSON.parse(message) as unknown)
-    .filter((message): message is Record<string, unknown> => (
-      Boolean(message && typeof message === 'object' && 'type' in message && message.type === type)
-    ));
+    .filter((message): message is Record<string, unknown> =>
+      Boolean(message && typeof message === 'object' && 'type' in message && message.type === type),
+    );
 }
 
 function asRecordArray(value: unknown): Array<Record<string, unknown>> {
@@ -124,11 +124,7 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
     : [];
 }
 
-function manifest(
-  id: string,
-  contentHash: string,
-  extra: Record<string, unknown> = {},
-): OverlayManifestFixture {
+function manifest(id: string, contentHash: string, extra: Record<string, unknown> = {}): OverlayManifestFixture {
   return {
     id,
     type: 'geojson',
@@ -137,7 +133,10 @@ function manifest(
     color: '#3b82f6',
     opacity: 0.95,
     lineWidth: 5,
-    bounds: [[0, 0], [1, 1]],
+    bounds: [
+      [0, 0],
+      [1, 1],
+    ],
     contentHash,
     contentType: 'application/geo+json',
     contentEncoding: 'identity',
@@ -177,9 +176,11 @@ function contentHashes(instance: TestMapCollaboration): TestSqlValue[] {
 }
 
 function contentCount(instance: TestMapCollaboration): number {
-  return Number(instance.sql<{ count: number }>`
+  return Number(
+    instance.sql<{ count: number }>`
     SELECT COUNT(*) AS count FROM overlay_contents
-  `[0]?.count || 0);
+  `[0]?.count || 0,
+  );
 }
 
 describe('MapCollaboration overlay state machine', () => {
@@ -210,14 +211,18 @@ describe('MapCollaboration overlay state machine', () => {
       connection.sent = [];
 
       await storeContent(instance, connection);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, {
-        name: '  Imported   Route  ',
-        color: 'not-a-color',
-        opacity: 10,
-        lineWidth: 99,
-        contentEncoding: 'brotli',
-        pendingOrderIndex: 3,
-      }));
+      await upsertOverlay(
+        instance,
+        connection,
+        manifest('overlay-a', HASH_A, {
+          name: '  Imported   Route  ',
+          color: 'not-a-color',
+          opacity: 10,
+          lineWidth: 99,
+          contentEncoding: 'brotli',
+          pendingOrderIndex: 3,
+        }),
+      );
 
       return {
         needed,
@@ -291,19 +296,23 @@ describe('MapCollaboration overlay state machine', () => {
 
       await storeContent(instance, connection);
       await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:patch', {
-        overlayId: 'overlay-a',
-        patch: {
-          id: 'wrong-id',
-          type: 'gpx',
-          contentHash: HASH_B,
-          name: '  Patched   Name  ',
-          visible: false,
-          color: '#ef4444',
-          opacity: 0.1,
-          lineWidth: 99,
-        },
-      }));
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('overlay:patch', {
+          overlayId: 'overlay-a',
+          patch: {
+            id: 'wrong-id',
+            type: 'gpx',
+            contentHash: HASH_B,
+            name: '  Patched   Name  ',
+            visible: false,
+            color: '#ef4444',
+            opacity: 0.1,
+            lineWidth: 99,
+          },
+        }),
+      );
 
       return overlayList(instance)[0];
     });
@@ -332,9 +341,13 @@ describe('MapCollaboration overlay state machine', () => {
       await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
 
       const before = overlayList(instance).map((overlay) => overlay.id);
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:reorder', {
-        orderedIds: ['overlay-b', 'bad/id', 'overlay-a'],
-      }));
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('overlay:reorder', {
+          orderedIds: ['overlay-b', 'bad/id', 'overlay-a'],
+        }),
+      );
       const after = overlayList(instance).map((overlay) => overlay.id);
       return { before, after };
     });
@@ -399,7 +412,7 @@ describe('MapCollaboration overlay state machine', () => {
       await storeContent(instance, connection, HASH_A, CONTENT_A);
       instance.sql`
         UPDATE overlay_contents
-        SET created_at = ${Date.now() - (2 * 60 * 60 * 1000)}
+        SET created_at = ${Date.now() - 2 * 60 * 60 * 1000}
         WHERE content_hash = ${HASH_A}
       `;
       await storeContent(instance, connection, HASH_B, CONTENT_B);
@@ -421,7 +434,9 @@ describe('MapCollaboration overlay state machine', () => {
 
       const connection = createConnection('joining-client');
       await connectWorker(instance, connection, {
-        request: new Request('https://example.com/parties/map-collaboration/connect-init?name=Alice&color=%23ef4444&userId=user-a'),
+        request: new Request(
+          'https://example.com/parties/map-collaboration/connect-init?name=Alice&color=%23ef4444&userId=user-a',
+        ),
       });
 
       return {

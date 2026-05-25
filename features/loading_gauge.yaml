@@ -36,11 +36,27 @@ loading_gauges:
   - { value: 'W6A, W7, W10, W10A', legend: 'W6A, W7, W10, W10A', color: 'hsl(189, 100%, 34%)' }
   - { value: 'W6A, W7, W8, W10, W10A', legend: 'W6A, W7, W8, W10, W10A', color: 'hsl(189, 100%, 34%)' }
   - { value: 'W6A, W7, W8, W9, W10, W10A', legend: 'W6A, W7, W8, W9, W10, W10A', color: 'hsl(189, 100%, 34%)' }
-  - { value: 'W6A, W7, W8, W9, W9Plus, W10, W10A', legend: 'W6A, W7, W8, W9, W9Plus, W10, W10A', color: 'hsl(189, 100%, 34%)' }
+  - {
+      value: 'W6A, W7, W8, W9, W9Plus, W10, W10A',
+      legend: 'W6A, W7, W8, W9, W9Plus, W10, W10A',
+      color: 'hsl(189, 100%, 34%)',
+    }
   - { value: 'W6A, W7, W8, W9, W10, W12', legend: 'W6A, W7, W8, W9, W10, W12', color: 'hsl(170, 100%, 34%)' }
-  - { value: 'W6A, W7, W8, W9, W10, W10A, W12', legend: 'W6A, W7, W8, W9, W10, W10A, W12', color: 'hsl(170, 100%, 34%)' }
-  - { value: 'W6A, W7, W8, W9, W9Plus, W10, W12', legend: 'W6A, W7, W8, W9, W9Plus, W10, W12', color: 'hsl(170, 100%, 34%)' }
-  - { value: 'W6A, W7, W8, W9, W9Plus, W10, W10A, W12', legend: 'W6A, W7, W8, W9, W9Plus, W10, W10A, W12', color: 'hsl(170, 100%, 34%)' }
+  - {
+      value: 'W6A, W7, W8, W9, W10, W10A, W12',
+      legend: 'W6A, W7, W8, W9, W10, W10A, W12',
+      color: 'hsl(170, 100%, 34%)',
+    }
+  - {
+      value: 'W6A, W7, W8, W9, W9Plus, W10, W12',
+      legend: 'W6A, W7, W8, W9, W9Plus, W10, W12',
+      color: 'hsl(170, 100%, 34%)',
+    }
+  - {
+      value: 'W6A, W7, W8, W9, W9Plus, W10, W10A, W12',
+      legend: 'W6A, W7, W8, W9, W9Plus, W10, W10A, W12',
+      color: 'hsl(170, 100%, 34%)',
+    }
   - { value: 'CPb', legend: 'CPb (PTb)', color: 'hsl(279, 100%, 44%)' }
   - { value: 'CPb+', legend: 'CPb+ (PTb+)', color: 'hsl(245, 100%, 44%)' }
   - { value: 'PT c', legend: 'PTc', color: 'hsl(170, 100%, 34%)' }
@@ -61,4 +77,3 @@ loading_gauges:
   - { value: 'EBV 2', legend: 'EBV2', color: 'hsl(130, 80%, 50%)' }
   - { value: 'EBV 3', legend: 'EBV3', color: 'hsl(215, 100%, 40%)' }
   - { value: 'EBV 4', legend: 'EBV4', color: 'hsl(270, 80%, 50%)' }
-  

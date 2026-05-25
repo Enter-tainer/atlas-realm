@@ -1,7 +1,19 @@
-import { standardHistoricalLanduseLayers, standardHistoricalRailwayLineLayers, standardHistoricalStationsLayer } from './standard.historical.mjs'
+import {
+  standardHistoricalLanduseLayers,
+  standardHistoricalRailwayLineLayers,
+  standardHistoricalStationsLayer,
+} from './standard.historical.mjs'
 import { standardRailwayLineLayers, standardTurntableLayers } from './standard.lines.mjs'
-import { standardStationAreaLayers, standardStationTextLowLayers, standardStationTextHighLayers } from './standard.stations.mjs'
-import { standardPlatformGeometryLayers, standardStopPositionsLayer, standardPlatformTextLayers } from './standard.platforms.mjs'
+import {
+  standardStationAreaLayers,
+  standardStationTextLowLayers,
+  standardStationTextHighLayers,
+} from './standard.stations.mjs'
+import {
+  standardPlatformGeometryLayers,
+  standardStopPositionsLayer,
+  standardPlatformTextLayers,
+} from './standard.platforms.mjs'
 import { standardSymbolImageLayers, standardSymbolTrackLayers } from './standard.symbols.mjs'
 import { hillshade, route, routeText, routeStops, searchResults } from '../shared.mjs'
 

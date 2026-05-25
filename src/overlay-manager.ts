@@ -110,7 +110,10 @@ function asOverlayBounds(value: BoundsLike | null | undefined): OverlayBounds | 
   const maxLng = Number(ne[0]);
   const maxLat = Number(ne[1]);
   if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
-  return [[minLng, minLat], [maxLng, maxLat]];
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
 }
 
 function randomOverlaySyncId() {
@@ -205,8 +208,11 @@ function fitOverlayBounds(map: OverlayMap, overlay: OverlayLike | null | undefin
 }
 
 function isOverlayStyleValue(value: unknown): value is OverlayStyleValue {
-  return value == null || ['string', 'number', 'boolean'].includes(typeof value)
-    || (Array.isArray(value) && value.every(isOverlayStyleValue));
+  return (
+    value == null ||
+    ['string', 'number', 'boolean'].includes(typeof value) ||
+    (Array.isArray(value) && value.every(isOverlayStyleValue))
+  );
 }
 
 function withFallbackColor(expression: unknown, color: string): OverlayStyleValue {
@@ -471,7 +477,9 @@ class OverlayManagerControl {
     this._widthInput.min = '1';
     this._widthInput.max = '12';
     this._widthInput.step = '1';
-    this._widthInput.addEventListener('input', () => this._updateSelectedStyle({ lineWidth: Number(this._widthInput.value) }));
+    this._widthInput.addEventListener('input', () =>
+      this._updateSelectedStyle({ lineWidth: Number(this._widthInput.value) }),
+    );
 
     this._opacityField = el('label', 'overlay-manager-field', this._details);
     const opacityHeader = el('span', 'overlay-manager-field-row', this._opacityField);
@@ -483,7 +491,9 @@ class OverlayManagerControl {
     this._opacityInput.min = '20';
     this._opacityInput.max = '100';
     this._opacityInput.step = '5';
-    this._opacityInput.addEventListener('input', () => this._updateSelectedStyle({ opacity: Number(this._opacityInput.value) / 100 }));
+    this._opacityInput.addEventListener('input', () =>
+      this._updateSelectedStyle({ opacity: Number(this._opacityInput.value) / 100 }),
+    );
 
     const detailActions = el('div', 'overlay-manager-detail-actions', this._details);
     this._zoomButton = el('button', 'overlay-manager-action', detailActions);
@@ -565,11 +575,11 @@ class OverlayManagerControl {
   _registerOverlay(overlay: OverlayLike) {
     if (!overlay || !overlay.id || !OVERLAY_SOURCE_TYPES.has(overlay.type)) return;
     const remote = isRemoteOverlayEvent(overlay);
-    const syncOverlayId = overlay.syncOverlayId || overlay.remoteOverlayId || (remote ? overlay.id : randomOverlaySyncId());
-    const existingIndex = this._overlays.findIndex((item) => (
-      item.id === overlay.id ||
-      (hasSyncOrigin(item) && item.syncOverlayId === syncOverlayId)
-    ));
+    const syncOverlayId =
+      overlay.syncOverlayId || overlay.remoteOverlayId || (remote ? overlay.id : randomOverlaySyncId());
+    const existingIndex = this._overlays.findIndex(
+      (item) => item.id === overlay.id || (hasSyncOrigin(item) && item.syncOverlayId === syncOverlayId),
+    );
     const normalized: OverlayLike = {
       color: DEFAULT_COLOR,
       opacity: 0.95,
@@ -594,31 +604,39 @@ class OverlayManagerControl {
 
   _emitOverlaySyncUpsert(overlay: OverlayLike) {
     if (!overlay?.data) return;
-    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-upsert', {
-      detail: { overlay },
-    }));
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent('overlay-sync:local-upsert', {
+        detail: { overlay },
+      }),
+    );
   }
 
   _emitOverlaySyncPatch(overlay: OverlayLike, patch: OverlayStylePatch | { name?: string; visible?: boolean }) {
     if (!overlay?.syncOverlayId) return;
-    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-patch', {
-      detail: { overlayId: overlay.syncOverlayId, patch },
-    }));
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent('overlay-sync:local-patch', {
+        detail: { overlayId: overlay.syncOverlayId, patch },
+      }),
+    );
   }
 
   _emitOverlaySyncReorder() {
-    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-reorder', {
-      detail: {
-        orderedIds: this._overlays.map((overlay) => overlay.syncOverlayId || overlay.id),
-      },
-    }));
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent('overlay-sync:local-reorder', {
+        detail: {
+          orderedIds: this._overlays.map((overlay) => overlay.syncOverlayId || overlay.id),
+        },
+      }),
+    );
   }
 
   _emitOverlaySyncDelete(overlay: OverlayLike) {
     if (!overlay?.syncOverlayId) return;
-    this._map.getContainer().dispatchEvent(new CustomEvent('overlay-sync:local-delete', {
-      detail: { overlayId: overlay.syncOverlayId },
-    }));
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent('overlay-sync:local-delete', {
+        detail: { overlayId: overlay.syncOverlayId },
+      }),
+    );
   }
 
   _applyRemoteOverlayList(detail: OverlayListDetail) {
@@ -631,12 +649,18 @@ class OverlayManagerControl {
       }
     }
     this._overlays.sort((a, b) => {
-      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId) ? Number(order.get(a.remoteOverlayId || a.syncOverlayId)) : Number.MAX_SAFE_INTEGER;
-      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId) ? Number(order.get(b.remoteOverlayId || b.syncOverlayId)) : Number.MAX_SAFE_INTEGER;
+      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId)
+        ? Number(order.get(a.remoteOverlayId || a.syncOverlayId))
+        : Number.MAX_SAFE_INTEGER;
+      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId)
+        ? Number(order.get(b.remoteOverlayId || b.syncOverlayId))
+        : Number.MAX_SAFE_INTEGER;
       return aOrder - bOrder;
     });
     for (const manifest of manifests) {
-      const overlay = this._overlays.find((item) => item.remoteOverlayId === manifest.id || item.syncOverlayId === manifest.id);
+      const overlay = this._overlays.find(
+        (item) => item.remoteOverlayId === manifest.id || item.syncOverlayId === manifest.id,
+      );
       if (!overlay) continue;
       const visibleChanged = overlay.visible !== (manifest.visible !== false);
       Object.assign(overlay, manifestOverlayMetadata(manifest), {
@@ -660,24 +684,28 @@ class OverlayManagerControl {
     const manifest = detail?.manifest;
     const content = detail?.content;
     if (!manifest || !content) return;
-    if (this._overlays.some((overlay) => overlay.remoteOverlayId === manifest.id || overlay.syncOverlayId === manifest.id)) return;
+    if (
+      this._overlays.some((overlay) => overlay.remoteOverlayId === manifest.id || overlay.syncOverlayId === manifest.id)
+    )
+      return;
 
-    const overlay = manifest.type === 'gpx' && typeof content === 'string'
-      ? addGpxToMap(this._map, content, {
-        name: manifest.name,
-        remote: true,
-        remoteOverlayId: manifest.id,
-        syncOverlayId: manifest.id,
-        contentHash: manifest.contentHash,
-      })
-      : addGeoJsonToMap(this._map, content, {
-        name: manifest.name,
-        color: manifest.color,
-        remote: true,
-        remoteOverlayId: manifest.id,
-        syncOverlayId: manifest.id,
-        contentHash: manifest.contentHash,
-      });
+    const overlay =
+      manifest.type === 'gpx' && typeof content === 'string'
+        ? addGpxToMap(this._map, content, {
+            name: manifest.name,
+            remote: true,
+            remoteOverlayId: manifest.id,
+            syncOverlayId: manifest.id,
+            contentHash: manifest.contentHash,
+          })
+        : addGeoJsonToMap(this._map, content, {
+            name: manifest.name,
+            color: manifest.color,
+            remote: true,
+            remoteOverlayId: manifest.id,
+            syncOverlayId: manifest.id,
+            contentHash: manifest.contentHash,
+          });
     if (!overlay) return;
     const local = this._overlays.find((item) => item.id === overlay.id);
     if (local) {
@@ -749,9 +777,10 @@ class OverlayManagerControl {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const name = importNameFromUrl(url, type === 'gpx' ? 'GPX URL' : 'GeoJSON URL');
-      const result: OverlayImportResult = type === 'gpx'
-        ? await processOrQueueGpx(this._map, await response.text(), { name })
-        : processOrQueueGeoJson(this._map, await response.json(), { name }) as OverlayImportResult;
+      const result: OverlayImportResult =
+        type === 'gpx'
+          ? await processOrQueueGpx(this._map, await response.text(), { name })
+          : (processOrQueueGeoJson(this._map, await response.json(), { name }) as OverlayImportResult);
 
       if (!result) {
         this._setStatus('Import failed');
@@ -854,7 +883,12 @@ class OverlayManagerControl {
           this._map.setPaintProperty(layerId, 'line-opacity', opacity);
         }
       } else if (layer.type === 'fill') {
-        this._map.setPaintProperty(layerId, 'fill-color', ['coalesce', ['get', 'fill'], ['get', 'marker-color'], color]);
+        this._map.setPaintProperty(layerId, 'fill-color', [
+          'coalesce',
+          ['get', 'fill'],
+          ['get', 'marker-color'],
+          color,
+        ]);
         this._map.setPaintProperty(layerId, 'fill-opacity', Math.min(0.42, opacity * 0.42));
       } else if (layer.type === 'symbol') {
         if (markerIcon && !/-gap-arrow$/.test(layerId)) {
@@ -893,14 +927,20 @@ class OverlayManagerControl {
 
   _deleteRemoteOverlay(remoteOverlayId?: string) {
     if (!remoteOverlayId) return;
-    const overlay = this._overlays.find((item) => item.remoteOverlayId === remoteOverlayId || item.syncOverlayId === remoteOverlayId);
+    const overlay = this._overlays.find(
+      (item) => item.remoteOverlayId === remoteOverlayId || item.syncOverlayId === remoteOverlayId,
+    );
     if (overlay) this._removeOverlay(overlay, { emit: false });
   }
 
   _exportSelected() {
     const overlay = this._selectedOverlay();
     if (!overlay?.data) return;
-    const baseName = overlay.name.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || overlay.id;
+    const baseName =
+      overlay.name
+        .replace(/[^a-z0-9_-]+/gi, '-')
+        .replace(/^-+|-+$/g, '')
+        .toLowerCase() || overlay.id;
     exportJson(overlay.data, `${baseName}.geojson`);
   }
 
@@ -944,8 +984,9 @@ class OverlayManagerControl {
 
   _focusReorderHandle(overlayId: string) {
     const list = this._list as HTMLElement;
-    const row = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item'))
-      .find((item) => item.dataset.overlayId === overlayId);
+    const row = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item')).find(
+      (item) => item.dataset.overlayId === overlayId,
+    );
     row?.querySelector<HTMLElement>('.overlay-manager-reorder-handle')?.focus();
   }
 
@@ -1001,8 +1042,9 @@ class OverlayManagerControl {
     event.preventDefault();
     event.stopPropagation();
     const list = this._list as HTMLElement;
-    const rows = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item'))
-      .filter((row) => row !== state.row);
+    const rows = Array.from(list.querySelectorAll<HTMLElement>('.overlay-manager-item')).filter(
+      (row) => row !== state.row,
+    );
     let destinationIndex = rows.length;
     for (let index = 0; index < rows.length; index += 1) {
       const rect = rows[index].getBoundingClientRect();
@@ -1066,7 +1108,10 @@ class OverlayManagerControl {
     if (!this._selectedId && this._overlays.length > 0) {
       this._selectedId = this._overlays[0].id;
     }
-    this._summary.textContent = this._overlays.length === 0 ? 'No overlays' : `${this._overlays.length} overlay${this._overlays.length === 1 ? '' : 's'}`;
+    this._summary.textContent =
+      this._overlays.length === 0
+        ? 'No overlays'
+        : `${this._overlays.length} overlay${this._overlays.length === 1 ? '' : 's'}`;
     this._empty.hidden = this._overlays.length > 0;
     this._list.hidden = this._overlays.length === 0;
     this._details.hidden = this._overlays.length === 0;

@@ -1,10 +1,4 @@
-import {
-  PMTiles,
-  ResolvedValueCache,
-  type RangeResponse,
-  type Source,
-  TileType,
-} from 'pmtiles';
+import { PMTiles, ResolvedValueCache, type RangeResponse, type Source, TileType } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 
 const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
@@ -165,16 +159,7 @@ const CONTENT_TYPES: Partial<Record<TileType, string>> = {
   [TileType.Webp]: 'image/webp',
 };
 
-const PROFILE_COLORS = [
-  '#2563eb',
-  '#dc2626',
-  '#16a34a',
-  '#9333ea',
-  '#ea580c',
-  '#0891b2',
-  '#be123c',
-  '#4f46e5',
-];
+const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5'];
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const OVERLAY_CONTENT_BINARY_VERSION = 1;
@@ -235,7 +220,10 @@ function sanitizeOverlayBounds(value: unknown): OverlayBounds | null {
   const maxLng = Number(ne[0]);
   const maxLat = Number(ne[1]);
   if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
-  return [[minLng, minLat], [maxLng, maxLat]];
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
 }
 
 function sanitizeOverlayManifest(value: unknown, fallback: JsonRecord = {}): OverlayManifest | null {
@@ -307,11 +295,12 @@ function sanitizeColor(value: unknown, fallback: string): string {
 
 function sanitizeUser(value: unknown, fallback?: UserProfile): UserProfile {
   const base: Partial<UserProfile> = fallback || {};
-  if (!isRecord(value)) return {
-    id: base.id || '',
-    name: base.name || 'Guest',
-    color: base.color || PROFILE_COLORS[0],
-  };
+  if (!isRecord(value))
+    return {
+      id: base.id || '',
+      name: base.name || 'Guest',
+      color: base.color || PROFILE_COLORS[0],
+    };
   return {
     id: base.id || '',
     name: sanitizeText(value.name, base.name || 'Guest', 32),
@@ -336,9 +325,7 @@ function sanitizeLngLat(value: unknown): LngLatTuple | null {
 function sanitizeViewport(value: unknown): ViewportState | null {
   if (!isRecord(value)) return null;
   const center = sanitizeLngLat(value.center);
-  const corners = Array.isArray(value.corners)
-    ? value.corners.slice(0, 4).map(sanitizeLngLat)
-    : [];
+  const corners = Array.isArray(value.corners) ? value.corners.slice(0, 4).map(sanitizeLngLat) : [];
   if (!center || corners.length !== 4 || corners.some((corner) => !corner)) return null;
   return {
     center,
@@ -470,13 +457,15 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   _listOverlayManifests(): OverlayManifest[] {
     return this.sql<{ manifest_json: string }>`
       SELECT manifest_json FROM overlays ORDER BY order_index ASC, updated_at ASC
-    `.map((row) => {
-      try {
-        return sanitizeOverlayManifest(JSON.parse(String(row.manifest_json)));
-      } catch {
-        return null;
-      }
-    }).filter(Boolean);
+    `
+      .map((row) => {
+        try {
+          return sanitizeOverlayManifest(JSON.parse(String(row.manifest_json)));
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
   }
 
   _getOverlayContent(contentHash: string): ArrayBuffer | null {
@@ -498,11 +487,14 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 
   _broadcastOverlayList(excludeId?: string) {
-    this.broadcast(encodeMessage({
-      type: 'overlay:list',
-      persistence: 'ephemeral',
-      overlays: this._listOverlayManifests(),
-    }), excludeId ? [excludeId] : undefined);
+    this.broadcast(
+      encodeMessage({
+        type: 'overlay:list',
+        persistence: 'ephemeral',
+        overlays: this._listOverlayManifests(),
+      }),
+      excludeId ? [excludeId] : undefined,
+    );
   }
 
   async onStart(): Promise<void> {
@@ -514,7 +506,9 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     const url = new URL(request.url);
     const color = sanitizeColor(
       url.searchParams.get('color'),
-      PROFILE_COLORS[Math.abs(connection.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)) % PROFILE_COLORS.length],
+      PROFILE_COLORS[
+        Math.abs(connection.id.split('').reduce((sum, char) => sum + char.charCodeAt(0), 0)) % PROFILE_COLORS.length
+      ],
     );
     const user = {
       id: sanitizeText(url.searchParams.get('userId'), connection.id, 80),
@@ -537,23 +531,30 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       .map(publicPeer)
       .filter(Boolean);
 
-    connection.send(encodeMessage({
-      type: 'presence:init',
-      id: connection.id,
-      room: this.name,
-      peers,
-    }));
+    connection.send(
+      encodeMessage({
+        type: 'presence:init',
+        id: connection.id,
+        room: this.name,
+        peers,
+      }),
+    );
 
-    connection.send(encodeMessage({
-      type: 'overlay:init',
-      persistence: 'ephemeral',
-      overlays: this._listOverlayManifests(),
-    }));
+    connection.send(
+      encodeMessage({
+        type: 'overlay:init',
+        persistence: 'ephemeral',
+        overlays: this._listOverlayManifests(),
+      }),
+    );
 
-    this.broadcast(encodeMessage({
-      type: 'presence:join',
-      peer: publicPeer(connection),
-    }), [connection.id]);
+    this.broadcast(
+      encodeMessage({
+        type: 'presence:join',
+        peer: publicPeer(connection),
+      }),
+      [connection.id],
+    );
   }
 
   async onMessage(connection: Connection<PeerState>, message: WSMessage): Promise<void> {
@@ -563,14 +564,22 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       const frame = decodeOverlayContentFrame(message);
       if (!frame) return;
       const contentBuffer = toArrayBuffer(frame.content);
-      this.ctx.storage.sql.exec(`
+      this.ctx.storage.sql.exec(
+        `
         INSERT OR REPLACE INTO overlay_contents (content_hash, bytes, byte_length, created_at)
         VALUES (?, ?, ?, ?)
-      `, frame.contentHash, contentBuffer, frame.content.byteLength, Date.now());
-      connection.send(encodeMessage({
-        type: 'overlay:content:stored',
-        contentHash: frame.contentHash,
-      }));
+      `,
+        frame.contentHash,
+        contentBuffer,
+        frame.content.byteLength,
+        Date.now(),
+      );
+      connection.send(
+        encodeMessage({
+          type: 'overlay:content:stored',
+          contentHash: frame.contentHash,
+        }),
+      );
       return;
     }
 
@@ -585,14 +594,17 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     if (payload.type === 'overlay:upsert') {
       const manifest = sanitizeOverlayManifest(payload.manifest);
       if (!manifest) return;
-      const hasContent = this.sql<{ content_hash: string }>`
+      const hasContent =
+        this.sql<{ content_hash: string }>`
         SELECT content_hash FROM overlay_contents WHERE content_hash = ${manifest.contentHash} LIMIT 1
       `.length > 0;
       if (!hasContent) {
-        connection.send(encodeMessage({
-          type: 'overlay:content:needed',
-          contentHash: manifest.contentHash,
-        }));
+        connection.send(
+          encodeMessage({
+            type: 'overlay:content:needed',
+            contentHash: manifest.contentHash,
+          }),
+        );
         return;
       }
       const existing = this.sql<{ order_index: number }>`
@@ -600,9 +612,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       `;
       const requestedOrder = Number(manifest.pendingOrderIndex);
       delete manifest.pendingOrderIndex;
-      const orderIndex = existing.length > 0
-        ? Number(existing[0].order_index)
-        : (Number.isInteger(requestedOrder) ? requestedOrder : -Date.now());
+      const orderIndex =
+        existing.length > 0
+          ? Number(existing[0].order_index)
+          : Number.isInteger(requestedOrder)
+            ? requestedOrder
+            : -Date.now();
       this.sql`
         INSERT OR REPLACE INTO overlays (overlay_id, manifest_json, content_hash, order_index, updated_at)
         VALUES (${manifest.id}, ${JSON.stringify(manifest)}, ${manifest.contentHash}, ${orderIndex}, ${Date.now()})
@@ -657,7 +672,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         ? payload.orderedIds.map(sanitizeOverlayId).filter(Boolean)
         : [];
       orderedIds.forEach((overlayId, index) => {
-        this.sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
+        this
+          .sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
       });
       this._broadcastOverlayList(connection.id);
       return;
@@ -688,24 +704,31 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
     connection.setState(next);
 
-    this.broadcast(encodeMessage({
-      type: 'presence:update',
-      peer: publicPeer(connection),
-    }), [connection.id]);
+    this.broadcast(
+      encodeMessage({
+        type: 'presence:update',
+        peer: publicPeer(connection),
+      }),
+      [connection.id],
+    );
   }
 
   onClose(connection: Connection<PeerState>): void {
-    this.broadcast(encodeMessage({
-      type: 'presence:leave',
-      id: connection.id,
-    }));
+    this.broadcast(
+      encodeMessage({
+        type: 'presence:leave',
+        id: connection.id,
+      }),
+    );
   }
 
   onError(connection: Connection<PeerState>): void {
-    this.broadcast(encodeMessage({
-      type: 'presence:leave',
-      id: connection.id,
-    }));
+    this.broadcast(
+      encodeMessage({
+        type: 'presence:leave',
+        id: connection.id,
+      }),
+    );
   }
 
   onRequest(): Response {
@@ -730,7 +753,11 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 }
 
-async function handleTileRequest(request: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response | null> {
+async function handleTileRequest(
+  request: Request,
+  env: Cloudflare.Env,
+  ctx: ExecutionContext,
+): Promise<Response | null> {
   const url = new URL(request.url);
   const parsed = parseTilePath(url.pathname);
   if (!parsed.ok) return null;

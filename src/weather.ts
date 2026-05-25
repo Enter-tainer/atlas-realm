@@ -114,7 +114,7 @@ async function reverseGeocode(lngLat: LngLatLike, signal: AbortSignal) {
   });
   if (!response.ok) throw new Error(`Nominatim reverse geocoding failed: ${response.status}`);
 
-  const data = await response.json() as NominatimReverseResponse;
+  const data = (await response.json()) as NominatimReverseResponse;
   return formatNominatimAddress(data) || formatDisplayCoord(lngLat);
 }
 
@@ -127,7 +127,9 @@ function buildWeatherUrl(lngLat: LngLatLike, displayName = formatDisplayCoord(ln
   for (let i = 0; i < WEATHER_ROUTE_DAYS; i += 1) {
     const date = new Date(today);
     date.setDate(today.getDate() + i);
-    routeEntries.push(`${formatCoord(lngLat.lat)},${formatCoord(lngLat.lng)}~${safeDisplayName}:${formatDateLocal(date)}`);
+    routeEntries.push(
+      `${formatCoord(lngLat.lat)},${formatCoord(lngLat.lng)}~${safeDisplayName}:${formatDateLocal(date)}`,
+    );
   }
 
   url.searchParams.set('route', routeEntries.join(';'));

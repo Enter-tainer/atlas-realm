@@ -46,11 +46,7 @@ type StyleReadyMap = {
  * Set a global state property on the map.
  * Once the style has been initialised, always sets synchronously.
  */
-export function setGlobalStatePropertyWhenReady(
-  map: StyleReadyMap,
-  propertyName: string,
-  value: unknown,
-) {
+export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName: string, value: unknown) {
   if (map.isStyleLoaded()) {
     map._styleInitialized = true;
     map.setGlobalStateProperty(propertyName, value);

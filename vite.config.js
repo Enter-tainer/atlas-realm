@@ -1,13 +1,15 @@
-import { defineConfig } from 'vite'
-import { createHash } from 'crypto'
-import { readFileSync } from 'fs'
+import { defineConfig } from 'vite';
+import { createHash } from 'crypto';
+import { readFileSync } from 'fs';
 
-import { cloudflare } from "@cloudflare/vite-plugin";
+import { cloudflare } from '@cloudflare/vite-plugin';
 
 function fileHash(path) {
   try {
-    return createHash('md5').update(readFileSync(path)).digest('hex').slice(0, 8)
-  } catch { return Date.now().toString(36) }
+    return createHash('md5').update(readFileSync(path)).digest('hex').slice(0, 8);
+  } catch {
+    return Date.now().toString(36);
+  }
 }
 
 export default defineConfig({
@@ -18,4 +20,4 @@ export default defineConfig({
   server: {
     host: true,
   },
-})
+});

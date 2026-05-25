@@ -1,8 +1,16 @@
-html, body, #app {
+html,
+body,
+#app {
   margin: 0;
   width: 100%;
   height: 100%;
-  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family:
+    Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 #app {
@@ -41,7 +49,13 @@ html, body, #app {
   stroke: #fff;
   stroke-width: 4;
   paint-order: stroke;
-  font: 700 12px/1 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    700 12px/1 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
   pointer-events: none;
 }
 
@@ -149,7 +163,9 @@ html, body, #app {
 }
 
 .collab-compact-avatar.following {
-  box-shadow: 0 0 0 2px #111827, 0 0 0 4px #fff;
+  box-shadow:
+    0 0 0 2px #111827,
+    0 0 0 4px #fff;
 }
 
 .collab-compact-summary {
@@ -176,15 +192,15 @@ html, body, #app {
   background: #9ca3af;
 }
 
-.collab-panel[data-connection="live"] .collab-compact-title::before {
+.collab-panel[data-connection='live'] .collab-compact-title::before {
   background: #16a34a;
 }
 
-.collab-panel[data-connection="connecting"] .collab-compact-title::before {
+.collab-panel[data-connection='connecting'] .collab-compact-title::before {
   background: #d97706;
 }
 
-.collab-panel[data-connection="offline"] .collab-compact-title::before {
+.collab-panel[data-connection='offline'] .collab-compact-title::before {
   background: #dc2626;
 }
 
@@ -198,7 +214,7 @@ html, body, #app {
   text-overflow: ellipsis;
 }
 
-.collab-panel[data-expanded="false"] .collab-panel-body {
+.collab-panel[data-expanded='false'] .collab-panel-body {
   display: none;
 }
 
@@ -270,7 +286,13 @@ html, body, #app {
   outline: none;
   background: #fff;
   color: #111827;
-  font: 650 13px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    650 13px/1.2 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 .collab-name-input:focus,
@@ -297,7 +319,10 @@ html, body, #app {
   line-height: 28px;
   white-space: nowrap;
   cursor: pointer;
-  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+  transition:
+    border-color 160ms ease,
+    background-color 160ms ease,
+    color 160ms ease;
 }
 
 .collab-action-group {
@@ -354,7 +379,7 @@ html, body, #app {
   border-top: 1px solid #e5e7eb;
 }
 
-.collab-panel:not([data-connection="live"]) .collab-presence-bar {
+.collab-panel:not([data-connection='live']) .collab-presence-bar {
   display: none;
 }
 
@@ -390,7 +415,9 @@ html, body, #app {
 .collab-avatar:focus,
 .collab-avatar.following {
   outline: none;
-  box-shadow: 0 0 0 2px #111827, 0 0 0 4px #fff;
+  box-shadow:
+    0 0 0 2px #111827,
+    0 0 0 4px #fff;
 }
 
 .collab-empty {
@@ -470,30 +497,30 @@ html, body, #app {
     background: #9ca3af;
   }
 
-  .collab-panel[data-connection="live"] .collab-compact-toggle {
+  .collab-panel[data-connection='live'] .collab-compact-toggle {
     border-color: rgba(22, 163, 74, 0.34);
     box-shadow: 0 2px 10px rgba(22, 163, 74, 0.18);
   }
 
-  .collab-panel[data-connection="live"] .collab-compact-toggle::after {
+  .collab-panel[data-connection='live'] .collab-compact-toggle::after {
     background: #16a34a;
   }
 
-  .collab-panel[data-connection="connecting"] .collab-compact-toggle {
+  .collab-panel[data-connection='connecting'] .collab-compact-toggle {
     border-color: rgba(217, 119, 6, 0.34);
     box-shadow: 0 2px 10px rgba(217, 119, 6, 0.16);
   }
 
-  .collab-panel[data-connection="connecting"] .collab-compact-toggle::after {
+  .collab-panel[data-connection='connecting'] .collab-compact-toggle::after {
     background: #d97706;
   }
 
-  .collab-panel[data-connection="offline"] .collab-compact-toggle {
+  .collab-panel[data-connection='offline'] .collab-compact-toggle {
     border-color: rgba(220, 38, 38, 0.28);
     box-shadow: 0 2px 10px rgba(220, 38, 38, 0.14);
   }
 
-  .collab-panel[data-connection="offline"] .collab-compact-toggle::after {
+  .collab-panel[data-connection='offline'] .collab-compact-toggle::after {
     background: #dc2626;
   }
 
@@ -702,7 +729,9 @@ html, body, #app {
   opacity: 0;
   pointer-events: none;
   transform: translateX(18px);
-  transition: opacity 160ms ease, transform 180ms ease;
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
 }
 
 .routing-panel-visible {
@@ -803,7 +832,9 @@ html, body, #app {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  box-shadow: 0 0 0 2px #fff, 0 0 0 3px rgba(15, 23, 42, 0.16);
+  box-shadow:
+    0 0 0 2px #fff,
+    0 0 0 3px rgba(15, 23, 42, 0.16);
 }
 
 .routing-point-row {
@@ -823,7 +854,13 @@ html, body, #app {
   outline: none;
   background: #fff;
   color: #111827;
-  font: 650 12px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    650 12px/1.2 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 .routing-input:focus {
@@ -923,7 +960,7 @@ html, body, #app {
   display: flex;
 }
 
-#map[data-routing-picker-active="true"] .maplibregl-canvas {
+#map[data-routing-picker-active='true'] .maplibregl-canvas {
   cursor: crosshair;
 }
 
@@ -957,7 +994,9 @@ html, body, #app {
   opacity: 0;
   pointer-events: none;
   transform: translateX(18px);
-  transition: opacity 160ms ease, transform 180ms ease;
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
 }
 
 .overlay-manager-panel-visible {
@@ -1096,7 +1135,13 @@ html, body, #app {
   outline: none;
   background: #fff;
   color: #111827;
-  font: 600 12px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    600 12px/1.2 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 .overlay-manager-url-input::placeholder {
@@ -1327,7 +1372,13 @@ html, body, #app {
   outline: none;
   background: #fff;
   color: #111827;
-  font: 650 12px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    650 12px/1.2 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 .overlay-manager-name-input:focus {
@@ -1547,7 +1598,7 @@ html, body, #app {
   }
 }
 
-#map[data-weather-picker-active="true"] .maplibregl-canvas {
+#map[data-weather-picker-active='true'] .maplibregl-canvas {
   cursor: crosshair;
 }
 
@@ -1576,10 +1627,12 @@ html, body, #app {
   opacity: 0;
   pointer-events: none;
   transform: translateY(calc(100% + 20px));
-  transition: opacity 160ms ease, transform 180ms ease;
+  transition:
+    opacity 160ms ease,
+    transform 180ms ease;
 }
 
-.weather-panel[data-weather-compact="false"] {
+.weather-panel[data-weather-compact='false'] {
   --weather-frame-height: 779px;
 }
 
@@ -1740,7 +1793,13 @@ html, body, #app {
   outline: 0;
   background: transparent;
   color: #111827;
-  font: 500 14px/1.2 Inter, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font:
+    500 14px/1.2 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
 }
 
 .poi-search-input::placeholder {
@@ -2046,9 +2105,9 @@ html, body, #app {
 /* Color marker (route dot) — identical to upstream */
 .orm-color-marker {
   display: inline-block;
-  width: .6rem;
-  height: .6rem;
-  border-radius: .6rem;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 0.6rem;
   vertical-align: baseline;
   margin-right: 0.4rem;
   box-shadow: 0 0 1px 1px #333;
@@ -2174,11 +2233,11 @@ html, body, #app {
   bottom: 0;
   left: 0;
   margin: 0 -10px;
-  background: rgba(0, 0, 0, .5);
+  background: rgba(0, 0, 0, 0.5);
   color: white;
   padding-left: 5px;
   padding-right: 5px;
-  font-size: .7rem;
+  font-size: 0.7rem;
   display: flex;
   flex-wrap: wrap;
   gap: 3px;
