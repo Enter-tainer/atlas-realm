@@ -30,7 +30,10 @@ describe('overlay sync protocol', () => {
       color: '#ef4444',
       opacity: 0.8,
       lineWidth: 4,
-      bounds: [[121.5, 31.2], [121.5, 31.2]],
+      bounds: [
+        [121.5, 31.2],
+        [121.5, 31.2],
+      ],
       layerIds: ['runtime-layer'],
       sourceId: 'runtime-source',
       rawText: 'not-used-for-geojson',
@@ -97,34 +100,38 @@ describe('overlay sync protocol', () => {
   it('enforces the compressed sync size limit', async () => {
     vi.stubGlobal('CompressionStream', undefined);
     try {
-      await expect(buildOverlaySyncAsset({
-        id: 'too-large',
-        type: 'geojson',
-        name: 'Too large',
-        data: {
-          type: 'FeatureCollection',
-          features: [],
-          payload: 'x'.repeat(OVERLAY_SYNC_MAX_COMPRESSED_BYTES + 1),
-        },
-      })).rejects.toThrow('Overlay is too large to sync');
+      await expect(
+        buildOverlaySyncAsset({
+          id: 'too-large',
+          type: 'geojson',
+          name: 'Too large',
+          data: {
+            type: 'FeatureCollection',
+            features: [],
+            payload: 'x'.repeat(OVERLAY_SYNC_MAX_COMPRESSED_BYTES + 1),
+          },
+        }),
+      ).rejects.toThrow('Overlay is too large to sync');
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
   it('strips runtime-only fields from manifest patches', () => {
-    expect(overlayManifestPatch({
-      id: 'local-id',
-      remoteOverlayId: 'remote-id',
-      syncOverlayId: 'sync-id',
-      type: 'geojson',
-      name: '  ',
-      visible: false,
-      layerIds: ['layer'],
-      sourceId: 'source',
-      data: GEOJSON,
-      rawText: '{}',
-    })).toEqual({
+    expect(
+      overlayManifestPatch({
+        id: 'local-id',
+        remoteOverlayId: 'remote-id',
+        syncOverlayId: 'sync-id',
+        type: 'geojson',
+        name: '  ',
+        visible: false,
+        layerIds: ['layer'],
+        sourceId: 'source',
+        data: GEOJSON,
+        rawText: '{}',
+      }),
+    ).toEqual({
       id: 'sync-id',
       type: 'geojson',
       name: 'sync-id',

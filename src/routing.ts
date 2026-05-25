@@ -46,7 +46,10 @@ function asOverlayBounds(value: readonly (readonly number[])[] | null | undefine
   const maxLng = Number(ne[0]);
   const maxLat = Number(ne[1]);
   if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
-  return [[minLng, minLat], [maxLng, maxLat]];
+  return [
+    [minLng, minLat],
+    [maxLng, maxLat],
+  ];
 }
 type RoutingMap = {
   addControl(control: RoutingControl, position?: string): void;
@@ -196,7 +199,9 @@ function safeSetStorage(key: string, value: string) {
 }
 
 function normalizeEndpoint(value: string | null | undefined) {
-  const endpoint = String(value || '').trim().replace(/\/+$/, '');
+  const endpoint = String(value || '')
+    .trim()
+    .replace(/\/+$/, '');
   if (!endpoint) return DEFAULT_OSRM_ENDPOINT;
   try {
     const url = new URL(endpoint, window.location.href);
@@ -296,12 +301,12 @@ function compactStep(step: OsrmStep, legIndex: number, stepIndex: number): Compa
 }
 
 function getRouteStepRecords(route: OsrmRoute): StepRecord[] {
-  return (route.legs || []).flatMap((leg, legIndex) => (
+  return (route.legs || []).flatMap((leg, legIndex) =>
     (leg.steps || []).map((step, stepIndex) => ({
       raw: step,
       compact: compactStep(step, legIndex, stepIndex),
-    }))
-  ));
+    })),
+  );
 }
 
 function getRoadNames(steps: CompactStep[]) {
@@ -337,28 +342,36 @@ function stepProperties(step: CompactStep, kind: string) {
 
 function buildStepFeatures(stepRecords: StepRecord[]) {
   return stepRecords.flatMap(({ raw, compact }) => {
-    if (raw?.geometry?.type !== 'LineString' || !Array.isArray(raw.geometry.coordinates) || raw.geometry.coordinates.length < 2) {
+    if (
+      raw?.geometry?.type !== 'LineString' ||
+      !Array.isArray(raw.geometry.coordinates) ||
+      raw.geometry.coordinates.length < 2
+    ) {
       return [];
     }
-    return [{
-      type: 'Feature',
-      properties: stepProperties(compact, OSRM_STEP_KIND),
-      geometry: raw.geometry,
-    }];
+    return [
+      {
+        type: 'Feature',
+        properties: stepProperties(compact, OSRM_STEP_KIND),
+        geometry: raw.geometry,
+      },
+    ];
   });
 }
 
 function buildManeuverFeatures(stepRecords: StepRecord[]) {
   return stepRecords.flatMap(({ compact }) => {
     if (!compact.location) return [];
-    return [{
-      type: 'Feature',
-      properties: stepProperties(compact, OSRM_MANEUVER_KIND),
-      geometry: {
-        type: 'Point',
-        coordinates: compact.location,
+    return [
+      {
+        type: 'Feature',
+        properties: stepProperties(compact, OSRM_MANEUVER_KIND),
+        geometry: {
+          type: 'Point',
+          coordinates: compact.location,
+        },
       },
-    }];
+    ];
   });
 }
 
@@ -374,12 +387,9 @@ function getRouteAnnotationArrays(route: OsrmRoute) {
 
 function summarizeAnnotations(route: OsrmRoute) {
   const { distances, durations, speeds: rawSpeeds, nodes } = getRouteAnnotationArrays(route);
-  const speeds = rawSpeeds
-    .map((speed) => Number(speed))
-    .filter((speed) => Number.isFinite(speed));
-  const avgSpeed = speeds.length > 0
-    ? speeds.reduce((sum: number, speed: number) => sum + speed, 0) / speeds.length
-    : null;
+  const speeds = rawSpeeds.map((speed) => Number(speed)).filter((speed) => Number.isFinite(speed));
+  const avgSpeed =
+    speeds.length > 0 ? speeds.reduce((sum: number, speed: number) => sum + speed, 0) / speeds.length : null;
 
   return {
     segmentCount: distances.length || durations.length || speeds.length,
@@ -436,12 +446,7 @@ function buildSegmentFeatures(route: OsrmRoute) {
   return features;
 }
 
-function routeToGeoJson(
-  route: OsrmRoute,
-  waypoints: OsrmWaypoint[] | undefined,
-  from: LngLatLike,
-  to: LngLatLike,
-) {
+function routeToGeoJson(route: OsrmRoute, waypoints: OsrmWaypoint[] | undefined, from: LngLatLike, to: LngLatLike) {
   const distance = Number(route.distance);
   const duration = Number(route.duration);
   const distanceText = formatDistance(distance);
@@ -648,12 +653,7 @@ class OsrmRoutingControl {
     this._map = undefined;
   }
 
-  _appendPointField(
-    parent: Element,
-    kind: RoutePointKind,
-    label: string,
-    color: string,
-  ) {
+  _appendPointField(parent: Element, kind: RoutePointKind, label: string, color: string) {
     const field = el('label', 'routing-field', parent);
     const header = el('span', 'routing-field-row', field);
     const labelNode = el('span', 'routing-field-label', header);
@@ -842,7 +842,7 @@ class OsrmRoutingControl {
       });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-      const data = await response.json() as OsrmRouteResponse;
+      const data = (await response.json()) as OsrmRouteResponse;
       if (data.code !== 'Ok') throw new Error(data.message || data.code || 'Route failed');
       const route = data.routes?.[0];
       if (!route?.geometry || route.geometry.type !== 'LineString') throw new Error('No route geometry');
@@ -856,12 +856,11 @@ class OsrmRoutingControl {
       if (bounds) this._map.fitBounds(bounds, { padding: 70, maxZoom: 16 });
       this._removeMarkers();
       this._setPicking(null);
-      this._setStatus([
-        'Added route',
-        result.distanceText,
-        result.durationText,
-        result.stepCount ? `${result.stepCount} steps` : '',
-      ].filter(Boolean).join(' - '));
+      this._setStatus(
+        ['Added route', result.distanceText, result.durationText, result.stepCount ? `${result.stepCount} steps` : '']
+          .filter(Boolean)
+          .join(' - '),
+      );
     } catch (error: unknown) {
       if (errorName(error) === 'AbortError') return;
       console.error('OSRM route failed:', error);

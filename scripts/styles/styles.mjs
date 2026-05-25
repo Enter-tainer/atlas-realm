@@ -9,39 +9,50 @@ import { trackLayers } from './fragments/track.layers.mjs'
 import { operatorLayers } from './fragments/operator.layers.mjs'
 import { routeLayers } from './fragments/route.layers.mjs'
 
-const layers = { standard: standardLayers, speed: speedLayers, signals: signalsLayers, electrification: electrificationLayers, track: trackLayers, operator: operatorLayers, route: routeLayers };
+const layers = {
+  standard: standardLayers,
+  speed: speedLayers,
+  signals: signalsLayers,
+  electrification: electrificationLayers,
+  track: trackLayers,
+  operator: operatorLayers,
+  route: routeLayers,
+}
 
-const DATA_MAX_ZOOM = 15;
+const DATA_MAX_ZOOM = 15
 
-const capSourcesForDataMaxZoom = originalSources =>
+const capSourcesForDataMaxZoom = (originalSources) =>
   Object.fromEntries(
     Object.entries(originalSources).map(([name, source]) => {
       if (source?.type === 'vector' && source.url) {
-        return [name, {
-          ...source,
-          maxzoom: DATA_MAX_ZOOM,
-        }];
+        return [
+          name,
+          {
+            ...source,
+            maxzoom: DATA_MAX_ZOOM,
+          },
+        ]
       }
-      return [name, source];
-    })
-  );
+      return [name, source]
+    }),
+  )
 
-const capLayersForDataMaxZoom = originalLayers =>
-  originalLayers.map(layer => {
-    const next = {...layer};
+const capLayersForDataMaxZoom = (originalLayers) =>
+  originalLayers.map((layer) => {
+    const next = { ...layer }
 
     if (typeof next.minzoom === 'number' && next.minzoom > DATA_MAX_ZOOM) {
-      next.minzoom = DATA_MAX_ZOOM;
+      next.minzoom = DATA_MAX_ZOOM
     }
 
     if (typeof next.maxzoom === 'number' && next.maxzoom > DATA_MAX_ZOOM) {
-      delete next.maxzoom;
+      delete next.maxzoom
     }
 
-    return next;
-  });
+    return next
+  })
 
-const makeStyle = selectedStyle => ({
+const makeStyle = (selectedStyle) => ({
   center: [12.55, 51.14], // default
   zoom: 3.75, // default
   glyphs: '/font/{fontstack}/{range}',
@@ -54,12 +65,12 @@ const makeStyle = selectedStyle => ({
   sprite: [
     {
       id: 'sdf',
-      url: '/sdf_sprite/symbols'
+      url: '/sdf_sprite/symbols',
     },
     {
       id: 'default',
-      url: '/sprite/symbols'
-    }
+      url: '/sprite/symbols',
+    },
   ],
   version: 8,
   layers: capLayersForDataMaxZoom(layers[selectedStyle]),
@@ -101,8 +112,8 @@ const makeStyle = selectedStyle => ({
       default: 'gauge',
     },
   },
-});
+})
 
-knownStyles.forEach(style => {
-  fs.writeFileSync(`${style}.json`, JSON.stringify(makeStyle(style)));
-});
+knownStyles.forEach((style) => {
+  fs.writeFileSync(`${style}.json`, JSON.stringify(makeStyle(style)))
+})

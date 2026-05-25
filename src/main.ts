@@ -101,7 +101,7 @@ function importNameFromUrl(url: string, fallback: string) {
 async function loadJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  return await res.json() as T;
+  return (await res.json()) as T;
 }
 
 async function loadImage(url: string): Promise<HTMLImageElement> {
@@ -137,9 +137,11 @@ async function fetchWithSwr(url: string, ttlMs = 3600_000) {
   }
   if (cached) {
     // Stale — return cached version, revalidate in background
-    fetch(url).then((res) => {
-      if (res.ok) swrCache.set(url, { response: res, timestamp: Date.now() });
-    }).catch(() => {});
+    fetch(url)
+      .then((res) => {
+        if (res.ok) swrCache.set(url, { response: res, timestamp: Date.now() });
+      })
+      .catch(() => {});
     return cached.response.clone();
   }
   // No cache — fetch and store
@@ -152,28 +154,36 @@ function rewriteOrmStyle(style: StyleLike): StyleLike {
   style.glyphs = absoluteUrl('/orm/font/{fontstack}/{range}');
 
   if (Array.isArray(style.sprite)) {
-    style.sprite = style.sprite.map((sprite) => ({ ...sprite, url: absoluteUrl(sprite.url.startsWith('/orm/') ? sprite.url : `/orm${sprite.url}`) }));
+    style.sprite = style.sprite.map((sprite) => ({
+      ...sprite,
+      url: absoluteUrl(sprite.url.startsWith('/orm/') ? sprite.url : `/orm${sprite.url}`),
+    }));
   } else if (style.sprite?.startsWith('/')) {
     style.sprite = absoluteUrl(`/orm${style.sprite}`);
   }
 
   const rewrittenSources: string[] = [];
-  style.sources = Object.fromEntries(Object.entries(style.sources || {}).map(([name, source]) => {
-    if (source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/')) {
-      rewrittenSources.push(name);
-      return [name, {
-        type: 'vector',
-        tiles: [TILE_URL],
-      attribution: source.attribution,
-      promoteId: source.promoteId,
-      bounds: source.bounds,
-      scheme: source.scheme,
-      metadata: source.metadata,
-        maxzoom: 15,
-      }];
-    }
-    return [name, source];
-  }));
+  style.sources = Object.fromEntries(
+    Object.entries(style.sources || {}).map(([name, source]) => {
+      if (source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/')) {
+        rewrittenSources.push(name);
+        return [
+          name,
+          {
+            type: 'vector',
+            tiles: [TILE_URL],
+            attribution: source.attribution,
+            promoteId: source.promoteId,
+            bounds: source.bounds,
+            scheme: source.scheme,
+            metadata: source.metadata,
+            maxzoom: 15,
+          },
+        ];
+      }
+      return [name, source];
+    }),
+  );
 
   style.metadata = {
     ...(style.metadata || {}),
@@ -197,19 +207,21 @@ function addMapterhornTerrain(style: StyleLike, demSource: DemSourceLike): Style
     },
     contourSource: {
       type: 'vector',
-      tiles: [demSource.contourProtocolUrl({
-        thresholds: {
-          9: [100, 500],
-          10: [50, 250],
-          11: [25, 100],
-          12: [25, 100],
-          13: [10, 50],
-          14: [10, 40],
-        },
-        contourLayer: 'contours',
-        elevationKey: 'ele',
-        levelKey: 'level',
-      })],
+      tiles: [
+        demSource.contourProtocolUrl({
+          thresholds: {
+            9: [100, 500],
+            10: [50, 250],
+            11: [25, 100],
+            12: [25, 100],
+            13: [10, 50],
+            14: [10, 40],
+          },
+          contourLayer: 'contours',
+          elevationKey: 'ele',
+          levelKey: 'level',
+        }),
+      ],
       maxzoom: 17,
     },
   };
@@ -390,7 +402,11 @@ function installSpriteFallback(map: maplibregl.Map, atlases: SpriteAtlas[]) {
         ctx.drawImage(atlas.image, meta.x, meta.y, meta.width, meta.height, 0, 0, meta.width, meta.height);
         const data = ctx.getImageData(0, 0, meta.width, meta.height).data;
         if (!map.hasImage(id)) {
-          map.addImage(id, { width: meta.width, height: meta.height, data }, { pixelRatio: meta.pixelRatio || 1, sdf: atlas.sdf });
+          map.addImage(
+            id,
+            { width: meta.width, height: meta.height, data },
+            { pixelRatio: meta.pixelRatio || 1, sdf: atlas.sdf },
+          );
         }
         return;
       }
@@ -408,7 +424,6 @@ async function init() {
     });
     demSource.setupMaplibre(maplibregl);
     const [style, atlases] = await Promise.all([loadStyle(demSource), loadSpriteAtlases()]);
-
 
     window._mlmap = null;
     const map = new maplibregl.Map({
@@ -476,17 +491,19 @@ async function init() {
     if (gpxUrls.length > 0) {
       (async () => {
         let bounds: Bounds | null = null;
-        await Promise.allSettled(gpxUrls.map(async (gpxUrl) => {
-          try {
-            const res = await fetchWithSwr(gpxUrl);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const xml = await res.text();
-            const stats = await processOrQueueGpx(map, xml, { name: importNameFromUrl(gpxUrl, 'GPX URL') });
-            if (stats?.bounds) bounds = mergeBounds(bounds, stats.bounds);
-          } catch (err) {
-            console.error('Failed to load GPX from URL:', gpxUrl, err);
-          }
-        }));
+        await Promise.allSettled(
+          gpxUrls.map(async (gpxUrl) => {
+            try {
+              const res = await fetchWithSwr(gpxUrl);
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const xml = await res.text();
+              const stats = await processOrQueueGpx(map, xml, { name: importNameFromUrl(gpxUrl, 'GPX URL') });
+              if (stats?.bounds) bounds = mergeBounds(bounds, stats.bounds);
+            } catch (err) {
+              console.error('Failed to load GPX from URL:', gpxUrl, err);
+            }
+          }),
+        );
         if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
       })();
     }
@@ -497,17 +514,19 @@ async function init() {
     if (geojsonUrls.length > 0) {
       (async () => {
         let bounds: Bounds | null = null;
-        await Promise.allSettled(geojsonUrls.map(async (geojsonUrl) => {
-          try {
-            const res = await fetchWithSwr(geojsonUrl);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            const result = processOrQueueGeoJson(map, data, { name: importNameFromUrl(geojsonUrl, 'GeoJSON URL') });
-            if (result?.bounds) bounds = mergeBounds(bounds, result.bounds);
-          } catch (err) {
-            console.error('Failed to load GeoJSON from URL:', geojsonUrl, err);
-          }
-        }));
+        await Promise.allSettled(
+          geojsonUrls.map(async (geojsonUrl) => {
+            try {
+              const res = await fetchWithSwr(geojsonUrl);
+              if (!res.ok) throw new Error(`HTTP ${res.status}`);
+              const data = await res.json();
+              const result = processOrQueueGeoJson(map, data, { name: importNameFromUrl(geojsonUrl, 'GeoJSON URL') });
+              if (result?.bounds) bounds = mergeBounds(bounds, result.bounds);
+            } catch (err) {
+              console.error('Failed to load GeoJSON from URL:', geojsonUrl, err);
+            }
+          }),
+        );
         if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
       })();
     }
@@ -519,9 +538,11 @@ async function init() {
       satellite: Boolean(satelliteControl?._enabled),
     });
     const emitCollaborationViewState = () => {
-      map.getContainer().dispatchEvent(new CustomEvent('collaboration:viewstatechange', {
-        detail: getCollaborationViewState(),
-      }));
+      map.getContainer().dispatchEvent(
+        new CustomEvent('collaboration:viewstatechange', {
+          detail: getCollaborationViewState(),
+        }),
+      );
     };
 
     // Terrain toggle control
@@ -656,7 +677,8 @@ async function init() {
         });
       };
       const syncFullscreenState = () => {
-        const isFullscreen = document.fullscreenElement === map.getContainer() || document.webkitFullscreenElement === map.getContainer();
+        const isFullscreen =
+          document.fullscreenElement === map.getContainer() || document.webkitFullscreenElement === map.getContainer();
         document.body.classList.toggle(FULLSCREEN_ACTIVE_CLASS, isFullscreen);
         scheduleResize();
       };

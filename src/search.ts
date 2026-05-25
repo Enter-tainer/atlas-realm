@@ -78,15 +78,9 @@ function formatCategory(properties?: PhotonProperties) {
 function formatAddress(properties?: PhotonProperties) {
   const data = properties || {};
   const street = [data.street, data.housenumber].filter(Boolean).join(' ');
-  const parts = [
-    street,
-    data.district,
-    data.city,
-    data.county,
-    data.state,
-    data.postcode,
-    data.country,
-  ].filter((part, index, arr) => part && arr.indexOf(part) === index);
+  const parts = [street, data.district, data.city, data.county, data.state, data.postcode, data.country].filter(
+    (part, index, arr) => part && arr.indexOf(part) === index,
+  );
   return parts.join(', ');
 }
 
@@ -114,11 +108,13 @@ function isPointFeature(feature: unknown): feature is PhotonPointFeature {
     type?: unknown;
     geometry?: { type?: unknown; coordinates?: unknown };
   };
-  return candidate.type === 'Feature'
-    && candidate.geometry?.type === 'Point'
-    && Array.isArray(candidate.geometry.coordinates)
-    && candidate.geometry.coordinates.length >= 2
-    && candidate.geometry.coordinates.every(Number.isFinite);
+  return (
+    candidate.type === 'Feature' &&
+    candidate.geometry?.type === 'Point' &&
+    Array.isArray(candidate.geometry.coordinates) &&
+    candidate.geometry.coordinates.length >= 2 &&
+    candidate.geometry.coordinates.every(Number.isFinite)
+  );
 }
 
 function photonFeatures(data: unknown): PhotonPointFeature[] {
@@ -130,13 +126,7 @@ function photonFeatures(data: unknown): PhotonPointFeature[] {
 function getFeatureKey(feature: PhotonPointFeature) {
   const properties = feature.properties || {};
   const [lng, lat] = feature.geometry.coordinates;
-  return [
-    properties.osm_type,
-    properties.osm_id,
-    properties.name,
-    lng,
-    lat,
-  ].filter((value) => value != null).join('|');
+  return [properties.osm_type, properties.osm_id, properties.name, lng, lat].filter((value) => value != null).join('|');
 }
 
 function buildPhotonUrl(query: string, map: SearchMap) {
@@ -365,10 +355,12 @@ class PhotonSearchControl {
       name.textContent = textValue(feature.properties?.name) || 'Unnamed place';
 
       const meta = el('span', 'poi-search-result-meta', button);
-      const distance = formatDistance(haversineDistanceMeters(center, {
-        lng: feature.geometry.coordinates[0],
-        lat: feature.geometry.coordinates[1],
-      }));
+      const distance = formatDistance(
+        haversineDistanceMeters(center, {
+          lng: feature.geometry.coordinates[0],
+          lat: feature.geometry.coordinates[1],
+        }),
+      );
       meta.textContent = [distance, formatCategory(feature.properties)].filter(Boolean).join(' - ');
 
       const address = formatAddress(feature.properties || {});
@@ -412,13 +404,11 @@ class PhotonSearchControl {
       return;
     }
 
-    const move = e.key === 'ArrowDown' ? 'nextElementSibling'
-      : e.key === 'ArrowUp' ? 'previousElementSibling'
-        : null;
+    const move = e.key === 'ArrowDown' ? 'nextElementSibling' : e.key === 'ArrowUp' ? 'previousElementSibling' : null;
     if (!move) return;
 
     e.preventDefault();
-    const target = button[move] as HTMLElement | null || (e.key === 'ArrowUp' ? this._input : null);
+    const target = (button[move] as HTMLElement | null) || (e.key === 'ArrowUp' ? this._input : null);
     target?.focus();
   }
 

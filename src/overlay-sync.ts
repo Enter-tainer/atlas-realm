@@ -65,7 +65,9 @@ export interface OverlayBinaryMessage {
 }
 
 function normalizeString(value: unknown, fallback = '') {
-  const normalized = String(value || '').replace(/\s+/g, ' ').trim();
+  const normalized = String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim();
   return normalized || fallback;
 }
 
@@ -147,7 +149,12 @@ export async function buildOverlaySyncAsset(
 ): Promise<OverlaySyncAsset | null> {
   if (!isRuntimeOverlay(overlay)) return null;
 
-  const manifest: OverlayManifest & { persistence: 'ephemeral' | 'persistent'; syncVersion: number; createdAt: number; updatedAt: number } = {
+  const manifest: OverlayManifest & {
+    persistence: 'ephemeral' | 'persistent';
+    syncVersion: number;
+    createdAt: number;
+    updatedAt: number;
+  } = {
     ...stripRuntimeOverlayFields(overlay),
     syncVersion: 1,
     persistence: 'ephemeral' as const,
@@ -156,9 +163,8 @@ export async function buildOverlaySyncAsset(
     ...options.manifest,
   };
   const contentType = overlay.type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json';
-  const rawText = overlay.type === 'gpx' && typeof overlay.rawText === 'string'
-    ? overlay.rawText
-    : JSON.stringify(overlay.data);
+  const rawText =
+    overlay.type === 'gpx' && typeof overlay.rawText === 'string' ? overlay.rawText : JSON.stringify(overlay.data);
   const rawBytes = TEXT_ENCODER.encode(rawText);
   const compressed = await gzipBytes(rawBytes);
   if (compressed.bytes.byteLength > OVERLAY_SYNC_MAX_COMPRESSED_BYTES) {
@@ -194,13 +200,14 @@ export function encodeOverlayBinaryMessage(contentHash: string, contentBytes: Ui
 }
 
 export function decodeOverlayBinaryMessage(message: unknown): OverlayBinaryMessage | null {
-  const bytes = message instanceof Uint8Array
-    ? message
-    : message instanceof ArrayBuffer
-      ? new Uint8Array(message)
-      : ArrayBuffer.isView(message)
-        ? new Uint8Array(message.buffer, message.byteOffset, message.byteLength)
-        : null;
+  const bytes =
+    message instanceof Uint8Array
+      ? message
+      : message instanceof ArrayBuffer
+        ? new Uint8Array(message)
+        : ArrayBuffer.isView(message)
+          ? new Uint8Array(message.buffer, message.byteOffset, message.byteLength)
+          : null;
   if (!bytes || bytes.byteLength < 2 || bytes[0] !== 1) return null;
   const hashLength = bytes[1];
   if (bytes.byteLength < 2 + hashLength) return null;
@@ -210,7 +217,10 @@ export function decodeOverlayBinaryMessage(message: unknown): OverlayBinaryMessa
   };
 }
 
-export async function materializeOverlayContent(manifest: OverlayManifest, content: Uint8Array | ArrayBuffer): Promise<OverlayContent> {
+export async function materializeOverlayContent(
+  manifest: OverlayManifest,
+  content: Uint8Array | ArrayBuffer,
+): Promise<OverlayContent> {
   const compressed = content instanceof Uint8Array ? content : new Uint8Array(content);
   const encoding = manifest.contentEncoding || (isGzip(compressed) ? 'gzip' : 'identity');
   const rawBytes = await gunzipBytes(compressed, encoding);
@@ -219,7 +229,11 @@ export async function materializeOverlayContent(manifest: OverlayManifest, conte
   return JSON.parse(text);
 }
 
-export async function addSyncedOverlayToMap(map: OverlayMapLike, manifest: OverlayManifest, content: Uint8Array | ArrayBuffer) {
+export async function addSyncedOverlayToMap(
+  map: OverlayMapLike,
+  manifest: OverlayManifest,
+  content: Uint8Array | ArrayBuffer,
+) {
   const payload = await materializeOverlayContent(manifest, content);
   const options = { name: manifest.name, remote: true };
   let overlay = null;
@@ -248,7 +262,5 @@ export function overlayManifestPatch(overlay: Partial<RuntimeOverlay | OverlayMa
 }
 
 export function mergeOverlayBounds(overlays: Array<{ bounds?: OverlayBounds | null }>) {
-  return overlays.reduce<OverlayBounds | null>((bounds, overlay) => (
-    mergeBounds(bounds, overlay.bounds) || null
-  ), null);
+  return overlays.reduce<OverlayBounds | null>((bounds, overlay) => mergeBounds(bounds, overlay.bounds) || null, null);
 }

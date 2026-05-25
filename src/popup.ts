@@ -15,7 +15,8 @@
 const OSM_ICONS = {
   node: 'data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiI+CjxwYXRoIGZpbGwtcnVsZT0ibm9uemVybyIgZmlsbD0icmdiKDEwMCUsIDEwMCUsIDEwMCUpIiBmaWxsLW9wYWNpdHk9IjEiIGQ9Ik0gMS44MjgxMjUgMC4zMjgxMjUgTCAxMC4xNzE4NzUgMC4zMjgxMjUgQyAxMSAwLjMyODEyNSAxMS42NzE4NzUgMSAxMS42NzE4NzUgMS44MjgxMjUgTCAxMS42NzE4NzUgMTAuMTcxODc1IEMgMTEuNjcxODc1IDExIDExIDExLjY3MTg3NSAxMC4xNzE4NzUgMTEuNjcxODc1IEwgMS44MjgxMjUgMTEuNjcxODc1IEMgMSAxMS42NzE4NzUgMC4zMjgxMjUgMTEgMC4zMjgxMjUgMTAuMTcxODc1IEwgMC4zMjgxMjUgMS44MjgxMjUgQyAwLjMyODEyNSAxIDEgMC4zMjgxMjUgMS44MjgxMjUgMC4zMjgxMjUgWiBNIDEuODI4MTI1IDAuMzI4MTI1ICIvPgo8cGF0aCBmaWxsLXJ1bGU9Im5vbnplcm8iIGZpbGw9InJnYig3NC41MDk4MDQlLCA5MC4xOTYwNzglLCA3NC41MDk4MDQlKSIgZmlsbC1vcGFjaXR5PSIxIiBzdHJva2Utd2lkdGg9IjEwIiBzdHJva2UtbGluZWNhcD0iYnV0dCIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgc3Ryb2tlPSJyZ2IoMCUsIDAlLCAwJSkiIHN0cm9rZS1vcGFjaXR5PSIxIiBzdHJva2UtbWl0ZXJsaW1pdD0iNCIgZD0iTSAxNTIgMTI4IEMgMTUyIDE0MS4yNSAxNDEuMjUgMTUyIDEyOCAxNTIgQyAxMTQuNzUgMTUyIDEwNCAxNDEuMjUgMTA0IDEyOCBDIDEwNCAxMTQuNzUgMTE0Ljc1IDEwNCAxMjggMTA0IEMgMTQxLjI1IDEwNCAxNTIgMTE0Ljc1IDE1MiAxMjggWiBNIDE1MiAxMjggIiB0cmFuc2Zvcm09Im1hdHJpeCgwLjA0Njg3NSwgMCwgMCwgMC4wNDY4NzUsIDAsIDApIi8+CjxwYXRoIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iMTIiIHN0cm9rZS1saW5lY2FwPSJidXR0IiBzdHJva2UtbGluZWpvaW49Im1pdGVyIiBzdHJva2U9InJnYigwJSwgMCUsIDAlKSIgc3Ryb2tlLW9wYWNpdHk9IjEiIHN0cm9rZS1taXRlcmxpbWl0PSI0IiBkPSJNIDM5IDcgTCAyMTcgNyBDIDIzNC42NjY2NjcgNyAyNDkgMjEuMzMzMzMzIDI0OSAzOSBMIDI0OSAyMTcgQyAyNDkgMjM0LjY2NjY2NyAyMzQuNjY2NjY3IDI0OSAyMTcgMjQ5IEwgMzkgMjQ5IEMgMjEuMzMzMzMzIDI0OSA3IDIzNC42NjY2NjcgNyAyMTcgTCA3IDM5IEMgNyAyMS4zMzMzMzMgMjEuMzMzMzMzIDcgMzkgNyBaIE0gMzkgNyAiIHRyYW5zZm9ybT0ibWF0cml4KDAuMDQ2ODc1LCAwLCAwLCAwLjA0Njg3NSwgMCwgMCkiLz4KPC9zdmc+Cg==',
   way: 'data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiPz4KPHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB3aWR0aD0iMTIiIGhlaWdodD0iMTIiIHZpZXdCb3g9IjAgMCAxMiAxMiI+CjxwYXRoIGZpbGwtcnVsZT0ibm9uemVybyIgZmlsbD0icmdiKDEwMCUsIDEwMCUsIDEwMCUpIiBmaWxsLW9wYWNpdHk9IjEiIGQ9Ik0gMS44MjgxMjUgMC4zMjgxMjUgTCAxMC4xNzE4NzUgMC4zMjgxMjUgQyAxMSAwLjMyODEyNSAxMS42NzE4NzUgMSAxMS42NzE4NzUgMS44MjgxMjUgTCAxMS42NzE4NzUgMTAuMTcxODc1IEMgMTEuNjcxODc1IDExIDExIDExLjY3MTg3NSAxMC4xNzE4NzUgMTEuNjcxODc1IEwgMS44MjgxMjUgMTEuNjcxODc1IEMgMSAxMS42NzE4NzUgMC4zMjgxMjUgMTEgMC4zMjgxMjUgMTAuMTcxODc1IEwgMC4zMjgxMjUgMS44MjgxMjUgQyAwLjMyODEyNSAxIDEgMC4zMjgxMjUgMS44MjgxMjUgMC4zMjgxMjUgWiBNIDEuODI4MTI1IDAuMzI4MTI1ICIvPgo8cGF0aCBmaWxsPSJub25lIiBzdHJva2Utd2lkdGg9IjE2IiBzdHJva2UtbGluZWNhcD0iYnV0dCIgc3Ryb2tlLWxpbmVqb2luPSJtaXRlciIgc3Ryb2tlPSJyZ2IoODAlLCA4MCUsIDgwJSkiIHN0cm9rZS1vcGFjaXR5PSIxIiBzdHJva2UtbWl0ZXJsaW1pdD0iNCIgZD0iTSAxNjkgNTggTCA1NyAxNDUgTCAxOTUgMTk5ICIgdHJhbnNmb3JtPSJtYXRyaXgoMC4wNDY4NzUsIDAsIDAsIDAuMDQ2ODc1LCAwLCAwKSIvPgo8cGF0aCBmaWxsLXJ1bGU9Im5vbnplcm8iIGZpbGw9InJnYigwJSwgMCUsIDAlKSIgZmlsbC1vcGFjaXR5PSIxIiBkPSJNIDkuMDQ2ODc1IDIuNzE4NzUgQyA5LjA0Njg3NSAzLjMzOTg0NCA4LjU0Mjk2OSAzLjg0Mzc1IDcuOTIxODc1IDMuODQzNzUgQyA3LjMwMDc4MSAzLjg0Mzc1IDYuNzk2ODc1IDMuMzM5ODQ0IDYuNzk2ODc1IDIuNzE4NzUgQyA2Ljc5Njg3NSAyLjA5NzY1NiA3LjMwMDc4MSAxLjU5Mzc1IDcuOTIxODc1IDEuNTkzNzUgQyA4LjU0Mjk2OSAxLjU5Mzc1IDkuMDQ2ODc1IDIuMDk3NjU2IDkuMDQ2ODc1IDIuNzE4NzUgWiBNIDkuMDQ2ODc1IDIuNzE4NzUgIi8+CjxwYXRoIGZpbGwtcnVsZT0ibm9uemVybyIgZmlsbD0icmdiKDAlLCAwJSwgMCUpIiBmaWxsLW9wYWNpdHk9IjEiIGQ9Ik0gMy43OTY4NzUgNi43OTY4NzUgQyAzLjc5Njg3NSA3LjQxNzk2OSAzLjI5Mjk2OSA3LjkyMTg3NSAyLjY3MTg3NSA3LjkyMTg3NSBDIDIuMDUwNzgxIDcuOTIxODc1IDEuNTQ2ODc1IDcuNDE3OTY5IDEuNTQ2ODc1IDYuNzk2ODc1IEMgMS41NDY4NzUgNi4xNzU3ODEgMi4wNTA3ODEgNS42NzE4NzUgMi42NzE4NzUgNS42NzE4NzUgQyAzLjI5Mjk2OSA1LjY3MTg3NSAzLjc5Njg3NSA2LjE3NTc4MSAzLjc5Njg3NSA2Ljc5Njg3NSBaIE0gMy43OTY4NzUgNi43OTY4NzUgIi8+CjxwYXRoIGZpbGwtcnVsZT0ibm9uemVybyIgZmlsbD0icmdiKDAlLCAwJSwgMCUpIiBmaWxsLW9wYWNpdHk9IjEiIGQ9Ik0gMTAuMjY1NjI1IDkuMzI4MTI1IEMgMTAuMjY1NjI1IDkuOTQ5MjE5IDkuNzYxNzE5IDEwLjQ1MzEyNSA5LjE0MDYyNSAxMC40NTMxMjUgQyA4LjUxOTUzMSAxMC40NTMxMjUgOC4wMTU2MjUgOS45NDkyMTkgOC4wMTU2MjUgOS4zMjgxMjUgQyA4LjAxNTYyNSA4LjcwNzAzMSA4LjUxOTUzMSA4LjIwMzEyNSA5LjE0MDYyNSA4LjIwMzEyNSBDIDkuNzYxNzE5IDguMjAzMTI1IDEwLjI2NTYyNSA4LjcwNzAzMSAxMC4yNjU2MjUgOS4zMjgxMjUgWiBNIDEwLjI2NTYyNSA5LjMyODEyNSAiLz4KPHBhdGggZmlsbD0ibm9uZSIgc3Ryb2tlLXdpZHRoPSIxMiIgc3Ryb2tlLWxpbmVjYXA9ImJ1dHQiIHN0cm9rZS1saW5lam9pbj0ibWl0ZXIiIHN0cm9rZT0icmdiKDAlLCAwJSwgMCUpIiBzdHJva2Utb3BhY2l0eT0iMSIgc3Ryb2tlLW1pdGVybGltaXQ9IjQiIGQ9Ik0gMzkgNyBMIDIxNyA3IEMgMjM0LjY2NjY2NyA3IDI0OSAyMS4zMzMzMzMgMjQ5IDM5IEwgMjQ5IDIxNyBDIDI0OSAyMzQuNjY2NjY3IDIzNC42NjY2NjcgMjQ5IDIxNyAyNDkgTCAzOSAyNDkgQyAyMS4zMzMzMzMgMjQ5IDcgMjM0LjY2NjY2NyA3IDIxNyBMIDcgMzkgQyA3IDIxLjMzMzMzMyAyMS4zMzMzMzMgNyAzOSA3IFogTSAzOSA3ICIgdHJhbnNmb3JtPSJtYXRyaXgoMC4wNDY4NzUsIDAsIDAsIDAuMDQ2ODc1LCAwLCAwKSIvPgo8L3N2Zz4K',
-  relation: 'data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIj8+CjxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiIHhtbG5zOmNjPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyMiIHhtbG5zOmRjPSJodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLyIgdmVyc2lvbj0iMS4wIiBoZWlnaHQ9IjI1NiIgd2lkdGg9IjI1NiI+PHRpdGxlPk9wZW5TdHJlZXRNYXAgcmVsYXRpb24gZWxlbWVudCBpY29uPC90aXRsZT48bWV0YWRhdGE+PHJkZjpSREY+PGNjOldvcmsgcmRmOmFib3V0PSIiPjxkYzpmb3JtYXQ+aW1hZ2Uvc3ZnK3htbDwvZGM6Zm9ybWF0PjxkYzp0eXBlIHJkZjpyZXNvdXJjZT0iaHR0cDovL3B1cmwub3JnL2RjL2RjbWl0eXBlL1N0aWxsSW1hZ2UiLz48ZGM6dGl0bGU+T3BlblN0cmVldE1hcCByZWxhdGlvbiBlbGVtZW50IGljb248L2RjOnRpdGxlPjxjYzpsaWNlbnNlIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbGljZW5zZXMvYnkvMy4wLyIvPjxkYzpkYXRlPjIwMTQtMDMtMTA8L2RjOmRhdGU+PGRjOmNyZWF0b3I+PGNjOkFnZW50PjxkYzp0aXRsZT5odHRwczovL3dpa2kub3BlbnN0cmVldG1hcC5vcmcvd2lraS9Vc2VyOk1vcmVzYnk8L2RjOnRpdGxlPjwvY2M6QWdlbnQ+PC9kYzpjcmVhdG9yPjwvY2M6V29yaz48Y2M6TGljZW5zZSByZGY6YWJvdXQ9Imh0dHA6Ly9jcmVhdGl2ZWNvbW1vbnMub3JnL2xpY2Vuc2VzL2J5LzMuMC8iPjxjYzpwZXJtaXRzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjUmVwcm9kdWN0aW9uIi8+PGNjOnBlcm1pdHMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNEaXN0cmlidXRpb24iLz48Y2M6cmVxdWlyZXMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNOb3RpY2UiLz48Y2M6cmVxdWlyZXMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNBdHRyaWJ1dGlvbiIvPjxjYzpwZXJtaXRzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjRGVyaXZhdGl2ZVdvcmtzIi8+PGNjOnJlcXVpcmVzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjU2hhcmVBbGlrZSIvPjwvY2M6TGljZW5zZT48L3JkZjpSREY+PC9tZXRhZGF0YT48Zz48cmVjdCB3aWR0aD0iMjQyIiBoZWlnaHQ9IjI0MiIgc3Ryb2tlPSJub25lIiBmaWxsPSJ3aGl0ZSIgcnk9IjMyIiB4PSI3IiB5PSI3Ii8+PGc+PHBhdGggZD0iTSAwNjggMDY4IEwgMTk2IDA2MiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PHBhdGggZD0iTSAwNjggMDY4IEwgMTk2IDE0MiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PHBhdGggZD0iTSAwNjggMDY4IEwgMDYyIDE5NiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PGNpcmNsZSBjeD0iMTk2IiBjeT0iMDYyIiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PGNpcmNsZSBjeD0iMTk2IiBjeT0iMTQyIiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PGNpcmNsZSBjeD0iMDYyIiBjeT0iMTk2IiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PC9nPjxnPjxwYXRoIGQ9Ik0gMDY4IDA2OCBMIDE0MiAxOTYiIHN0cm9rZS13aWR0aD0iMTYiIHN0cm9rZT0iI2NjYyIvPjxjaXJjbGUgY3g9IjE0MiIgY3k9IjE5NiIgcj0iMDI0IiBmaWxsPSJibGFjayIvPjxjaXJjbGUgY3g9IjA3MiIgY3k9IjA3MiIgcj0iMDMyIiBmaWxsPSIjYmVlNmJlIiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjgiLz48L2c+PHJlY3Qgd2lkdGg9IjI0MiIgaGVpZ2h0PSIyNDIiIHN0cm9rZT0iYmxhY2siIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iMTIiIHJ5PSIzMiIgeD0iNyIgeT0iNyIvPjwvZz48L3N2Zz4K',
+  relation:
+    'data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIj8+CjxzdmcgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiIHhtbG5zOmNjPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyMiIHhtbG5zOmRjPSJodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLyIgdmVyc2lvbj0iMS4wIiBoZWlnaHQ9IjI1NiIgd2lkdGg9IjI1NiI+PHRpdGxlPk9wZW5TdHJlZXRNYXAgcmVsYXRpb24gZWxlbWVudCBpY29uPC90aXRsZT48bWV0YWRhdGE+PHJkZjpSREY+PGNjOldvcmsgcmRmOmFib3V0PSIiPjxkYzpmb3JtYXQ+aW1hZ2Uvc3ZnK3htbDwvZGM6Zm9ybWF0PjxkYzp0eXBlIHJkZjpyZXNvdXJjZT0iaHR0cDovL3B1cmwub3JnL2RjL2RjbWl0eXBlL1N0aWxsSW1hZ2UiLz48ZGM6dGl0bGU+T3BlblN0cmVldE1hcCByZWxhdGlvbiBlbGVtZW50IGljb248L2RjOnRpdGxlPjxjYzpsaWNlbnNlIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbGljZW5zZXMvYnkvMy4wLyIvPjxkYzpkYXRlPjIwMTQtMDMtMTA8L2RjOmRhdGU+PGRjOmNyZWF0b3I+PGNjOkFnZW50PjxkYzp0aXRsZT5odHRwczovL3dpa2kub3BlbnN0cmVldG1hcC5vcmcvd2lraS9Vc2VyOk1vcmVzYnk8L2RjOnRpdGxlPjwvY2M6QWdlbnQ+PC9kYzpjcmVhdG9yPjwvY2M6V29yaz48Y2M6TGljZW5zZSByZGY6YWJvdXQ9Imh0dHA6Ly9jcmVhdGl2ZWNvbW1vbnMub3JnL2xpY2Vuc2VzL2J5LzMuMC8iPjxjYzpwZXJtaXRzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjUmVwcm9kdWN0aW9uIi8+PGNjOnBlcm1pdHMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNEaXN0cmlidXRpb24iLz48Y2M6cmVxdWlyZXMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNOb3RpY2UiLz48Y2M6cmVxdWlyZXMgcmRmOnJlc291cmNlPSJodHRwOi8vY3JlYXRpdmVjb21tb25zLm9yZy9ucyNBdHRyaWJ1dGlvbiIvPjxjYzpwZXJtaXRzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjRGVyaXZhdGl2ZVdvcmtzIi8+PGNjOnJlcXVpcmVzIHJkZjpyZXNvdXJjZT0iaHR0cDovL2NyZWF0aXZlY29tbW9ucy5vcmcvbnMjU2hhcmVBbGlrZSIvPjwvY2M6TGljZW5zZT48L3JkZjpSREY+PC9tZXRhZGF0YT48Zz48cmVjdCB3aWR0aD0iMjQyIiBoZWlnaHQ9IjI0MiIgc3Ryb2tlPSJub25lIiBmaWxsPSJ3aGl0ZSIgcnk9IjMyIiB4PSI3IiB5PSI3Ii8+PGc+PHBhdGggZD0iTSAwNjggMDY4IEwgMTk2IDA2MiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PHBhdGggZD0iTSAwNjggMDY4IEwgMTk2IDE0MiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PHBhdGggZD0iTSAwNjggMDY4IEwgMDYyIDE5NiIgc3Ryb2tlLXdpZHRoPSIxNiIgc3Ryb2tlPSIjY2NjIi8+PGNpcmNsZSBjeD0iMTk2IiBjeT0iMDYyIiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PGNpcmNsZSBjeD0iMTk2IiBjeT0iMTQyIiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PGNpcmNsZSBjeD0iMDYyIiBjeT0iMTk2IiByPSIwMjQiIGZpbGw9ImJsYWNrIi8+PC9nPjxnPjxwYXRoIGQ9Ik0gMDY4IDA2OCBMIDE0MiAxOTYiIHN0cm9rZS13aWR0aD0iMTYiIHN0cm9rZT0iI2NjYyIvPjxjaXJjbGUgY3g9IjE0MiIgY3k9IjE5NiIgcj0iMDI0IiBmaWxsPSJibGFjayIvPjxjaXJjbGUgY3g9IjA3MiIgY3k9IjA3MiIgcj0iMDMyIiBmaWxsPSIjYmVlNmJlIiBzdHJva2U9ImJsYWNrIiBzdHJva2Utd2lkdGg9IjgiLz48L2c+PHJlY3Qgd2lkdGg9IjI0MiIgaGVpZ2h0PSIyNDIiIHN0cm9rZT0iYmxhY2siIGZpbGw9Im5vbmUiIHN0cm9rZS13aWR0aD0iMTIiIHJ5PSIzMiIgeD0iNyIgeT0iNyIvPjwvZz48L3N2Zz4K',
 };
 
 // ---------------------------------------------------------------------------
@@ -205,16 +206,11 @@ function el<K extends keyof HTMLElementTagNameMap>(
 function constructCatalogKey(propertyValue: unknown) {
   if (typeof propertyValue !== 'string') {
     return {
-      catalogKey:
-        propertyValue === undefined || propertyValue === null
-          ? undefined
-          : String(propertyValue),
+      catalogKey: propertyValue === undefined || propertyValue === null ? undefined : String(propertyValue),
       keyVariable: null,
     };
   }
-  const catalogKey = propertyValue
-    .replace(/\{[^}]+}/, '{}')
-    .replace(/@([^|]+|$)/g, '');
+  const catalogKey = propertyValue.replace(/\{[^}]+}/, '{}').replace(/@([^|]+|$)/g, '');
   const keyVariable = propertyValue.match(/\{([^}]+)}/)?.[1] ?? null;
   return { catalogKey, keyVariable };
 }
@@ -222,23 +218,12 @@ function constructCatalogKey(propertyValue: unknown) {
 // ---------------------------------------------------------------------------
 // Determine default OSM element type from properties / feature content
 // ---------------------------------------------------------------------------
-function determineDefaultOsmType(
-  properties: JsonRecord,
-  featureContent?: FeatureContent,
-): OsmElementType {
+function determineDefaultOsmType(properties: JsonRecord, featureContent?: FeatureContent): OsmElementType {
   if (properties.osm_type) {
-    return properties.osm_type === 'N'
-      ? 'node'
-      : properties.osm_type === 'R'
-        ? 'relation'
-        : 'way';
+    return properties.osm_type === 'N' ? 'node' : properties.osm_type === 'R' ? 'relation' : 'way';
   }
   const featureType = (featureContent && featureContent.type) || 'point';
-  return featureType === 'point'
-    ? 'node'
-    : featureType === 'relation'
-      ? 'relation'
-      : 'way';
+  return featureType === 'point' ? 'node' : featureType === 'relation' ? 'relation' : 'way';
 }
 
 // ---------------------------------------------------------------------------
@@ -249,13 +234,9 @@ function determineOsmFeatures(
   properties: JsonRecord,
   featureContent?: FeatureContent,
 ): Array<{ id: string; type: OsmElementType }> {
-  const osmIds = properties.osm_id
-    ? String(properties.osm_id).split('\u001e')
-    : [];
+  const osmIds = properties.osm_id ? String(properties.osm_id).split('\u001e') : [];
   const defaultOsmType = determineDefaultOsmType(properties, featureContent);
-  const osmTypes = properties.osm_type
-    ? String(properties.osm_type).split('\u001e')
-    : [];
+  const osmTypes = properties.osm_type ? String(properties.osm_type).split('\u001e') : [];
 
   return osmIds.map((osm_id, index) => {
     const osmType: OsmElementType =
@@ -273,19 +254,12 @@ function determineOsmFeatures(
 // ---------------------------------------------------------------------------
 // Format a property value according to its format specification
 // ---------------------------------------------------------------------------
-function formatPropertyValue(
-  value: unknown,
-  format?: FormatSpec,
-  features?: FeaturesCatalog,
-): FormattedValue {
+function formatPropertyValue(value: unknown, format?: FormatSpec, features?: FeaturesCatalog): FormattedValue {
   if (format?.map) {
     const keyFormat = format.map.key?.format;
     const valueFormat = format.map.value?.format;
     let sortKey = (v: string): string | number => v;
-    if (
-      keyFormat?.lookup &&
-      features?.[keyFormat.lookup]?.features
-    ) {
+    if (keyFormat?.lookup && features?.[keyFormat.lookup]?.features) {
       const catalog = features[keyFormat.lookup].features ?? {};
       sortKey = (v: string) => catalog[v]?.index ?? Number.MAX_SAFE_INTEGER;
     }
@@ -308,21 +282,14 @@ function formatPropertyValue(
       } else if (format.template) {
         return format.template
           .replace('%s', () => stringValue)
-          .replace(
-            /%(\.(\d+))?d/,
-            (_1, _2, decimals: string | undefined) =>
-              Number(value).toFixed(Number(decimals)),
-          );
+          .replace(/%(\.(\d+))?d/, (_1, _2, decimals: string | undefined) => Number(value).toFixed(Number(decimals)));
       } else if (format.lookup) {
         const lookupCatalog = features?.[format.lookup];
         if (!lookupCatalog) {
           return stringValue;
         }
-        const { catalogKey: lookUpCatalogKey, keyVariable: lookUpKeyVariable } =
-          constructCatalogKey(value);
-        const lookedUpValue = lookUpCatalogKey
-          ? lookupCatalog.features?.[lookUpCatalogKey]
-          : undefined;
+        const { catalogKey: lookUpCatalogKey, keyVariable: lookUpKeyVariable } = constructCatalogKey(value);
+        const lookedUpValue = lookUpCatalogKey ? lookupCatalog.features?.[lookUpCatalogKey] : undefined;
         if (!lookedUpValue) {
           return stringValue;
         }
@@ -341,11 +308,7 @@ function formatPropertyValue(
 // ---------------------------------------------------------------------------
 // Closest point on a line to a given point (for LineString popup placement)
 // ---------------------------------------------------------------------------
-function closestPointOnLine(
-  maplibregl: MaplibreLike,
-  point: unknown,
-  line: unknown[],
-): Coordinates | null {
+function closestPointOnLine(maplibregl: MaplibreLike, point: unknown, line: unknown[]): Coordinates | null {
   const lngLatPoint = maplibregl.LngLat.convert(point);
   const { closest0, closest1 } = line
     .map((item) => maplibregl.LngLat.convert(item))
@@ -357,10 +320,7 @@ function closestPointOnLine(
         const d = lngLatPoint.distanceTo(cur);
         if (acc.closest0 == null || d < lngLatPoint.distanceTo(acc.closest0)) {
           return { closest0: cur, closest1: acc.closest0 };
-        } else if (
-          acc.closest1 == null ||
-          d < lngLatPoint.distanceTo(acc.closest1)
-        ) {
+        } else if (acc.closest1 == null || d < lngLatPoint.distanceTo(acc.closest1)) {
           return { closest0: acc.closest0, closest1: cur };
         }
         return acc;
@@ -843,11 +803,7 @@ export function buildFeatureCatalog() {
 // (replaces ORM backend proxy endpoints /api/wikidata/ and /api/wikimedia/)
 // ---------------------------------------------------------------------------
 
-function renderImageData(
-  linkEl: HTMLAnchorElement,
-  data: CommonsImageData,
-  _abortController: AbortController,
-) {
+function renderImageData(linkEl: HTMLAnchorElement, data: CommonsImageData, _abortController: AbortController) {
   const img = el('img', 'orm-popup-image', linkEl);
   img.style.display = 'none';
   img.onload = () => (img.style.display = 'block');
@@ -886,10 +842,7 @@ function renderImageData(
   }
 }
 
-function fetchCommonsImageData(
-  fileName: string,
-  signal: AbortSignal,
-): Promise<CommonsImageData | null> {
+function fetchCommonsImageData(fileName: string, signal: AbortSignal): Promise<CommonsImageData | null> {
   const url =
     'https://commons.wikimedia.org/w/api.php?action=query' +
     `&titles=File:${encodeURIComponent(fileName)}` +
@@ -897,10 +850,7 @@ function fetchCommonsImageData(
   return fetch(url, { signal })
     .then((r) => r.json())
     .then((json: unknown) => {
-      const pages =
-        isRecord(json) && isRecord(json.query) && isRecord(json.query.pages)
-          ? json.query.pages
-          : null;
+      const pages = isRecord(json) && isRecord(json.query) && isRecord(json.query.pages) ? json.query.pages : null;
       if (!pages) return null;
       const page = Object.values(pages).find(isRecord);
       const info = firstRecord(page?.imageinfo);
@@ -915,7 +865,8 @@ function fetchCommonsImageData(
       return {
         file_name: fileName,
         thumbnail_url: thumbnailUrl,
-        view_url: stringValue(info.descriptionurl) || `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(fileName)}`,
+        view_url:
+          stringValue(info.descriptionurl) || `https://commons.wikimedia.org/wiki/File:${encodeURIComponent(fileName)}`,
         description,
         attribution: artist,
         license,
@@ -924,11 +875,7 @@ function fetchCommonsImageData(
     });
 }
 
-function fetchWikidataImage(
-  linkEl: HTMLAnchorElement,
-  wikidataId: string,
-  abortController: AbortController,
-) {
+function fetchWikidataImage(linkEl: HTMLAnchorElement, wikidataId: string, abortController: AbortController) {
   const url =
     'https://www.wikidata.org/w/api.php?action=wbgetclaims' +
     `&entity=${encodeURIComponent(wikidataId)}` +
@@ -936,12 +883,7 @@ function fetchWikidataImage(
   fetch(url, { signal: abortController.signal })
     .then((r) => r.json())
     .then((json: unknown) => {
-      const claims =
-        isRecord(json) &&
-        isRecord(json.claims) &&
-        Array.isArray(json.claims.P18)
-          ? json.claims.P18
-          : null;
+      const claims = isRecord(json) && isRecord(json.claims) && Array.isArray(json.claims.P18) ? json.claims.P18 : null;
       const claim = firstRecord(claims);
       const mainsnak = isRecord(claim?.mainsnak) ? claim.mainsnak : null;
       const datavalue = isRecord(mainsnak?.datavalue) ? mainsnak.datavalue : null;
@@ -962,11 +904,7 @@ function fetchWikidataImage(
     });
 }
 
-function fetchCommonsImage(
-  linkEl: HTMLAnchorElement,
-  commonsFile: string,
-  abortController: AbortController,
-) {
+function fetchCommonsImage(linkEl: HTMLAnchorElement, commonsFile: string, abortController: AbortController) {
   fetchCommonsImageData(commonsFile, abortController.signal)
     .then((data) => {
       if (data) renderImageData(linkEl, data, abortController);
@@ -996,20 +934,11 @@ function popupContent(
   const colorProperty = featureCatalog.colorProperty || 'color';
   const featureLinks = featureCatalog.featureLinks || FEATURE_LINKS;
 
-  const { catalogKey, keyVariable } = constructCatalogKey(
-    properties[featureProperty],
-  );
-  const featureContent =
-    featureCatalog.features && featureCatalog.features[catalogKey];
+  const { catalogKey, keyVariable } = constructCatalogKey(properties[featureProperty]);
+  const featureContent = featureCatalog.features && featureCatalog.features[catalogKey];
 
   // Unique labels
-  const labels = [
-    ...new Set(
-      (featureCatalog.labelProperties || [])
-        .map((lp) => properties[lp])
-        .filter(Boolean),
-    ),
-  ];
+  const labels = [...new Set((featureCatalog.labelProperties || []).map((lp) => properties[lp]).filter(Boolean))];
   const featureDescription = featureContent
     ? `${featureContent.name}${keyVariable ? ` (${keyVariable})` : ''}${featureContent.country ? ` ${getFlagEmoji(featureContent.country)}` : ''}`
     : stringValue(properties[featureProperty]) || 'Unknown feature';
@@ -1027,13 +956,9 @@ function popupContent(
     .map(([property, definition]): PopupPropertyValue => {
       const { name, format, link, paragraph, list, description: tooltip } = definition;
       const value =
-        properties[property] === true
-          ? ''
-          : formatPropertyValue(properties[property], format, featuresCatalog);
+        properties[property] === true ? '' : formatPropertyValue(properties[property], format, featuresCatalog);
 
-      const body: Array<[string | null, string]> = Array.isArray(value)
-        ? value
-        : [[null, value]];
+      const body: Array<[string | null, string]> = Array.isArray(value) ? value : [[null, value]];
 
       return {
         title: name || property,
@@ -1093,28 +1018,20 @@ function popupContent(
 
       const viewLink = el('a', 'orm-btn orm-btn-action', group);
       viewLink.title = 'View on OpenStreetMap';
-      viewLink.href = featureLinks.view
-        .replace('{osm_type}', type)
-        .replace('{osm_id}', id);
+      viewLink.href = featureLinks.view.replace('{osm_type}', type).replace('{osm_id}', id);
       viewLink.target = '_blank';
       viewLink.innerText = 'View';
 
       const editLink = el('a', 'orm-btn orm-btn-action', group);
       editLink.title = 'Edit on OpenStreetMap';
-      editLink.href = featureLinks.edit
-        .replace('{osm_type}', type)
-        .replace('{osm_id}', id);
+      editLink.href = featureLinks.edit.replace('{osm_type}', type).replace('{osm_id}', id);
       editLink.target = '_blank';
       editLink.innerText = 'Edit';
     });
   }
 
   // Wikidata / Wikimedia Commons / direct image
-  if (
-    properties.wikidata ||
-    properties.wikimedia_commons_file ||
-    properties.image
-  ) {
+  if (properties.wikidata || properties.wikimedia_commons_file || properties.image) {
     const imgContainer = el('p', 'orm-popup-images', popupContainer);
 
     if (properties.wikidata) {
@@ -1221,12 +1138,7 @@ function popupContent(
         .split('\u001d')
         .map((group) => {
           const split = group.split('\u001e');
-          return Object.fromEntries(
-            list.properties.map((property, index) => [
-              property,
-              split[index] || null,
-            ]),
-          );
+          return Object.fromEntries(list.properties.map((property, index) => [property, split[index] || null]));
         });
 
       const header = el('span', 'orm-badge-title', listContainer);
@@ -1262,13 +1174,8 @@ function fallbackPopupContent(properties: JsonRecord, _layerSource: string) {
   const title = el('h5', 'orm-popup-title', container);
   title.innerText =
     stringValue(
-      properties.localized_name ||
-      properties.name ||
-      properties.standard_label ||
-      properties.label ||
-      properties.ref,
-    ) ||
-    'Railway feature';
+      properties.localized_name || properties.name || properties.standard_label || properties.label || properties.ref,
+    ) || 'Railway feature';
 
   const badges = el('h6', 'orm-popup-badges', container);
 
@@ -1296,8 +1203,7 @@ function fallbackPopupContent(properties: JsonRecord, _layerSource: string) {
     const titleSpan = el('span', 'orm-badge-title', badge);
     titleSpan.innerText = `${label}: `;
     const valSpan = el('span', undefined, badge);
-    valSpan.innerText =
-      val === true ? 'yes' : typeof val === 'string' ? val : String(val);
+    valSpan.innerText = val === true ? 'yes' : typeof val === 'string' ? val : String(val);
   });
 
   // OSM link
@@ -1347,7 +1253,8 @@ function osrmPopupTitle(properties: JsonRecord) {
   const kind = String(properties.kind || '');
   if (kind === 'osrm_route') return stringValue(properties.name) || 'OSRM route';
   if (kind === 'osrm_segment') return 'Speed segment';
-  if (kind === 'osrm_maneuver') return stringValue(properties.title) || formatOsrmKind(properties.maneuver) || 'Maneuver';
+  if (kind === 'osrm_maneuver')
+    return stringValue(properties.title) || formatOsrmKind(properties.maneuver) || 'Maneuver';
   if (kind === 'osrm_step') return stringValue(properties.title || properties.name) || 'Route step';
   return formatOsrmKind(kind) || 'OSRM feature';
 }
@@ -1372,7 +1279,11 @@ function osrmPopupContent(feature: RenderedFeatureLike) {
     addPopupBadge(badges, 'Duration', properties.duration_text);
     addPopupBadge(badges, 'Steps', properties.step_count);
     addPopupBadge(badges, 'Roads', properties.road_names);
-    addPopupBadge(badges, 'Avg speed', properties.annotation_avg_speed_kmh ? `${properties.annotation_avg_speed_kmh} km/h` : '');
+    addPopupBadge(
+      badges,
+      'Avg speed',
+      properties.annotation_avg_speed_kmh ? `${properties.annotation_avg_speed_kmh} km/h` : '',
+    );
     addPopupBadge(badges, 'OSM nodes', properties.annotation_node_count);
   } else if (kind === 'osrm_segment') {
     addPopupBadge(badges, 'Speed', formatOsrmSpeed(properties));
@@ -1396,11 +1307,7 @@ function osrmPopupContent(feature: RenderedFeatureLike) {
 // ---------------------------------------------------------------------------
 // Install ORM-style popups on a MapLibre GL map
 // ---------------------------------------------------------------------------
-export function installOrmPopups(
-  map: MapLike,
-  maplibregl: MaplibreLike,
-  featuresCatalog: FeaturesCatalog,
-) {
+export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, featuresCatalog: FeaturesCatalog) {
   let popup: PopupBuilderLike | null = null;
   let hoveredFeature: FeatureStateTarget | null = null;
 
@@ -1411,16 +1318,22 @@ export function installOrmPopups(
       .map((k) => k.split('-')[0]),
   );
   const isOrmFeature = (f: RenderedFeatureLike) => ormSources.has(f.source);
-  const isOsrmFeature = (f: RenderedFeatureLike) => String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
+  const isOsrmFeature = (f: RenderedFeatureLike) =>
+    String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
   const isWeatherPickerActive = () => map.getContainer().dataset.weatherPickerActive === 'true';
   const isRoutingPickerActive = () => map.getContainer().dataset.routingPickerActive === 'true';
   const osrmPriority = (feature: RenderedFeatureLike) => {
     switch (feature?.properties?.kind) {
-      case 'osrm_maneuver': return 0;
-      case 'osrm_segment': return 1;
-      case 'osrm_step': return 2;
-      case 'osrm_route': return 3;
-      default: return 4;
+      case 'osrm_maneuver':
+        return 0;
+      case 'osrm_segment':
+        return 1;
+      case 'osrm_step':
+        return 2;
+      case 'osrm_route':
+        return 3;
+      default:
+        return 4;
     }
   };
 
@@ -1454,10 +1367,7 @@ export function installOrmPopups(
         map.setFeatureState(hoveredFeature, { hover: false });
         hoveredFeature = null;
       }
-      if (
-        feature.id &&
-        !(hoveredFeature && hoveredFeature.id === feature.id)
-      ) {
+      if (feature.id && !(hoveredFeature && hoveredFeature.id === feature.id)) {
         hoveredFeature = {
           source: feature.source,
           sourceLayer: feature.sourceLayer,
@@ -1473,12 +1383,16 @@ export function installOrmPopups(
 
   // Click popup
   map.on('click', (event: PopupMapEvent) => {
-    if (isWeatherPickerActive() || isRoutingPickerActive() || event.originalEvent?.weatherPickerHandled || event.originalEvent?.routingHandled) return;
+    if (
+      isWeatherPickerActive() ||
+      isRoutingPickerActive() ||
+      event.originalEvent?.weatherPickerHandled ||
+      event.originalEvent?.routingHandled
+    )
+      return;
 
     const renderedFeatures = map.queryRenderedFeatures(event.point);
-    const osrmFeatures = renderedFeatures
-      .filter(isOsrmFeature)
-      .sort((a, b) => osrmPriority(a) - osrmPriority(b));
+    const osrmFeatures = renderedFeatures.filter(isOsrmFeature).sort((a, b) => osrmPriority(a) - osrmPriority(b));
     const ormFeatures = renderedFeatures.filter(isOrmFeature);
     if (osrmFeatures.length === 0 && ormFeatures.length === 0) return;
 
@@ -1491,13 +1405,8 @@ export function installOrmPopups(
         ? Array.isArray(feature.geometry.coordinates)
           ? feature.geometry.coordinates.slice()
           : event.lngLat
-        : feature.geometry.type === 'LineString'
-          && Array.isArray(feature.geometry.coordinates)
-          ? closestPointOnLine(
-              maplibregl,
-              event.lngLat,
-              feature.geometry.coordinates,
-            )
+        : feature.geometry.type === 'LineString' && Array.isArray(feature.geometry.coordinates)
+          ? closestPointOnLine(maplibregl, event.lngLat, feature.geometry.coordinates)
           : event.lngLat;
 
     const iconHeight = 20;
@@ -1516,9 +1425,7 @@ export function installOrmPopups(
     if (popup) popup.remove();
 
     const abortController = new AbortController();
-    const content = isOsrmPopup
-      ? osrmPopupContent(feature)
-      : popupContent(feature, featuresCatalog, abortController);
+    const content = isOsrmPopup ? osrmPopupContent(feature) : popupContent(feature, featuresCatalog, abortController);
     if (!content) return;
 
     popup = new maplibregl.Popup({ offset: popupOffsets, maxWidth: '340px' })

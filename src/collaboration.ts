@@ -99,16 +99,7 @@ const EMPTY_LOCATION: LocationState = {
   updatedAt: null,
 };
 
-const PROFILE_COLORS = [
-  '#2563eb',
-  '#dc2626',
-  '#16a34a',
-  '#9333ea',
-  '#ea580c',
-  '#0891b2',
-  '#be123c',
-  '#4f46e5',
-];
+const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5'];
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -230,7 +221,10 @@ function safeColor(color: unknown) {
 }
 
 function initials(name: unknown) {
-  const parts = String(name || '?').trim().split(/\s+/).filter(Boolean);
+  const parts = String(name || '?')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
   const letters = parts.length > 1 ? [parts[0][0], parts[1][0]] : [parts[0]?.[0] || '?'];
   return letters.join('').toUpperCase();
 }
@@ -262,10 +256,7 @@ function normalizeLocalLocation(value: unknown): LocationState {
 
   return {
     enabled: true,
-    lngLat: [
-      Math.min(180, Math.max(-180, lng)),
-      Math.min(85, Math.max(-85, lat)),
-    ],
+    lngLat: [Math.min(180, Math.max(-180, lng)), Math.min(85, Math.max(-85, lat))],
     accuracy: optionalNumber(record.accuracy, 0, 50_000),
     heading: optionalNumber(record.heading, 0, 360),
     speed: optionalNumber(record.speed, 0, 200),
@@ -277,11 +268,7 @@ function normalizeLongitude(lng: number) {
   return ((((lng + 180) % 360) + 360) % 360) - 180;
 }
 
-function destinationLngLat(
-  lngLat: LngLatTuple,
-  distanceMeters: number,
-  bearingDegrees: number,
-): LngLatTuple {
+function destinationLngLat(lngLat: LngLatTuple, distanceMeters: number, bearingDegrees: number): LngLatTuple {
   const angularDistance = distanceMeters / EARTH_RADIUS_METERS;
   const bearing = (bearingDegrees * Math.PI) / 180;
   const lat1 = (Number(lngLat[1]) * Math.PI) / 180;
@@ -291,16 +278,10 @@ function destinationLngLat(
   const sinDistance = Math.sin(angularDistance);
   const cosDistance = Math.cos(angularDistance);
 
-  const lat2 = Math.asin((sinLat1 * cosDistance) + (cosLat1 * sinDistance * Math.cos(bearing)));
-  const lng2 = lng1 + Math.atan2(
-    Math.sin(bearing) * sinDistance * cosLat1,
-    cosDistance - (sinLat1 * Math.sin(lat2)),
-  );
+  const lat2 = Math.asin(sinLat1 * cosDistance + cosLat1 * sinDistance * Math.cos(bearing));
+  const lng2 = lng1 + Math.atan2(Math.sin(bearing) * sinDistance * cosLat1, cosDistance - sinLat1 * Math.sin(lat2));
 
-  return [
-    normalizeLongitude((lng2 * 180) / Math.PI),
-    Math.min(85, Math.max(-85, (lat2 * 180) / Math.PI)),
-  ];
+  return [normalizeLongitude((lng2 * 180) / Math.PI), Math.min(85, Math.max(-85, (lat2 * 180) / Math.PI))];
 }
 
 function accuracyRingPoints(map: CollaborationMap, lngLat: LngLatTuple, accuracyMeters: number | null | undefined) {
@@ -351,10 +332,13 @@ function readViewState(map: CollaborationMap) {
 
 function applyViewState(map: CollaborationMap, viewState: CollaborationViewState | null | undefined) {
   if (!viewState) return;
-  map.setCollaborationViewState?.({
-    terrain: Boolean(viewState.terrain),
-    satellite: Boolean(viewState.satellite),
-  }, { silent: true });
+  map.setCollaborationViewState?.(
+    {
+      terrain: Boolean(viewState.terrain),
+      satellite: Boolean(viewState.satellite),
+    },
+    { silent: true },
+  );
 }
 
 export function installMapCollaboration(map: CollaborationMap) {
@@ -459,10 +443,14 @@ export function installMapCollaboration(map: CollaborationMap) {
 
   const actionGroup = createElement('div', 'collab-action-group');
 
-  const joinButton = createElement('button', 'collab-button collab-button-primary collab-join-button', { type: 'submit' });
+  const joinButton = createElement('button', 'collab-button collab-button-primary collab-join-button', {
+    type: 'submit',
+  });
   joinButton.textContent = 'Start sharing';
 
-  const shareButton = createElement('button', 'collab-button collab-button-secondary collab-share-button', { type: 'button' });
+  const shareButton = createElement('button', 'collab-button collab-button-secondary collab-share-button', {
+    type: 'button',
+  });
   shareButton.textContent = 'Copy invite link';
   shareButton.hidden = true;
   actionGroup.appendChild(joinButton);
@@ -500,9 +488,8 @@ export function installMapCollaboration(map: CollaborationMap) {
 
     if (state === 'live') {
       compactTitle.textContent = 'Sharing';
-      compactMeta.textContent = otherCount === 0
-        ? `#${currentRoom}`
-        : `#${currentRoom} · ${otherCount} other${otherCount === 1 ? '' : 's'}`;
+      compactMeta.textContent =
+        otherCount === 0 ? `#${currentRoom}` : `#${currentRoom} · ${otherCount} other${otherCount === 1 ? '' : 's'}`;
     } else if (state === 'connecting') {
       compactTitle.textContent = 'Connecting';
       compactMeta.textContent = `#${currentRoom}`;
@@ -514,9 +501,7 @@ export function installMapCollaboration(map: CollaborationMap) {
       compactMeta.textContent = 'Open to set name and room';
     }
 
-    const toggleLabel = panelExpanded
-      ? 'Close collaboration controls'
-      : 'Open collaboration controls';
+    const toggleLabel = panelExpanded ? 'Close collaboration controls' : 'Open collaboration controls';
     compactToggle.title = toggleLabel;
     compactToggle.setAttribute('aria-label', toggleLabel);
   }
@@ -529,11 +514,12 @@ export function installMapCollaboration(map: CollaborationMap) {
     }
 
     const totalPeople = peers.size + 1;
-    presenceSummary.textContent = peers.size === 0
-      ? 'No one else is here yet'
-      : peers.size === 1
-        ? '1 other person is here'
-        : `${peers.size} other people are here`;
+    presenceSummary.textContent =
+      peers.size === 0
+        ? 'No one else is here yet'
+        : peers.size === 1
+          ? '1 other person is here'
+          : `${peers.size} other people are here`;
     avatars.setAttribute('aria-label', `${totalPeople} people in room`);
   }
 
@@ -734,18 +720,22 @@ export function installMapCollaboration(map: CollaborationMap) {
           });
           group.style.setProperty('--peer-color', color);
           if (Number.isFinite(Number(peer.location.heading))) {
-            group.appendChild(createSvgElement('path', {
-              class: 'collab-location-heading',
-              d: 'M0 -24 L5 -10 L0 -13 L-5 -10 Z',
-              transform: `rotate(${Number(peer.location.heading).toFixed(1)})`,
-            }));
+            group.appendChild(
+              createSvgElement('path', {
+                class: 'collab-location-heading',
+                d: 'M0 -24 L5 -10 L0 -13 L-5 -10 Z',
+                transform: `rotate(${Number(peer.location.heading).toFixed(1)})`,
+              }),
+            );
           }
-          group.appendChild(createSvgElement('circle', {
-            class: 'collab-location-dot',
-            cx: 0,
-            cy: 0,
-            r: 6,
-          }));
+          group.appendChild(
+            createSvgElement('circle', {
+              class: 'collab-location-dot',
+              cx: 0,
+              cy: 0,
+              r: 6,
+            }),
+          );
           const label = createSvgElement('text', {
             class: 'collab-location-label',
             x: 12,
@@ -767,19 +757,21 @@ export function installMapCollaboration(map: CollaborationMap) {
     sendTimer = 0;
     if (!socket || destroyed) return;
     lastSentAt = Date.now();
-    socket.send(JSON.stringify({
-      type: 'client:update',
-      user: {
-        id: profile.userId,
-        name: profile.name,
-        color: profile.color,
-      },
-      viewport: buildViewportSnapshot(map),
-      cursor: localCursor,
-      location: localLocation,
-      followingId: followedPeerId,
-      viewState: readViewState(map),
-    }));
+    socket.send(
+      JSON.stringify({
+        type: 'client:update',
+        user: {
+          id: profile.userId,
+          name: profile.name,
+          color: profile.color,
+        },
+        viewport: buildViewportSnapshot(map),
+        cursor: localCursor,
+        location: localLocation,
+        followingId: followedPeerId,
+        viewState: readViewState(map),
+      }),
+    );
   }
 
   function sendOverlayMessage(message: JsonRecord) {
@@ -792,15 +784,19 @@ export function installMapCollaboration(map: CollaborationMap) {
     manifests: OverlayManifest[],
     persistence: 'ephemeral' | 'persistent' = 'ephemeral',
   ) {
-    mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-list', {
-      detail: { overlays: manifests, persistence },
-    }));
+    mapContainer.dispatchEvent(
+      new CustomEvent('overlay-sync:remote-list', {
+        detail: { overlays: manifests, persistence },
+      }),
+    );
   }
 
   function dispatchRemoteOverlayDelete(overlayId: string) {
-    mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-delete', {
-      detail: { overlayId },
-    }));
+    mapContainer.dispatchEvent(
+      new CustomEvent('overlay-sync:remote-delete', {
+        detail: { overlayId },
+      }),
+    );
   }
 
   function rememberOverlayManifests(manifests: OverlayManifest[]) {
@@ -823,16 +819,15 @@ export function installMapCollaboration(map: CollaborationMap) {
     }
   }
 
-  async function dispatchRemoteOverlayAdd(
-    manifest: OverlayManifest,
-    contentBytes: Uint8Array,
-  ) {
+  async function dispatchRemoteOverlayAdd(manifest: OverlayManifest, contentBytes: Uint8Array) {
     if (!manifest || !contentBytes || localOverlayIds.has(manifest.id)) return;
     try {
       const content = await materializeOverlayContent(manifest, contentBytes);
-      mapContainer.dispatchEvent(new CustomEvent('overlay-sync:remote-add', {
-        detail: { manifest, content },
-      }));
+      mapContainer.dispatchEvent(
+        new CustomEvent('overlay-sync:remote-add', {
+          detail: { manifest, content },
+        }),
+      );
     } catch (error) {
       console.error('Failed to materialize shared overlay:', error);
     }
@@ -1241,9 +1236,7 @@ export function installMapCollaboration(map: CollaborationMap) {
   };
   const handleLocalOverlayReorder = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    const orderedIds = Array.isArray(detail?.orderedIds)
-      ? detail.orderedIds.filter(Boolean).map(String)
-      : [];
+    const orderedIds = Array.isArray(detail?.orderedIds) ? detail.orderedIds.filter(Boolean).map(String) : [];
     if (pendingOverlayAssets.size > 0) {
       const order = new Map(orderedIds.map((id: string, index: number) => [id, index]));
       for (const assets of pendingOverlayAssets.values()) {

@@ -4,36 +4,32 @@
   "main": "src/worker.ts",
   "compatibility_date": "2025-09-27",
   "observability": {
-    "enabled": true
+    "enabled": true,
   },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "single-page-application",
   },
-  "compatibility_flags": [
-    "nodejs_compat"
-  ],
+  "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
     "bindings": [
       {
         "name": "MapCollaboration",
-        "class_name": "MapCollaboration"
-      }
-    ]
+        "class_name": "MapCollaboration",
+      },
+    ],
   },
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": [
-        "MapCollaboration"
-      ]
-    }
+      "new_sqlite_classes": ["MapCollaboration"],
+    },
   ],
   "r2_buckets": [
     {
       "binding": "ORM_BUCKET",
-      "bucket_name": "orm"
-    }
-  ]
+      "bucket_name": "orm",
+    },
+  ],
 }
