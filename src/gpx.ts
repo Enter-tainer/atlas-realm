@@ -968,7 +968,9 @@ export function drainGpxQueue(map: OverlayMap) {
   for (const item of pendingGeoJsonQueue) {
     const result = addGeoJsonToMap(map, item.geojson, item.options);
     if (result) {
-      console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`);
+      console.log(
+        `GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`,
+      );
       bounds = mergeBounds(bounds, result.bounds);
     }
   }
