@@ -595,8 +595,9 @@ let geojsonLayerCount = 0;
 /**
  * Add a GeoJSON FeatureCollection to the map.
  * Supports:
- *   - LineString features → rendered as colored tracks
- *   - Point features → rendered as circle markers with name labels
+ *   - LineString / MultiLineString → colored tracks + path labels
+ *   - Point / MultiPoint → circle markers with name labels
+ *   - Polygon / MultiPolygon → fill + outline + centroid labels
  */
 export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: OverlayOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
@@ -748,6 +749,32 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
       },
     });
     layerIds.push(outlineLayerId);
+
+    const polyLabelLayerId = `${id}-polygon-label`;
+    map.addLayer({
+      id: polyLabelLayerId,
+      type: 'symbol',
+      source: id,
+      filter: [
+        'all',
+        ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'MultiPolygon']],
+        ['any', ['has', 'name'], ['has', 'title']],
+      ],
+      layout: {
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 11,
+        'text-anchor': 'center',
+        'text-offset': [0, 0],
+        'text-allow-overlap': false,
+      },
+      paint: {
+        'text-color': '#1e293b',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+      },
+    });
+    layerIds.push(polyLabelLayerId);
   }
 
   // LineString: track rendering
@@ -781,6 +808,31 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
       },
     });
     layerIds.push(lineLayerId);
+
+    const lineLabelLayerId = `${id}-line-label`;
+    map.addLayer({
+      id: lineLabelLayerId,
+      type: 'symbol',
+      source: id,
+      filter: [
+        'all',
+        ['any', ['==', ['geometry-type'], 'LineString'], ['==', ['geometry-type'], 'MultiLineString']],
+        ['any', ['has', 'name'], ['has', 'title']],
+      ],
+      layout: {
+        'symbol-placement': 'line',
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ''],
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 11,
+        'text-allow-overlap': false,
+      },
+      paint: {
+        'text-color': '#1e293b',
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+      },
+    });
+    layerIds.push(lineLabelLayerId);
   }
 
   // Point: symbol layer with collision detection (icon + text)
@@ -890,7 +942,7 @@ export function processOrQueueGeoJson(map: OverlayMap, geojson: unknown, options
   if (isMapReadyForOverlay(map)) {
     const result = addGeoJsonToMap(map, normalized, options);
     if (result) {
-      console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points`);
+      console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`);
     }
     return summary.bounds ? { bounds: summary.bounds } : null;
   } else {
@@ -916,7 +968,7 @@ export function drainGpxQueue(map: OverlayMap) {
   for (const item of pendingGeoJsonQueue) {
     const result = addGeoJsonToMap(map, item.geojson, item.options);
     if (result) {
-      console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points`);
+      console.log(`GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`);
       bounds = mergeBounds(bounds, result.bounds);
     }
   }
