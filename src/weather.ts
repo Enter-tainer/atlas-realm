@@ -1,5 +1,6 @@
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import CloudSunIcon from 'lucide/dist/esm/icons/cloud-sun.mjs';
+import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const WEATHER_DASHBOARD_URL = import.meta.env.VITE_WEATHER_DASHBOARD_URL || 'https://weather.mgt.moe/';
 const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
@@ -167,6 +168,7 @@ class WeatherPointPicker {
   _weatherUrl: string;
   _boundClick: (event: WeatherMapClickEvent) => void;
   _boundEscape: (event: KeyboardEvent) => void;
+  _boundAnyPanelOpen: (event: Event) => void;
 
   constructor(maplibregl: WeatherMaplibre) {
     this._maplibregl = maplibregl;
@@ -178,11 +180,15 @@ class WeatherPointPicker {
     this._weatherUrl = '';
     this._boundClick = (event) => this._handleMapClick(event);
     this._boundEscape = (event) => this._handleKeydown(event);
+    this._boundAnyPanelOpen = (event) => {
+      if (isOtherUiPanelOpen(event, 'weather')) this.setActive(false);
+    };
   }
 
   onAdd(map: WeatherMap) {
     this._map = map;
     this._map.on('click', this._boundClick);
+    map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.addEventListener('keydown', this._boundEscape);
 
     this._control = el('div', 'maplibregl-ctrl maplibregl-ctrl-group');
@@ -233,6 +239,7 @@ class WeatherPointPicker {
 
   onRemove() {
     this._map.off('click', this._boundClick);
+    this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.removeEventListener('keydown', this._boundEscape);
     this._abortController?.abort();
     this._marker?.remove();
@@ -246,6 +253,7 @@ class WeatherPointPicker {
     const next = Boolean(active);
     if (this._active === next) return;
     this._active = next;
+    if (this._active) emitUiPanelOpen(this._map.getContainer(), 'weather');
     if (!next) {
       this._selectedLngLat = null;
       this._abortController?.abort();

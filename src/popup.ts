@@ -135,6 +135,7 @@ type PopupMapEvent = {
   originalEvent?: Event & {
     weatherPickerHandled?: boolean;
     routingHandled?: boolean;
+    drawingHandled?: boolean;
   };
 };
 type MapLike = {
@@ -1304,6 +1305,42 @@ function osrmPopupContent(feature: RenderedFeatureLike) {
   return container;
 }
 
+function formatDrawingKind(kind: unknown) {
+  return String(kind || '')
+    .replace(/^drawing_/, '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (char: string) => char.toUpperCase());
+}
+
+function drawingPopupContent(feature: RenderedFeatureLike) {
+  const properties = feature.properties || {};
+  const container = el('div', 'orm-popup');
+
+  const title = el('h5', 'orm-popup-title', container);
+  title.innerText = stringValue(properties.name || properties.label) || formatDrawingKind(properties.kind) || 'Plan item';
+
+  const label = el('h6', 'orm-popup-label', container);
+  const marker = el('span', 'orm-color-marker', label);
+  marker.style.backgroundColor = stringValue(properties.color) || '#2563eb';
+  const labelText = el('span', undefined, label);
+  labelText.innerText = formatDrawingKind(properties.kind);
+
+  const badges = el('h6', 'orm-popup-badges', container);
+  addPopupBadge(badges, 'Type', properties.feature_type);
+  addPopupBadge(badges, 'Directed', properties.directed === true ? 'yes' : properties.directed === false ? 'no' : '');
+  addPopupBadge(badges, 'Profile', properties.profile);
+  addPopupBadge(badges, 'Distance', properties.distance_text);
+  addPopupBadge(badges, 'Duration', properties.duration_text);
+
+  if (properties.description) {
+    const paragraphs = el('div', 'orm-popup-paragraphs', container);
+    const paragraph = el('p', undefined, paragraphs);
+    paragraph.innerText = stringValue(properties.description);
+  }
+
+  return container;
+}
+
 // ---------------------------------------------------------------------------
 // Install ORM-style popups on a MapLibre GL map
 // ---------------------------------------------------------------------------
@@ -1320,8 +1357,11 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
   const isOrmFeature = (f: RenderedFeatureLike) => ormSources.has(f.source);
   const isOsrmFeature = (f: RenderedFeatureLike) =>
     String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
+  const isDrawingFeature = (f: RenderedFeatureLike) =>
+    f?.source === 'drawing-plan-source' && String(f?.properties?.kind || '').startsWith('drawing_');
   const isWeatherPickerActive = () => map.getContainer().dataset.weatherPickerActive === 'true';
   const isRoutingPickerActive = () => map.getContainer().dataset.routingPickerActive === 'true';
+  const isDrawingPickerActive = () => map.getContainer().dataset.drawingPickerActive === 'true';
   const osrmPriority = (feature: RenderedFeatureLike) => {
     switch (feature?.properties?.kind) {
       case 'osrm_maneuver':
@@ -1345,7 +1385,7 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
 
   // Hover cursor
   map.on('mousemove', (event: PopupMapEvent) => {
-    if (isWeatherPickerActive() || isRoutingPickerActive()) {
+    if (isWeatherPickerActive() || isRoutingPickerActive() || isDrawingPickerActive()) {
       map.getCanvas().style.cursor = 'crosshair';
       clearHover();
       return;
@@ -1353,11 +1393,12 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
 
     const renderedFeatures = map.queryRenderedFeatures(event.point);
     const osrmFeatures = renderedFeatures.filter(isOsrmFeature);
+    const drawingFeatures = renderedFeatures.filter(isDrawingFeature);
     const ormFeatures = renderedFeatures.filter(isOrmFeature);
-    if (osrmFeatures.length > 0 || ormFeatures.length > 0) {
+    if (osrmFeatures.length > 0 || drawingFeatures.length > 0 || ormFeatures.length > 0) {
       map.getCanvas().style.cursor = 'pointer';
 
-      if (osrmFeatures.length > 0) {
+      if (osrmFeatures.length > 0 || drawingFeatures.length > 0) {
         clearHover();
         return;
       }
@@ -1386,18 +1427,22 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
     if (
       isWeatherPickerActive() ||
       isRoutingPickerActive() ||
+      isDrawingPickerActive() ||
       event.originalEvent?.weatherPickerHandled ||
-      event.originalEvent?.routingHandled
+      event.originalEvent?.routingHandled ||
+      event.originalEvent?.drawingHandled
     )
       return;
 
     const renderedFeatures = map.queryRenderedFeatures(event.point);
     const osrmFeatures = renderedFeatures.filter(isOsrmFeature).sort((a, b) => osrmPriority(a) - osrmPriority(b));
+    const drawingFeatures = renderedFeatures.filter(isDrawingFeature);
     const ormFeatures = renderedFeatures.filter(isOrmFeature);
-    if (osrmFeatures.length === 0 && ormFeatures.length === 0) return;
+    if (osrmFeatures.length === 0 && drawingFeatures.length === 0 && ormFeatures.length === 0) return;
 
-    const feature = osrmFeatures[0] || ormFeatures[0];
+    const feature = osrmFeatures[0] || drawingFeatures[0] || ormFeatures[0];
     const isOsrmPopup = osrmFeatures.length > 0;
+    const isDrawingPopup = !isOsrmPopup && drawingFeatures.length > 0;
 
     // Determine popup coordinates
     const coordinates =
@@ -1425,7 +1470,11 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
     if (popup) popup.remove();
 
     const abortController = new AbortController();
-    const content = isOsrmPopup ? osrmPopupContent(feature) : popupContent(feature, featuresCatalog, abortController);
+    const content = isOsrmPopup
+      ? osrmPopupContent(feature)
+      : isDrawingPopup
+        ? drawingPopupContent(feature)
+        : popupContent(feature, featuresCatalog, abortController);
     if (!content) return;
 
     popup = new maplibregl.Popup({ offset: popupOffsets, maxWidth: '340px' })

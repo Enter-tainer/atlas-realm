@@ -13,6 +13,9 @@ import { installWeatherPointPicker } from './weather.js';
 import { installOverlayManager } from './overlay-manager.js';
 import { installOsrmRouting } from './routing.js';
 import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-ready.js';
+import { DrawingStore } from './drawing-store.js';
+import { installDrawingRenderer } from './drawing-renderer.js';
+import { installDrawingTools } from './drawing-tools.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -30,6 +33,7 @@ app.innerHTML = `
 `;
 
 const featuresCatalog = buildFeatureCatalog();
+const drawingStore = new DrawingStore();
 
 type JsonRecord = Record<string, unknown>;
 type StyleLayerLike = JsonRecord & {
@@ -477,7 +481,9 @@ async function init() {
     installPhotonSearch(map, maplibregl);
     installWeatherPointPicker(map, maplibregl);
     installOsrmRouting(map, maplibregl);
-    installOverlayManager(map);
+    installDrawingRenderer(map, drawingStore);
+    installDrawingTools(map, drawingStore);
+    installOverlayManager(map, drawingStore);
 
     installSpriteFallback(map, atlases);
 
@@ -660,7 +666,7 @@ async function init() {
       satelliteControl?.setEnabled(Boolean(viewState?.satellite), { silent: true });
       if (!options.silent) emitCollaborationViewState();
     };
-    installMapCollaboration(map);
+    installMapCollaboration(map, drawingStore);
 
     let didRunMapReadySetup = false;
     const runMapReadySetup = () => {

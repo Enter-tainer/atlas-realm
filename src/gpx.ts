@@ -374,6 +374,18 @@ function osrmKindFilter(kind: string) {
   return ['==', ['get', 'kind'], kind];
 }
 
+function isDrawingTextOrLabelFilter() {
+  return ['in', ['get', 'kind'], ['literal', ['drawing_text', 'drawing_label']]];
+}
+
+function isVisibleGeoJsonPointFilter() {
+  return [
+    'all',
+    ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
+    ['!', isDrawingTextOrLabelFilter()],
+  ];
+}
+
 function summarizeGeoJson(geojson: GeoJsonFeatureCollection) {
   let minLng = Infinity;
   let minLat = Infinity;
@@ -843,7 +855,7 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
       id: pointLayerId,
       type: 'symbol',
       source: id,
-      filter: ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
+      filter: isVisibleGeoJsonPointFilter(),
       layout: {
         'icon-image': `marker-dot-${color}`,
         'icon-size': 0.5,
@@ -862,6 +874,28 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
       },
     });
     layerIds.push(pointLayerId);
+
+    const textLayerId = `${id}-text`;
+    map.addLayer({
+      id: textLayerId,
+      type: 'symbol',
+      source: id,
+      filter: isDrawingTextOrLabelFilter(),
+      layout: {
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ['get', 'description'], ''],
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 12,
+        'text-offset': [0, 0.2],
+        'text-anchor': 'center',
+        'text-allow-overlap': true,
+      },
+      paint: {
+        'text-color': ['coalesce', ['get', 'color'], color],
+        'text-halo-color': '#ffffff',
+        'text-halo-width': 2,
+      },
+    });
+    layerIds.push(textLayerId);
   }
 
   const overlay = {
