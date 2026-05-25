@@ -6,6 +6,9 @@ import {
   materializeOverlayContent,
 } from './overlay-sync.js';
 import type { OverlayContent, OverlayManifest, OverlaySyncAsset } from './overlay-sync.js';
+import type { DrawingStore } from './drawing-store.js';
+import type { DrawingServerMessage } from './drawing-sync.js';
+import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const PARTY_NAME = 'map-collaboration';
 const DEFAULT_ROOM = 'main';
@@ -73,6 +76,11 @@ type CollaborationMessage = JsonRecord & {
   contentHash?: string;
   overlayId?: string;
   patch?: JsonRecord;
+  doc?: unknown;
+  feature?: unknown;
+  featureId?: string;
+  orderedIds?: string[];
+  revision?: number;
 };
 type CollaborationMap = {
   getContainer(): HTMLElement;
@@ -341,7 +349,7 @@ function applyViewState(map: CollaborationMap, viewState: CollaborationViewState
   );
 }
 
-export function installMapCollaboration(map: CollaborationMap) {
+export function installMapCollaboration(map: CollaborationMap, drawingStore?: DrawingStore) {
   const mapContainer = map.getContainer();
   const clientId = getSessionId();
   const profile = getProfile();
@@ -566,6 +574,7 @@ export function installMapCollaboration(map: CollaborationMap) {
 
   function setPanelExpanded(expanded: boolean) {
     panelExpanded = Boolean(expanded);
+    if (panelExpanded) emitUiPanelOpen(mapContainer, 'collaboration');
     panel.dataset.expanded = panelExpanded ? 'true' : 'false';
     compactToggle.setAttribute('aria-expanded', String(panelExpanded));
     renderCompactSummary();
@@ -780,6 +789,12 @@ export function installMapCollaboration(map: CollaborationMap) {
     return true;
   }
 
+  function sendDrawingMessage(message: JsonRecord) {
+    if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
+    socket.send(JSON.stringify(message));
+    return true;
+  }
+
   function dispatchRemoteOverlayList(
     manifests: OverlayManifest[],
     persistence: 'ephemeral' | 'persistent' = 'ephemeral',
@@ -889,6 +904,36 @@ export function installMapCollaboration(map: CollaborationMap) {
   async function syncKnownLocalOverlays() {
     for (const overlay of knownLocalOverlays.values()) {
       if (!overlay.remoteOverlayId) await syncLocalOverlay(overlay);
+    }
+  }
+
+  function syncKnownLocalDrawing() {
+    if (!drawingStore) return;
+    sendDrawingMessage({ type: 'drawing:snapshot:request' });
+    const doc = drawingStore.getDoc();
+    for (const id of doc.layerOrder) {
+      const layer = doc.layers[id];
+      if (layer) {
+        sendDrawingMessage({
+          type: 'drawing:layer:upsert',
+          layer,
+        });
+      }
+    }
+    for (const id of doc.featureOrder) {
+      const feature = doc.features[id];
+      if (feature) {
+        sendDrawingMessage({
+          type: 'drawing:feature:upsert',
+          feature,
+        });
+      }
+    }
+    if (doc.featureOrder.length > 0) {
+      sendDrawingMessage({
+        type: 'drawing:feature:reorder',
+        orderedIds: doc.featureOrder,
+      });
     }
   }
 
@@ -1054,6 +1099,17 @@ export function installMapCollaboration(map: CollaborationMap) {
       return;
     }
 
+    if (
+      message.type === 'drawing:snapshot' ||
+      message.type === 'drawing:layer:upserted' ||
+      message.type === 'drawing:feature:upserted' ||
+      message.type === 'drawing:feature:deleted' ||
+      message.type === 'drawing:feature:reordered'
+    ) {
+      drawingStore?.applyServerMessage(message as DrawingServerMessage);
+      return;
+    }
+
     if (message.type === 'presence:join' || message.type === 'presence:update') {
       upsertPeer(message.peer);
       return;
@@ -1110,6 +1166,7 @@ export function installMapCollaboration(map: CollaborationMap) {
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
       syncKnownLocalOverlays();
+      syncKnownLocalDrawing();
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -1218,6 +1275,9 @@ export function installMapCollaboration(map: CollaborationMap) {
     localLocation = normalizeLocalLocation(detail);
     scheduleSend(true);
   };
+  const handleUiPanelOpen = (event: Event) => {
+    if (isOtherUiPanelOpen(event, 'collaboration')) setPanelExpanded(false);
+  };
   const handleLocalOverlayUpsert = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
     syncLocalOverlay(detail?.overlay);
@@ -1273,10 +1333,24 @@ export function installMapCollaboration(map: CollaborationMap) {
     });
   };
   mapContainer.addEventListener('collaboration:locationchange', handleLocationChange);
+  mapContainer.addEventListener(UI_PANEL_OPEN_EVENT, handleUiPanelOpen);
   mapContainer.addEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
   mapContainer.addEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
   mapContainer.addEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
   mapContainer.addEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
+
+  const unsubscribeDrawingStore = drawingStore?.subscribe((event) => {
+    if (event.remote) return;
+    if (event.type === 'layer:upsert') {
+      sendDrawingMessage({ type: 'drawing:layer:upsert', layer: event.layer });
+    } else if (event.type === 'feature:upsert') {
+      sendDrawingMessage({ type: 'drawing:feature:upsert', feature: event.feature });
+    } else if (event.type === 'feature:delete') {
+      sendDrawingMessage({ type: 'drawing:feature:delete', featureId: event.featureId });
+    } else if (event.type === 'feature:reorder') {
+      sendDrawingMessage({ type: 'drawing:feature:reorder', orderedIds: event.orderedIds });
+    }
+  });
 
   for (const eventName of ['mousedown', 'dblclick', 'wheel', 'touchstart']) {
     panel.addEventListener(eventName, (event: Event) => event.stopPropagation(), { passive: eventName !== 'wheel' });
@@ -1322,10 +1396,12 @@ export function installMapCollaboration(map: CollaborationMap) {
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);
+      mapContainer.removeEventListener(UI_PANEL_OPEN_EVENT, handleUiPanelOpen);
       mapContainer.removeEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
       mapContainer.removeEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
       mapContainer.removeEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
       mapContainer.removeEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
+      unsubscribeDrawingStore?.();
       socket?.close(1000, 'destroy');
       overlay.remove();
       panel.remove();

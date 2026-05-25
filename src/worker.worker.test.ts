@@ -118,6 +118,49 @@ function sentJson(connection: TestConnection, type: string): Array<Record<string
     );
 }
 
+function drawingFeature(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    type: 'path',
+    layerId: 'drawing-default',
+    points: [
+      [121.5, 31.2],
+      [121.6, 31.3],
+    ],
+    directed: true,
+    width: 4,
+    label: id,
+    note: 'Plan note',
+    color: '#2563eb',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    updatedBy: 'user-a',
+    ...extra,
+  };
+}
+
+function drawingPolygonFeature(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return drawingFeature(id, {
+    type: 'polygon',
+    points: [
+      [121.5, 31.2],
+      [121.55, 31.2],
+      [121.55, 31.24],
+    ],
+    width: 3,
+    fillOpacity: 0.22,
+    label: id,
+    ...extra,
+  });
+}
+
+function drawingDoc(instance: TestMapCollaboration): Record<string, unknown> {
+  const row = instance.sql<{ doc_json: string }>`
+    SELECT doc_json FROM drawing_state WHERE state_key = ${'main'} LIMIT 1
+  `[0];
+  return row?.doc_json ? (JSON.parse(String(row.doc_json)) as Record<string, unknown>) : {};
+}
+
 function asRecordArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
     ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
@@ -455,6 +498,81 @@ describe('MapCollaboration overlay state machine', () => {
     });
     expect(asRecordArray(result.overlay.overlays).map((overlay) => overlay.id)).toEqual(['overlay-a']);
   });
+
+  it('stores drawing feature operations and sends snapshots on connect', async () => {
+    const stub = roomStub('drawing-sync');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = createConnection('drawing-client');
+
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:feature:upsert', { feature: drawingFeature('path-a') }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:layer:upsert', {
+          layer: {
+            id: 'drawing-default',
+            name: 'Shared Tokyo plan',
+            visible: false,
+            stackOrder: 1,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:feature:upsert', { feature: drawingPolygonFeature('polygon-b') }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:feature:reorder', { orderedIds: ['polygon-b', 'bad/id', 'path-a'] }),
+      );
+      await sendWorkerMessage(instance, connection, jsonMessage('drawing:feature:delete', { featureId: 'path-a' }));
+
+      const joining = createConnection('joining-client');
+      await connectWorker(instance, joining, {
+        request: new Request('https://example.com/parties/map-collaboration/drawing-sync?name=Bob'),
+      });
+
+      return {
+        doc: drawingDoc(instance),
+        snapshot: sentJson(joining, 'drawing:snapshot')[0],
+      };
+    });
+
+    const layers = result.doc.layers as Record<string, unknown>;
+    expect(layers['drawing-default']).toMatchObject({
+      name: 'Shared Tokyo plan',
+      visible: false,
+      stackOrder: 1,
+    });
+    expect(result.doc.featureOrder).toEqual(['polygon-b']);
+    expect(Object.keys(result.doc.features as Record<string, unknown>)).toEqual(['polygon-b']);
+    expect((result.doc.features as Record<string, Record<string, unknown>>)['polygon-b']).toMatchObject({
+      type: 'polygon',
+      fillOpacity: 0.22,
+    });
+    expect(result.snapshot).toMatchObject({
+      type: 'drawing:snapshot',
+      doc: {
+        layers: {
+          'drawing-default': {
+            name: 'Shared Tokyo plan',
+            visible: false,
+            stackOrder: 1,
+          },
+        },
+        featureOrder: ['polygon-b'],
+      },
+    });
+  });
 });
 
 describe('MapCollaboration room lifecycle', () => {
@@ -486,6 +604,38 @@ describe('MapCollaboration room lifecycle', () => {
 
     expect(result.overlays).toEqual([]);
     expect(result.hashes).toEqual([]);
+    expect(result.rooms).toEqual([]);
+  });
+
+  it('clears expired drawing state with ephemeral room storage', async () => {
+    const stub = roomStub('expired-drawing-room');
+
+    await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = createConnection();
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:feature:upsert', { feature: drawingFeature('path-a') }),
+      );
+      instance.sql`
+        UPDATE room_meta
+        SET expires_at = ${Date.now() - 1}
+        WHERE room_id = ${'expired-drawing-room'}
+      `;
+    });
+
+    await expect(runAlarm(stub)).resolves.toBe(true);
+
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      return {
+        drawing: instance.sql`SELECT state_key FROM drawing_state`,
+        rooms: instance.sql`SELECT room_id FROM room_meta`,
+      };
+    });
+
+    expect(result.drawing).toEqual([]);
     expect(result.rooms).toEqual([]);
   });
 

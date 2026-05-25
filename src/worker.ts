@@ -1,5 +1,8 @@
 import { PMTiles, ResolvedValueCache, type RangeResponse, type Source, TileType } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
+import { createEmptyDrawingDoc, normalizeDrawingDoc } from './drawing-model.js';
+import { buildDrawingSnapshotMessage, parseDrawingClientMessage, reduceDrawingClientMessage } from './drawing-sync.js';
+import type { DrawingDoc } from './drawing-model.js';
 
 const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
 const TILEJSON_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\.json$/;
@@ -166,7 +169,8 @@ const OVERLAY_CONTENT_BINARY_VERSION = 1;
 const MAX_OVERLAY_CONTENT_BYTES = 2 * 1024 * 1024;
 const EPHEMERAL_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 const UNREFERENCED_OVERLAY_CONTENT_TTL_MS = 60 * 60 * 1000;
-const SQL_READY_KEY = '__overlay_sql_ready_v1';
+const SQL_READY_KEY = '__overlay_sql_ready_v2';
+const DRAWING_STATE_KEY = 'main';
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 
@@ -428,6 +432,13 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         updated_at INTEGER NOT NULL
       )
     `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS drawing_state (
+        state_key TEXT PRIMARY KEY,
+        doc_json TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `;
     await this.ctx.storage.put(SQL_READY_KEY, true);
   }
 
@@ -497,6 +508,26 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     );
   }
 
+  _getDrawingDoc(): DrawingDoc {
+    const row = this.sql<{ doc_json: string }>`
+      SELECT doc_json FROM drawing_state WHERE state_key = ${DRAWING_STATE_KEY} LIMIT 1
+    `[0];
+    if (!row?.doc_json) return createEmptyDrawingDoc();
+    try {
+      return normalizeDrawingDoc(JSON.parse(String(row.doc_json)));
+    } catch {
+      return createEmptyDrawingDoc();
+    }
+  }
+
+  _saveDrawingDoc(doc: DrawingDoc): void {
+    const normalized = normalizeDrawingDoc(doc);
+    this.sql`
+      INSERT OR REPLACE INTO drawing_state (state_key, doc_json, updated_at)
+      VALUES (${DRAWING_STATE_KEY}, ${JSON.stringify(normalized)}, ${Date.now()})
+    `;
+  }
+
   async onStart(): Promise<void> {
     await this._ensureOverlayStorage();
   }
@@ -547,6 +578,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         overlays: this._listOverlayManifests(),
       }),
     );
+
+    connection.send(encodeMessage(buildDrawingSnapshotMessage(this._getDrawingDoc())));
 
     this.broadcast(
       encodeMessage({
@@ -688,6 +721,20 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       return;
     }
 
+    if (typeof payload.type === 'string' && payload.type.startsWith('drawing:')) {
+      const clientMessage = parseDrawingClientMessage(payload);
+      if (!clientMessage) return;
+      const result = reduceDrawingClientMessage(this._getDrawingDoc(), clientMessage);
+      this._saveDrawingDoc(result.doc);
+      if (!result.outbound) return;
+      if (clientMessage.type === 'drawing:snapshot:request') {
+        connection.send(encodeMessage(result.outbound));
+      } else {
+        this.broadcast(encodeMessage(result.outbound));
+      }
+      return;
+    }
+
     if (payload.type !== 'client:update') return;
 
     const previous = connection.state || {};
@@ -749,6 +796,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     }
     this.sql`DELETE FROM overlays`;
     this.sql`DELETE FROM overlay_contents`;
+    this.sql`DELETE FROM drawing_state`;
     this.sql`DELETE FROM room_meta WHERE room_id = ${this.name}`;
   }
 }

@@ -1,5 +1,8 @@
 import { processOrQueueGpx, processOrQueueGeoJson, addGpxToMap, addGeoJsonToMap, isRemoteOverlayEvent } from './gpx.js';
+import { DRAWING_DEFAULT_LAYER_ID, DRAWING_SOURCE_ID } from './drawing-model.js';
+import { DRAWING_LAYER_IDS } from './drawing-renderer.js';
 import { overlayManifestPatch } from './overlay-sync.js';
+import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import DownloadIcon from 'lucide/dist/esm/icons/download.mjs';
 import EyeIcon from 'lucide/dist/esm/icons/eye.mjs';
@@ -8,10 +11,12 @@ import GripVerticalIcon from 'lucide/dist/esm/icons/grip-vertical.mjs';
 import LayersIcon from 'lucide/dist/esm/icons/layers.mjs';
 import LinkIcon from 'lucide/dist/esm/icons/link.mjs';
 import LocateFixedIcon from 'lucide/dist/esm/icons/locate-fixed.mjs';
+import PencilIcon from 'lucide/dist/esm/icons/pencil.mjs';
 import PlusIcon from 'lucide/dist/esm/icons/plus.mjs';
 import TrashIcon from 'lucide/dist/esm/icons/trash-2.mjs';
 import UploadIcon from 'lucide/dist/esm/icons/upload.mjs';
 import XIcon from 'lucide/dist/esm/icons/x.mjs';
+import type { DrawingStore, DrawingStoreEvent } from './drawing-store.js';
 
 const DEFAULT_COLOR = '#3b82f6';
 const DEFAULT_OPACITY = 0.95;
@@ -21,10 +26,11 @@ const GEOJSON_POLYGON_OUTLINE_OPACITY = 0.8;
 const GEOJSON_POLYGON_OUTLINE_WIDTH = 2;
 const COLOR_SWATCHES = ['#3b82f6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#8b5cf6', '#ec4899'];
 const OVERLAY_SOURCE_TYPES = new Set(['gpx', 'geojson']);
+const DRAWING_OVERLAY_ID = 'drawing-overlay-default';
 type AnyRecord = Record<string | symbol, unknown>;
 type OverlayBounds = [[number, number], [number, number]];
 type BoundsLike = readonly (readonly number[])[];
-type OverlayType = 'gpx' | 'geojson';
+type OverlayType = 'gpx' | 'geojson' | 'drawing';
 type OverlayData = object;
 type OverlayContent = string | object;
 type OverlayStyleValue = string | number | boolean | null | OverlayStyleValue[];
@@ -63,6 +69,7 @@ type OverlayLike = AnyRecord & {
   lines?: number;
   polygons?: number;
   features?: number;
+  drawingLayerId?: string;
   distanceText?: string;
   durationText?: string;
   stepCount?: number;
@@ -104,6 +111,11 @@ type OverlayStylePatch = {
 type OverlayListDetail = { overlays?: OverlayLike[] };
 type OverlayRemoteAddDetail = { manifest?: OverlayLike; content?: OverlayContent };
 type OverlayImportResult = { bounds?: BoundsLike | null } | null;
+type DrawingLayerOverlayOptions = {
+  force?: boolean;
+  select?: boolean;
+  render?: boolean;
+};
 
 function asOverlayBounds(value: BoundsLike | null | undefined): OverlayBounds | null {
   if (!Array.isArray(value) || value.length < 2) return null;
@@ -173,10 +185,17 @@ function normalizeColor(value: string | null | undefined, fallback = DEFAULT_COL
 }
 
 function formatOverlayType(type: OverlayType | string | null | undefined) {
+  if (type === 'osrm') return 'OSRM';
+  if (type === 'drawing') return 'Drawing';
   return type === 'gpx' ? 'GPX' : 'GeoJSON';
 }
 
 function formatOverlayMeta(overlay: OverlayLike) {
+  if (overlay.type === 'drawing') {
+    const count = Number(overlay.features) || 0;
+    return `${count} feature${count === 1 ? '' : 's'}`;
+  }
+
   if (overlay.subType === 'osrm') {
     const parts = [overlay.distanceText, overlay.durationText].filter(Boolean) as string[];
     if (Number.isFinite(overlay.stepCount)) parts.push(`${overlay.stepCount} steps`);
@@ -310,11 +329,19 @@ function isManagedLayer(layer: OverlayLayer | undefined) {
   return layer?.source && /^(gpx-track-|geojson-layer-)/.test(layer.source);
 }
 
+function isDrawingOverlay(overlay: OverlayLike | null | undefined): overlay is OverlayLike & { type: 'drawing' } {
+  return overlay?.type === 'drawing';
+}
+
+function isFileOverlay(overlay: OverlayLike | null | undefined): overlay is OverlayLike & { type: 'gpx' | 'geojson' } {
+  return overlay?.type === 'gpx' || overlay?.type === 'geojson';
+}
+
 function hasSyncOrigin(overlay: OverlayLike | null | undefined) {
   return Boolean(overlay?.syncOverlayId || overlay?.remoteOverlayId);
 }
 
-function manifestOverlayMetadata(manifest: OverlayLike) {
+function manifestOverlayMetadata(manifest: OverlayLike & { type: 'gpx' | 'geojson' }) {
   const metadata = overlayManifestPatch(manifest);
   delete metadata.id;
   return metadata;
@@ -350,8 +377,11 @@ class OverlayManagerControl {
   _opacityValue: HTMLElement;
   _opacityInput: HTMLInputElement;
   _zoomButton: HTMLButtonElement;
+  _editButton: HTMLButtonElement;
   _exportButton: HTMLButtonElement;
   _deleteButton: HTMLButtonElement;
+  _drawingStore?: DrawingStore;
+  _unsubscribeDrawingStore: (() => void) | null;
   _overlays: OverlayLike[];
   _selectedId: string | null;
   _expanded: boolean;
@@ -365,8 +395,11 @@ class OverlayManagerControl {
   _boundKeydown: (event: KeyboardEvent) => void;
   _boundViewportChange: () => void;
   _boundRoutingPanelOpen: () => void;
+  _boundAnyPanelOpen: (event: Event) => void;
 
-  constructor() {
+  constructor(drawingStore?: DrawingStore) {
+    this._drawingStore = drawingStore;
+    this._unsubscribeDrawingStore = null;
     this._overlays = [];
     this._selectedId = null;
     this._expanded = false;
@@ -380,6 +413,9 @@ class OverlayManagerControl {
     this._boundKeydown = (event) => this._handleKeydown(event);
     this._boundViewportChange = () => this._syncViewportMode();
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
+    this._boundAnyPanelOpen = (event) => {
+      if (isOtherUiPanelOpen(event, 'layers')) this.setExpanded(false);
+    };
   }
 
   onAdd(map: OverlayMap) {
@@ -524,6 +560,11 @@ class OverlayManagerControl {
     appendIconLabel(this._zoomButton, LocateFixedIcon, 'Zoom');
     this._zoomButton.addEventListener('click', () => fitOverlayBounds(this._map, this._selectedOverlay()));
 
+    this._editButton = el('button', 'overlay-manager-action overlay-manager-edit', detailActions);
+    this._editButton.type = 'button';
+    appendIconLabel(this._editButton, PencilIcon, 'Edit');
+    this._editButton.addEventListener('click', () => this._editSelected());
+
     this._exportButton = el('button', 'overlay-manager-action', detailActions);
     this._exportButton.type = 'button';
     appendIconLabel(this._exportButton, DownloadIcon, 'Export');
@@ -550,8 +591,11 @@ class OverlayManagerControl {
     map.getContainer().addEventListener('overlay-sync:remote-list', this._boundOverlayRemoteList);
     map.getContainer().addEventListener('overlay-sync:remote-delete', this._boundOverlayRemoteDelete);
     map.getContainer().addEventListener('routing:panelopen', this._boundRoutingPanelOpen);
+    map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
+    this._unsubscribeDrawingStore = this._drawingStore?.subscribe((event) => this._handleDrawingStoreEvent(event)) || null;
+    this._upsertDrawingOverlay({ force: true, render: false });
     this._syncViewportMode();
     this._syncPanelInteractivity();
     this._render();
@@ -564,8 +608,12 @@ class OverlayManagerControl {
     this._map.getContainer().removeEventListener('overlay-sync:remote-list', this._boundOverlayRemoteList);
     this._map.getContainer().removeEventListener('overlay-sync:remote-delete', this._boundOverlayRemoteDelete);
     this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
+    this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
+    this._unsubscribeDrawingStore?.();
+    this._unsubscribeDrawingStore = null;
+    this._map.getContainer().dataset.overlayManagerPanelOpen = 'false';
     this._panel?.remove();
     this._control?.remove();
     this._map = undefined;
@@ -574,12 +622,14 @@ class OverlayManagerControl {
   setExpanded(expanded: boolean) {
     this._expanded = Boolean(expanded);
     if (this._expanded) {
+      emitUiPanelOpen(this._map.getContainer(), 'layers');
       this._map.getContainer().dispatchEvent(new CustomEvent('overlay-manager:panelopen'));
     }
     this._button.classList.toggle('maplibregl-ctrl-overlays-enabled', this._expanded);
     this._button.setAttribute('aria-expanded', this._expanded ? 'true' : 'false');
     this._panel.classList.toggle('overlay-manager-panel-visible', this._expanded);
     this._panel.setAttribute('aria-hidden', this._expanded ? 'false' : 'true');
+    this._map.getContainer().dataset.overlayManagerPanelOpen = this._expanded ? 'true' : 'false';
     this._syncPanelInteractivity();
     this._syncDetails();
   }
@@ -625,6 +675,59 @@ class OverlayManagerControl {
     if (!remote) this._emitOverlaySyncUpsert(normalized);
   }
 
+  _handleDrawingStoreEvent(_event: DrawingStoreEvent) {
+    this._upsertDrawingOverlay({ force: true, render: true });
+  }
+
+  _upsertDrawingOverlay({ force = false, select = false, render = true }: DrawingLayerOverlayOptions = {}) {
+    if (!this._drawingStore) return;
+    const doc = this._drawingStore.getDoc();
+    const layer = doc.layers[DRAWING_DEFAULT_LAYER_ID];
+    const featureCount = doc.featureOrder.filter(
+      (id) => doc.features[id]?.layerId === DRAWING_DEFAULT_LAYER_ID,
+    ).length;
+    const existingIndex = this._overlays.findIndex((overlay) => overlay.id === DRAWING_OVERLAY_ID);
+    if (!force && existingIndex === -1 && featureCount === 0) return;
+
+    const overlay: OverlayLike = {
+      id: DRAWING_OVERLAY_ID,
+      type: 'drawing',
+      subType: 'drawing',
+      name: layer?.name || 'Annotations',
+      color: DEFAULT_COLOR,
+      opacity: 1,
+      lineWidth: 4,
+      visible: layer?.visible !== false,
+      bounds: this._drawingStore.getLayerBounds(DRAWING_DEFAULT_LAYER_ID),
+      data: this._drawingStore.getLayerGeoJson(DRAWING_DEFAULT_LAYER_ID, { includeHidden: true }),
+      sourceId: DRAWING_SOURCE_ID,
+      layerIds: Object.values(DRAWING_LAYER_IDS),
+      drawingLayerId: DRAWING_DEFAULT_LAYER_ID,
+      features: featureCount,
+    };
+
+    if (existingIndex === -1) {
+      const stackOrder = Number.isFinite(layer?.stackOrder) ? Number(layer?.stackOrder) : 0;
+      const index = Math.min(this._overlays.length, Math.max(0, stackOrder));
+      this._overlays.splice(index, 0, overlay);
+    } else {
+      this._overlays[existingIndex] = { ...this._overlays[existingIndex], ...overlay };
+    }
+    if (select || !this._selectedId) this._selectedId = overlay.id;
+    this._applyDrawingVisibility(overlay);
+    this._syncOverlayLayerOrder();
+    if (render) this._render();
+  }
+
+  _applyDrawingVisibility(overlay: OverlayLike) {
+    if (!isDrawingOverlay(overlay)) return;
+    for (const layerId of overlay.layerIds) {
+      if (this._map.getLayer(layerId)) {
+        this._map.setLayoutProperty(layerId, 'visibility', overlay.visible ? 'visible' : 'none');
+      }
+    }
+  }
+
   _emitOverlaySyncUpsert(overlay: OverlayLike) {
     if (!overlay?.data) return;
     this._map.getContainer().dispatchEvent(
@@ -635,6 +738,7 @@ class OverlayManagerControl {
   }
 
   _emitOverlaySyncPatch(overlay: OverlayLike, patch: OverlayStylePatch | { name?: string; visible?: boolean }) {
+    if (isDrawingOverlay(overlay)) return;
     if (!overlay?.syncOverlayId) return;
     this._map.getContainer().dispatchEvent(
       new CustomEvent('overlay-sync:local-patch', {
@@ -647,13 +751,16 @@ class OverlayManagerControl {
     this._map.getContainer().dispatchEvent(
       new CustomEvent('overlay-sync:local-reorder', {
         detail: {
-          orderedIds: this._overlays.map((overlay) => overlay.syncOverlayId || overlay.id),
+          orderedIds: this._overlays
+            .filter((overlay) => !isDrawingOverlay(overlay))
+            .map((overlay) => overlay.syncOverlayId || overlay.id),
         },
       }),
     );
   }
 
   _emitOverlaySyncDelete(overlay: OverlayLike) {
+    if (isDrawingOverlay(overlay)) return;
     if (!overlay?.syncOverlayId) return;
     this._map.getContainer().dispatchEvent(
       new CustomEvent('overlay-sync:local-delete', {
@@ -667,11 +774,13 @@ class OverlayManagerControl {
     const order = new Map(manifests.map((manifest: OverlayLike, index: number) => [manifest.id, index]));
     const remoteIds = new Set(manifests.map((manifest: OverlayLike) => manifest.id));
     for (const overlay of this._overlays.slice()) {
+      if (isDrawingOverlay(overlay)) continue;
       if (overlay.remoteOverlayId && !remoteIds.has(overlay.remoteOverlayId)) {
         this._removeOverlay(overlay, { emit: false });
       }
     }
     this._overlays.sort((a, b) => {
+      if (isDrawingOverlay(a) || isDrawingOverlay(b)) return 0;
       const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId)
         ? Number(order.get(a.remoteOverlayId || a.syncOverlayId))
         : Number.MAX_SAFE_INTEGER;
@@ -681,6 +790,7 @@ class OverlayManagerControl {
       return aOrder - bOrder;
     });
     for (const manifest of manifests) {
+      if (!isFileOverlay(manifest)) continue;
       const overlay = this._overlays.find(
         (item) => item.remoteOverlayId === manifest.id || item.syncOverlayId === manifest.id,
       );
@@ -707,6 +817,7 @@ class OverlayManagerControl {
     const manifest = detail?.manifest;
     const content = detail?.content;
     if (!manifest || !content) return;
+    if (!isFileOverlay(manifest)) return;
     if (
       this._overlays.some((overlay) => overlay.remoteOverlayId === manifest.id || overlay.syncOverlayId === manifest.id)
     )
@@ -835,6 +946,9 @@ class OverlayManagerControl {
     const overlay = this._selectedOverlay();
     if (!overlay) return;
     overlay.name = name.replace(/\s+/g, ' ').trimStart() || formatOverlayType(overlay.type);
+    if (isDrawingOverlay(overlay)) {
+      this._drawingStore?.patchLayer(overlay.drawingLayerId || DRAWING_DEFAULT_LAYER_ID, { name: overlay.name });
+    }
     this._renderList();
     this._syncDetails();
     this._emitOverlaySyncPatch(overlay, { name: overlay.name });
@@ -859,6 +973,9 @@ class OverlayManagerControl {
 
   _toggleOverlayVisibility(overlay: OverlayLike) {
     overlay.visible = !overlay.visible;
+    if (isDrawingOverlay(overlay)) {
+      this._drawingStore?.patchLayer(overlay.drawingLayerId || DRAWING_DEFAULT_LAYER_ID, { visible: overlay.visible });
+    }
     for (const layerId of overlay.layerIds) {
       if (this._map.getLayer(layerId)) {
         this._map.setLayoutProperty(layerId, 'visibility', overlay.visible ? 'visible' : 'none');
@@ -947,6 +1064,12 @@ class OverlayManagerControl {
   }
 
   _removeOverlay(overlay: OverlayLike, { emit = true }: OverlayMutationOptions = {}) {
+    if (isDrawingOverlay(overlay)) {
+      this._drawingStore?.clearLayer(overlay.drawingLayerId || DRAWING_DEFAULT_LAYER_ID, { hidden: true });
+      this._selectedId = overlay.id;
+      this._upsertDrawingOverlay({ force: true, render: true });
+      return;
+    }
     for (const layerId of overlay.layerIds.slice().reverse()) {
       if (this._map.getLayer(layerId)) this._map.removeLayer(layerId);
     }
@@ -974,6 +1097,17 @@ class OverlayManagerControl {
         .replace(/^-+|-+$/g, '')
         .toLowerCase() || overlay.id;
     exportJson(overlay.data, `${baseName}.geojson`);
+  }
+
+  _editSelected() {
+    const overlay = this._selectedOverlay();
+    if (!isDrawingOverlay(overlay)) return;
+    this.setExpanded(false);
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent('drawing:open', {
+        detail: { layerId: overlay.drawingLayerId || DRAWING_DEFAULT_LAYER_ID },
+      }),
+    );
   }
 
   _syncOverlayLayerOrder() {
@@ -1006,12 +1140,19 @@ class OverlayManagerControl {
     const changed = previousOrder !== this._overlays.map((item) => item.id).join('\n');
     if (!changed) return false;
     if (sync) this._syncOverlayLayerOrder();
+    if (sync) this._persistDrawingStackOrder();
     if (render) {
       this._renderList();
       this._syncDetails();
     }
     if (sync) this._emitOverlaySyncReorder();
     return true;
+  }
+
+  _persistDrawingStackOrder() {
+    const index = this._overlays.findIndex((overlay) => isDrawingOverlay(overlay));
+    if (index === -1) return;
+    this._drawingStore?.patchLayer(DRAWING_DEFAULT_LAYER_ID, { stackOrder: index });
   }
 
   _focusReorderHandle(overlayId: string) {
@@ -1106,6 +1247,7 @@ class OverlayManagerControl {
     this._list.classList.remove('overlay-manager-list-reordering');
     this._dragState = null;
     this._syncOverlayLayerOrder();
+    this._persistDrawingStackOrder();
     this._emitOverlaySyncReorder();
     this._renderList();
     this._syncDetails();
@@ -1187,7 +1329,7 @@ class OverlayManagerControl {
       const name = el('span', 'overlay-manager-item-name', main);
       name.textContent = overlay.name;
       const meta = el('span', 'overlay-manager-item-meta', main);
-      meta.textContent = `${overlay.subType === 'osrm' ? 'OSRM' : formatOverlayType(overlay.type)} - ${formatOverlayMeta(overlay)}`;
+      meta.textContent = `${formatOverlayType(overlay.subType === 'osrm' ? 'osrm' : overlay.type)} - ${formatOverlayMeta(overlay)}`;
 
       const zoom = el('button', 'overlay-manager-icon-button', row);
       zoom.type = 'button';
@@ -1211,7 +1353,7 @@ class OverlayManagerControl {
     this._detailsTitle.textContent = formatOverlayMeta(overlay);
     if (this._nameInput.value !== overlay.name) this._nameInput.value = overlay.name;
 
-    const hasDataDrivenStyle = overlay.type === 'gpx' || overlay.subType === 'osrm';
+    const hasDataDrivenStyle = overlay.type === 'gpx' || overlay.subType === 'osrm' || overlay.type === 'drawing';
     this._colorField.hidden = hasDataDrivenStyle;
     this._widthField.hidden = hasDataDrivenStyle;
     this._opacityField.hidden = hasDataDrivenStyle;
@@ -1229,6 +1371,10 @@ class OverlayManagerControl {
     this._opacityInput.value = String(Math.round(opacity * 100));
     this._opacityValue.textContent = `${Math.round(opacity * 100)}%`;
     this._zoomButton.disabled = !overlay.bounds;
+    this._editButton.hidden = !isDrawingOverlay(overlay);
+    this._deleteButton.querySelector('.overlay-manager-action-label').textContent = isDrawingOverlay(overlay)
+      ? 'Clear'
+      : 'Delete';
   }
 }
 
@@ -1242,6 +1388,6 @@ function mergeBounds(a: OverlayBounds | null, b: BoundsLike | null | undefined):
   ];
 }
 
-export function installOverlayManager(map: OverlayMap) {
-  map.addControl(new OverlayManagerControl(), 'top-right');
+export function installOverlayManager(map: OverlayMap, drawingStore?: DrawingStore) {
+  map.addControl(new OverlayManagerControl(drawingStore), 'top-right');
 }

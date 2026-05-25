@@ -6,9 +6,10 @@ import PlusIcon from 'lucide/dist/esm/icons/plus.mjs';
 import RouteIcon from 'lucide/dist/esm/icons/route.mjs';
 import TrashIcon from 'lucide/dist/esm/icons/trash-2.mjs';
 import XIcon from 'lucide/dist/esm/icons/x.mjs';
+import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
-const DEFAULT_OSRM_ENDPOINT = 'https://router.project-osrm.org';
-const ROUTING_ENDPOINT_KEY = 'orm-routing-osrm-endpoint';
+export const DEFAULT_OSRM_ENDPOINT = 'https://router.project-osrm.org';
+export const ROUTING_ENDPOINT_KEY = 'orm-routing-osrm-endpoint';
 const ROUTING_PICKER_DATASET_KEY = 'routingPickerActive';
 const ROUTE_COLOR = '#0f766e';
 const FROM_COLOR = '#16a34a';
@@ -20,7 +21,8 @@ const OSRM_STEP_KIND = 'osrm_step';
 const OSRM_MANEUVER_KIND = 'osrm_maneuver';
 const OSRM_SEGMENT_KIND = 'osrm_segment';
 
-type LngLatLike = { lng: number; lat: number };
+export type LngLatLike = { lng: number; lat: number };
+export type OsrmProfile = 'driving' | 'walking' | 'cycling';
 type RoutePointKind = 'from' | 'to';
 type RoutingMapClickEvent = {
   lngLat: LngLatLike;
@@ -131,7 +133,7 @@ type CompactStep = {
   location: Coordinates | null;
 };
 type StepRecord = { raw: OsrmStep; compact: CompactStep };
-type OsrmRouteResponse = {
+export type OsrmRouteResponse = {
   code?: string;
   message?: string;
   routes?: OsrmRoute[];
@@ -198,7 +200,7 @@ function safeSetStorage(key: string, value: string) {
   }
 }
 
-function normalizeEndpoint(value: string | null | undefined) {
+export function normalizeEndpoint(value: string | null | undefined) {
   const endpoint = String(value || '')
     .trim()
     .replace(/\/+$/, '');
@@ -228,7 +230,7 @@ function formatCoord(point: LngLatLike | null) {
   return `${point.lng.toFixed(6)}, ${point.lat.toFixed(6)}`;
 }
 
-function formatDistance(meters: number | string | null | undefined) {
+export function formatDistance(meters: number | string | null | undefined) {
   if (meters == null) return '';
   const value = Number(meters);
   if (!Number.isFinite(value)) return '';
@@ -237,7 +239,7 @@ function formatDistance(meters: number | string | null | undefined) {
   return `${Math.round(value / 1000)} km`;
 }
 
-function formatDuration(seconds: number | string | null | undefined) {
+export function formatDuration(seconds: number | string | null | undefined) {
   if (seconds == null) return '';
   const value = Number(seconds);
   if (!Number.isFinite(value)) return '';
@@ -248,9 +250,13 @@ function formatDuration(seconds: number | string | null | undefined) {
   return rest ? `${hours} h ${rest} min` : `${hours} h`;
 }
 
-function buildRouteUrl(endpoint: string, from: LngLatLike, to: LngLatLike) {
-  const coordinates = `${from.lng.toFixed(6)},${from.lat.toFixed(6)};${to.lng.toFixed(6)},${to.lat.toFixed(6)}`;
-  const url = new URL(`/route/v1/driving/${coordinates}`, normalizeEndpoint(endpoint));
+export function buildRouteUrl(endpoint: string, from: LngLatLike, to: LngLatLike, profile: OsrmProfile = 'driving') {
+  return buildRouteUrlFromPoints(endpoint, [from, to], profile);
+}
+
+export function buildRouteUrlFromPoints(endpoint: string, points: LngLatLike[], profile: OsrmProfile = 'driving') {
+  const coordinates = points.map((point) => `${point.lng.toFixed(6)},${point.lat.toFixed(6)}`).join(';');
+  const url = new URL(`/route/v1/${profile}/${coordinates}`, normalizeEndpoint(endpoint));
   url.searchParams.set('alternatives', 'false');
   url.searchParams.set('steps', 'true');
   url.searchParams.set('annotations', 'duration,distance,speed,nodes');
@@ -446,7 +452,7 @@ function buildSegmentFeatures(route: OsrmRoute) {
   return features;
 }
 
-function routeToGeoJson(route: OsrmRoute, waypoints: OsrmWaypoint[] | undefined, from: LngLatLike, to: LngLatLike) {
+export function routeToGeoJson(route: OsrmRoute, waypoints: OsrmWaypoint[] | undefined, from: LngLatLike, to: LngLatLike) {
   const distance = Number(route.distance);
   const duration = Number(route.duration);
   const distanceText = formatDistance(distance);
@@ -550,6 +556,7 @@ class OsrmRoutingControl {
   _boundMapClick: (event: RoutingMapClickEvent) => void;
   _boundViewportChange: () => void;
   _boundOverlayPanelOpen: () => void;
+  _boundAnyPanelOpen: (event: Event) => void;
 
   constructor(maplibregl: RoutingMaplibre) {
     this._maplibregl = maplibregl;
@@ -564,6 +571,9 @@ class OsrmRoutingControl {
     this._boundMapClick = (event) => this._handleMapClick(event);
     this._boundViewportChange = () => this._syncViewportMode();
     this._boundOverlayPanelOpen = () => this.setExpanded(false);
+    this._boundAnyPanelOpen = (event) => {
+      if (isOtherUiPanelOpen(event, 'routing')) this.setExpanded(false);
+    };
   }
 
   onAdd(map: RoutingMap) {
@@ -632,6 +642,7 @@ class OsrmRoutingControl {
 
     map.on('click', this._boundMapClick);
     map.getContainer().addEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
+    map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
     this._syncViewportMode();
@@ -644,6 +655,7 @@ class OsrmRoutingControl {
     this._abortController?.abort();
     this._map.off('click', this._boundMapClick);
     this._map.getContainer().removeEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
+    this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
     this._removeMarkers();
@@ -690,6 +702,7 @@ class OsrmRoutingControl {
   setExpanded(expanded: boolean) {
     this._expanded = Boolean(expanded);
     if (this._expanded) {
+      emitUiPanelOpen(this._map.getContainer(), 'routing');
       this._map.getContainer().dispatchEvent(new CustomEvent('routing:panelopen'));
     }
     if (!this._expanded) this._setPicking(null);
