@@ -74,15 +74,12 @@ function isRuntimeOverlay(value: unknown): value is RuntimeOverlay {
 }
 
 function stripRuntimeOverlayFields(overlay: Partial<RuntimeOverlay | OverlayManifest>): OverlayManifest {
-  const {
-    layerIds,
-    sourceId,
-    data,
-    rawText,
-    remoteOverlayId,
-    syncOverlayId,
-    ...manifest
-  } = overlay || {};
+  const { remoteOverlayId, syncOverlayId, ...manifestWithRuntimeFields } = overlay || {};
+  delete manifestWithRuntimeFields.layerIds;
+  delete manifestWithRuntimeFields.sourceId;
+  delete manifestWithRuntimeFields.data;
+  delete manifestWithRuntimeFields.rawText;
+  const manifest = manifestWithRuntimeFields;
   const id = syncOverlayId || remoteOverlayId || manifest.id;
   return {
     ...manifest,

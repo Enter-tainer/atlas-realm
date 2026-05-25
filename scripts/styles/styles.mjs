@@ -1,5 +1,4 @@
 import fs from 'fs'
-import yaml from 'yaml'
 import { knownStyles, defaultDate } from './shared.mjs'
 import { sources } from './fragments/sources.mjs'
 import { standardLayers } from './fragments/standard.layers.mjs'

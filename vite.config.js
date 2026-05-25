@@ -1,5 +1,4 @@
 import { defineConfig } from 'vite'
-import { execSync } from 'child_process'
 import { createHash } from 'crypto'
 import { readFileSync } from 'fs'
 

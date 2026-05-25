@@ -286,7 +286,8 @@ function hasSyncOrigin(overlay: OverlayLike | null | undefined) {
 }
 
 function manifestOverlayMetadata(manifest: OverlayLike) {
-  const { id, ...metadata } = overlayManifestPatch(manifest);
+  const metadata = overlayManifestPatch(manifest);
+  delete metadata.id;
   return metadata;
 }
 

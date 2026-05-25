@@ -1,0 +1,14 @@
+{
+  "singleQuote": true,
+  "semi": true,
+  "printWidth": 120,
+  "ignorePatterns": ["public/orm/**"],
+  "overrides": [
+    {
+      "files": ["scripts/styles/**/*.mjs"],
+      "options": {
+        "semi": false
+      }
+    }
+  ]
+}

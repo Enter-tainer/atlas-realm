@@ -846,7 +846,7 @@ export function buildFeatureCatalog() {
 function renderImageData(
   linkEl: HTMLAnchorElement,
   data: CommonsImageData,
-  abortController: AbortController,
+  _abortController: AbortController,
 ) {
   const img = el('img', 'orm-popup-image', linkEl);
   img.style.display = 'none';
@@ -1256,7 +1256,7 @@ function popupContent(
 // ---------------------------------------------------------------------------
 // Fallback popup for layers not in the catalog
 // ---------------------------------------------------------------------------
-function fallbackPopupContent(properties: JsonRecord, layerSource: string) {
+function fallbackPopupContent(properties: JsonRecord, _layerSource: string) {
   const container = el('div', 'orm-popup');
 
   const title = el('h5', 'orm-popup-title', container);
