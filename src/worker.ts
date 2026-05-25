@@ -7,8 +7,8 @@ import {
 } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 
-const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z\/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
-const TILEJSON_RE = /^\/tiles\/(?<name>[0-9a-zA-Z\/!\-_.*'()]+)\.json$/;
+const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
+const TILEJSON_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\.json$/;
 
 type TileRequestPath =
   | { ok: true; name: string; tile: [number, number, number]; ext: string }
@@ -163,14 +163,6 @@ const CONTENT_TYPES: Partial<Record<TileType, string>> = {
   [TileType.Png]: 'image/png',
   [TileType.Jpeg]: 'image/jpeg',
   [TileType.Webp]: 'image/webp',
-};
-
-const EXT_TO_TYPE: Record<string, TileType> = {
-  mvt: TileType.Mvt,
-  pbf: TileType.Mvt,
-  png: TileType.Png,
-  jpg: TileType.Jpeg,
-  webp: TileType.Webp,
 };
 
 const PROFILE_COLORS = [

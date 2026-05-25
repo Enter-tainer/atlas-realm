@@ -1,0 +1,35 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "oxc"],
+  "categories": {
+    "correctness": "error"
+  },
+  "env": {
+    "builtin": true,
+    "browser": true,
+    "node": true,
+    "serviceworker": true,
+    "vitest": true,
+    "worker": true
+  },
+  "globals": {
+    "__STYLE_HASH__": "readonly",
+    "Cloudflare": "readonly"
+  },
+  "ignorePatterns": ["public/orm/**"],
+  "rules": {},
+  "overrides": [
+    {
+      "files": ["scripts/styles/fragments/**/*.mjs"],
+      "rules": {
+        "no-unused-vars": "off"
+      }
+    },
+    {
+      "files": ["src/worker.ts", "src/**/*.worker.test.ts"],
+      "rules": {
+        "no-unused-expressions": "off"
+      }
+    }
+  ]
+}

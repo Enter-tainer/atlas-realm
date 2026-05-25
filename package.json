@@ -3,7 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@10.24.0",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
@@ -14,18 +13,11 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config vitest.config.js",
     "test:worker": "vitest run --config vitest.worker.config.js",
-    "test:all": "pnpm test && pnpm test:worker"
-  },
-  "devDependencies": {
-    "@cloudflare/vite-plugin": "^1.28.0",
-    "@cloudflare/vitest-pool-workers": "^0.16.9",
-    "@cloudflare/workers-types": "^4.20260524.1",
-    "@types/geojson": "^7946.0.16",
-    "typescript": "^6.0.3",
-    "vite": "^7.1.0",
-    "vitest": "^4.1.7",
-    "wrangler": "^4.73.0",
-    "yaml": "^2.8.2"
+    "test:all": "pnpm test && pnpm test:worker",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check"
   },
   "dependencies": {
     "@mapbox/vector-tile": "^2.0.4",
@@ -36,5 +28,19 @@
     "partysocket": "^1.1.18",
     "pbf": "^4.0.1",
     "pmtiles": "^4.4.0"
-  }
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.28.0",
+    "@cloudflare/vitest-pool-workers": "^0.16.9",
+    "@cloudflare/workers-types": "^4.20260524.1",
+    "@types/geojson": "^7946.0.16",
+    "oxfmt": "^0.51.0",
+    "oxlint": "^1.66.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.1.0",
+    "vitest": "^4.1.7",
+    "wrangler": "^4.73.0",
+    "yaml": "^2.8.2"
+  },
+  "packageManager": "pnpm@10.24.0"
 }
