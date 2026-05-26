@@ -452,7 +452,12 @@ function buildSegmentFeatures(route: OsrmRoute) {
   return features;
 }
 
-export function routeToGeoJson(route: OsrmRoute, waypoints: OsrmWaypoint[] | undefined, from: LngLatLike, to: LngLatLike) {
+export function routeToGeoJson(
+  route: OsrmRoute,
+  waypoints: OsrmWaypoint[] | undefined,
+  from: LngLatLike,
+  to: LngLatLike,
+) {
   const distance = Number(route.distance);
   const duration = Number(route.duration);
   const distanceText = formatDistance(distance);

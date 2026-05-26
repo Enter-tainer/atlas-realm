@@ -122,6 +122,7 @@ type DrawingBoundsOptions = {
 const DEFAULT_DRAWING_COLOR = '#2563eb';
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const ID_RE = /^[0-9a-zA-Z_-]{1,96}$/;
+const MAX_DRAWING_POINTS = 512;
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
@@ -174,10 +175,16 @@ export function sanitizeLngLat(value: unknown): LngLatTuple | null {
   return [Number(Math.min(180, Math.max(-180, lng)).toFixed(6)), Number(Math.min(85, Math.max(-85, lat)).toFixed(6))];
 }
 
-function sanitizeLngLatList(value: unknown, minLength: number) {
+function sanitizeLngLatList(value: unknown, minLength: number, maxLength = MAX_DRAWING_POINTS) {
   if (!Array.isArray(value)) return null;
   const points = value.map(sanitizeLngLat).filter(Boolean) as LngLatTuple[];
-  return points.length >= minLength ? points.slice(0, 128) : null;
+  return points.length >= minLength ? points.slice(0, maxLength) : null;
+}
+
+function sanitizeRouteGeometry(value: unknown) {
+  if (!Array.isArray(value)) return null;
+  const points = value.map(sanitizeLngLat).filter(Boolean) as LngLatTuple[];
+  return points.length >= 2 ? points : null;
 }
 
 function sanitizeRouteProfile(value: unknown): DrawingRouteProfile {
@@ -278,7 +285,7 @@ export function sanitizeDrawingFeature(value: unknown, now = Date.now()): Drawin
   }
 
   const waypoints = sanitizeLngLatList(value.waypoints, 2);
-  const geometry = sanitizeLngLatList(value.geometry, 2) || waypoints;
+  const geometry = sanitizeRouteGeometry(value.geometry) || waypoints;
   if (!waypoints || !geometry) return null;
   return {
     ...base,
@@ -458,57 +465,12 @@ function lineBearing(points: LngLatTuple[], fraction: number) {
   return Number(((Math.atan2(end[0] - start[0], end[1] - start[1]) * 180) / Math.PI).toFixed(2));
 }
 
-function lineLabelFeature(feature: DrawingPathFeature | DrawingRouteFeature, coordinates: LngLatTuple[]) {
-  if (!feature.label && !feature.note) return null;
-  return {
-    type: 'Feature' as const,
-    properties: {
-      ...featureBaseProperties(feature, 'drawing_label'),
-      parent_id: feature.id,
-      drawing_id: feature.id,
-    },
-    geometry: {
-      type: 'Point' as const,
-      coordinates: lineCoordinateAt(coordinates, 0.5),
-    },
-  };
-}
-
 function closeRing(points: LngLatTuple[]) {
   const ring = points.slice();
   const first = ring[0];
   const last = ring[ring.length - 1];
   if (first && last && (first[0] !== last[0] || first[1] !== last[1])) ring.push(first);
   return ring;
-}
-
-function polygonLabelCoordinate(points: LngLatTuple[]): LngLatTuple {
-  const coordinateCount = Math.max(1, points.length);
-  const total = points.reduce(
-    (acc, point) => {
-      acc[0] += point[0];
-      acc[1] += point[1];
-      return acc;
-    },
-    [0, 0] as LngLatTuple,
-  );
-  return [Number((total[0] / coordinateCount).toFixed(6)), Number((total[1] / coordinateCount).toFixed(6))];
-}
-
-function polygonLabelFeature(feature: DrawingPolygonFeature) {
-  if (!feature.label && !feature.note) return null;
-  return {
-    type: 'Feature' as const,
-    properties: {
-      ...featureBaseProperties(feature, 'drawing_label'),
-      parent_id: feature.id,
-      drawing_id: feature.id,
-    },
-    geometry: {
-      type: 'Point' as const,
-      coordinates: polygonLabelCoordinate(feature.points),
-    },
-  };
 }
 
 function lineArrowFeature(feature: DrawingPathFeature | DrawingRouteFeature, coordinates: LngLatTuple[]) {
@@ -603,11 +565,11 @@ export function drawingFeatureToGeoJsonFeatures(feature: DrawingFeature): Featur
   }
 
   if (feature.type === 'polygon') {
-    return [polygonFeature(feature), polygonOutlineFeature(feature), polygonLabelFeature(feature)].filter(Boolean);
+    return [polygonFeature(feature), polygonOutlineFeature(feature)];
   }
 
   const coordinates = feature.type === 'route' ? feature.geometry : feature.points;
-  const helpers = [lineLabelFeature(feature, coordinates), lineArrowFeature(feature, coordinates)].filter(Boolean);
+  const helpers = [lineArrowFeature(feature, coordinates)].filter(Boolean);
   return [lineFeature(feature, feature.type === 'route' ? 'drawing_route' : 'drawing_path', coordinates), ...helpers];
 }
 

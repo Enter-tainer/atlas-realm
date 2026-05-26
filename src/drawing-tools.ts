@@ -1,26 +1,30 @@
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import CheckIcon from 'lucide/dist/esm/icons/check.mjs';
-import CircleDotIcon from 'lucide/dist/esm/icons/circle-dot.mjs';
 import MapPinIcon from 'lucide/dist/esm/icons/map-pin.mjs';
 import MousePointerIcon from 'lucide/dist/esm/icons/mouse-pointer-2.mjs';
 import PenLineIcon from 'lucide/dist/esm/icons/pen-line.mjs';
-import PentagonIcon from 'lucide/dist/esm/icons/pentagon.mjs';
 import PencilIcon from 'lucide/dist/esm/icons/pencil.mjs';
+import PentagonIcon from 'lucide/dist/esm/icons/pentagon.mjs';
 import RouteIcon from 'lucide/dist/esm/icons/route.mjs';
 import TrashIcon from 'lucide/dist/esm/icons/trash-2.mjs';
 import TypeIcon from 'lucide/dist/esm/icons/type.mjs';
 import UndoIcon from 'lucide/dist/esm/icons/undo-2.mjs';
 import XIcon from 'lucide/dist/esm/icons/x.mjs';
+import maplibregl from 'maplibre-gl';
+import { canSubmitDrawingDraft, resolveDrawingDraftCompletion } from './drawing-draft.js';
+import { defaultDrawingFeatureLabel } from './drawing-labels.js';
 import { createDrawingId, sanitizeDrawingText } from './drawing-model.js';
 import { buildRouteUrl, formatDistance, formatDuration, normalizeEndpoint } from './routing.js';
-import { runWhenStyleReady } from './style-ready.js';
+import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
+import type { DrawingDraftMode } from './drawing-draft.js';
 import type { DrawingFeature, DrawingRouteProfile, LngLatTuple } from './drawing-model.js';
 import type { DrawingStore } from './drawing-store.js';
 import type { OsrmRouteResponse } from './routing.js';
 
 const DRAWING_PICKER_DATASET_KEY = 'drawingPickerActive';
 const DRAWING_ENDPOINT_KEY = 'orm-drawing-osrm-endpoint';
+const DRAWING_ACTIVE_FEATURE_EVENT = 'drawing:activefeaturechange';
 const DEFAULT_COLOR = '#2563eb';
 const COLOR_SWATCHES = ['#2563eb', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#7c3aed', '#db2777'];
 
@@ -29,11 +33,16 @@ type DrawingMode = 'select' | 'point' | 'text' | 'path' | 'polygon' | 'route';
 type DrawingMapClickEvent = {
   lngLat: LngLatLike;
   point: unknown;
+  preventDefault?: () => void;
   originalEvent?: Event & { drawingHandled?: boolean };
 };
+type DrawingMapDblClickEvent = DrawingMapClickEvent;
 type RenderedFeatureLike = {
   source?: string;
   properties?: Record<string, unknown>;
+};
+type DrawingFeatureEventDetail = {
+  id?: unknown;
 };
 type DrawingSource = {
   setData(data: object): void;
@@ -44,13 +53,21 @@ type DrawingControl = {
 };
 type DrawingMap = {
   _styleInitialized?: boolean;
+  _styleInfrastructureInitialized?: boolean;
+  style?: { _loaded?: boolean };
   isStyleLoaded(): boolean | void;
   setGlobalStateProperty(propertyName: string, value: unknown): void;
-  once(event: 'load', callback: () => void): void;
+  once(event: 'load' | 'style.load', callback: () => void): void;
+  on(event: 'load', handler: () => void): void;
+  on(event: 'style.load', handler: () => void): void;
+  off(event: 'load', handler: () => void): void;
+  off(event: 'style.load', handler: () => void): void;
   addControl(control: DrawingControl, position?: string): void;
   getContainer(): HTMLElement;
   on(event: 'click', handler: (event: DrawingMapClickEvent) => void): void;
+  on(event: 'dblclick', handler: (event: DrawingMapDblClickEvent) => void): void;
   off(event: 'click', handler: (event: DrawingMapClickEvent) => void): void;
+  off(event: 'dblclick', handler: (event: DrawingMapDblClickEvent) => void): void;
   addSource(id: string, source: object): void;
   addLayer(layer: object): void;
   getSource(id: string): unknown;
@@ -90,6 +107,7 @@ function appendIconLabel(parent: Element, icon: LucideIcon, label: string) {
 
 function stopMapControlPropagation(node: Element) {
   node.addEventListener('contextmenu', (event: Event) => event.stopPropagation());
+  node.addEventListener('click', (event: Event) => event.stopPropagation());
   node.addEventListener('dblclick', (event: Event) => event.stopPropagation());
   node.addEventListener('mousedown', (event: Event) => event.stopPropagation());
   node.addEventListener('touchstart', (event: Event) => event.stopPropagation(), { passive: true });
@@ -158,9 +176,54 @@ function asDrawingSource(source: unknown): DrawingSource | null {
   return source && typeof (source as DrawingSource).setData === 'function' ? (source as DrawingSource) : null;
 }
 
+function isDrawingDraftMode(mode: DrawingMode): mode is DrawingDraftMode {
+  return mode === 'path' || mode === 'polygon' || mode === 'route';
+}
+
 function profileFromValue(value: string): DrawingRouteProfile {
   if (value === 'walking' || value === 'cycling') return value;
   return 'driving';
+}
+
+function osrmWaypointName(value: unknown) {
+  if (!value || typeof value !== 'object') return '';
+  return sanitizeDrawingText((value as { name?: unknown }).name, 48);
+}
+
+function coordinateAt(points: LngLatTuple[], fraction: number): LngLatTuple {
+  if (points.length === 0) return [0, 0];
+  if (points.length === 1) return points[0];
+  const index = Math.min(points.length - 2, Math.max(0, Math.floor((points.length - 1) * fraction)));
+  const start = points[index];
+  const end = points[index + 1];
+  return [Number(((start[0] + end[0]) / 2).toFixed(6)), Number(((start[1] + end[1]) / 2).toFixed(6))];
+}
+
+function averageCoordinate(points: LngLatTuple[]): LngLatTuple {
+  const total = points.reduce(
+    (acc, point) => {
+      acc[0] += point[0];
+      acc[1] += point[1];
+      return acc;
+    },
+    [0, 0] as LngLatTuple,
+  );
+  const count = Math.max(1, points.length);
+  return [Number((total[0] / count).toFixed(6)), Number((total[1] / count).toFixed(6))];
+}
+
+function featureAnchor(feature: DrawingFeature): LngLatTuple {
+  if (feature.type === 'point' || feature.type === 'text') return feature.coordinate;
+  if (feature.type === 'polygon') return averageCoordinate(feature.points);
+  return coordinateAt(feature.type === 'route' ? feature.geometry : feature.points, 0.5);
+}
+
+function drawingTypeLabel(feature: DrawingFeature) {
+  if (feature.type === 'point') return 'Marker';
+  if (feature.type === 'text') return 'Text';
+  if (feature.type === 'path') return 'Line';
+  if (feature.type === 'polygon') return 'Area';
+  return 'Route';
 }
 
 class DrawingToolsControl {
@@ -186,14 +249,27 @@ class DrawingToolsControl {
   _status: HTMLElement;
   _selectHint: HTMLElement;
   _lineControls: HTMLElement;
+  _editorPopup: maplibregl.Popup | null = null;
+  _editorFeatureId = '';
+  _editorLabelInput: HTMLInputElement | null = null;
+  _editorNoteInput: HTMLTextAreaElement | null = null;
+  _editorColorInput: HTMLInputElement | null = null;
+  _editorDirectedInput: HTMLInputElement | null = null;
+  _editorSwatches: HTMLElement | null = null;
   _expanded = false;
   _mode: DrawingMode = 'select';
   _selectedId = '';
+  _editingId = '';
+  _lastActiveFeatureId = '';
   _draftPoints: LngLatTuple[] = [];
   _isRouting = false;
+  _drawingReady = false;
   _color = DEFAULT_COLOR;
   _abortController: AbortController | null = null;
   _boundMapClick: (event: DrawingMapClickEvent) => void;
+  _boundMapDblClick: (event: DrawingMapDblClickEvent) => void;
+  _boundFeatureClick: (event: Event) => void;
+  _boundFeatureDblClick: (event: Event) => void;
   _boundKeydown: (event: KeyboardEvent) => void;
   _boundOverlayPanelOpen: () => void;
   _boundRoutingPanelOpen: () => void;
@@ -205,6 +281,9 @@ class DrawingToolsControl {
     this._store = store;
     this._modeButtons = {} as Record<DrawingMode, HTMLButtonElement>;
     this._boundMapClick = (event) => this._handleMapClick(event);
+    this._boundMapDblClick = (event) => this._handleMapDblClick(event);
+    this._boundFeatureClick = (event) => this._handleFeatureClick(event);
+    this._boundFeatureDblClick = (event) => this._handleFeatureDblClick(event);
     this._boundKeydown = (event) => this._handleKeydown(event);
     this._boundOverlayPanelOpen = () => this.setExpanded(false);
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
@@ -352,6 +431,9 @@ class DrawingToolsControl {
     this._installDraftLayer();
     this._unsubscribeStore = this._store.subscribe(() => this._sync());
     map.on('click', this._boundMapClick);
+    map.on('dblclick', this._boundMapDblClick);
+    map.getContainer().addEventListener('drawing:featureclick', this._boundFeatureClick);
+    map.getContainer().addEventListener('drawing:featuredblclick', this._boundFeatureDblClick);
     map.getContainer().addEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
     map.getContainer().addEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     map.getContainer().addEventListener('drawing:open', this._boundDrawingOpen);
@@ -365,11 +447,15 @@ class DrawingToolsControl {
     this._abortController?.abort();
     this._unsubscribeStore?.();
     this._map.off('click', this._boundMapClick);
+    this._map.off('dblclick', this._boundMapDblClick);
+    this._map.getContainer().removeEventListener('drawing:featureclick', this._boundFeatureClick);
+    this._map.getContainer().removeEventListener('drawing:featuredblclick', this._boundFeatureDblClick);
     this._map.getContainer().removeEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
     this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     this._map.getContainer().removeEventListener('drawing:open', this._boundDrawingOpen);
     this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
+    this._closeEditor();
     this._removeDraftLayer();
     this._panel?.remove();
     this._control?.remove();
@@ -398,6 +484,7 @@ class DrawingToolsControl {
     } else {
       this._setMode('select');
       this._clearDraft();
+      this._closeEditor();
     }
     this._map.getContainer().dataset.drawingPanelOpen = this._expanded ? 'true' : 'false';
     this._button.classList.toggle('maplibregl-ctrl-drawing-enabled', this._expanded);
@@ -413,6 +500,8 @@ class DrawingToolsControl {
     const isDraftMode = mode === 'path' || mode === 'polygon' || mode === 'route';
     if (!isDraftMode || previousMode !== mode) this._clearDraft();
     if (mode !== 'select') this._selectedId = '';
+    this._editingId = '';
+    this._closeEditor({ cleanupBlankText: true });
     this._sync();
   }
 
@@ -448,11 +537,16 @@ class DrawingToolsControl {
     if (!this._expanded) return;
     const container = this._map.getContainer();
     if (container.dataset.weatherPickerActive === 'true' || container.dataset.routingPickerActive === 'true') return;
-    this._store.patchLayer('drawing-default', { visible: true });
+    if (this._dismissEditorFromMapClick(event)) return;
     if (this._mode === 'select') {
-      this._selectFeatureAt(event.point);
+      if (this._selectFeatureAt(event.point) && event.originalEvent) event.originalEvent.drawingHandled = true;
       return;
     }
+    if (!this._drawingReady) {
+      this._setStatus('Map style loading...');
+      return;
+    }
+    this._store.patchLayer('drawing-default', { visible: true });
 
     if (event.originalEvent) event.originalEvent.drawingHandled = true;
     const coordinate = asLngLatTuple(event.lngLat);
@@ -470,14 +564,59 @@ class DrawingToolsControl {
     if (this._mode === 'route' && this._draftPoints.length >= 2) this._finishDraftLine();
   }
 
-  _featureBase(type: DrawingFeature['type']) {
+  _handleMapDblClick(event: DrawingMapDblClickEvent) {
+    if (!this._drawingReady) return;
+    const id = this._featureIdAt(event.point);
+    if (!id) return;
+    event.preventDefault?.();
+    event.originalEvent?.preventDefault();
+    event.originalEvent?.stopPropagation();
+    if (event.originalEvent) event.originalEvent.drawingHandled = true;
+    this._editFeatureById(id);
+  }
+
+  _handleFeatureClick(event: Event) {
+    const id = (event as CustomEvent<DrawingFeatureEventDetail>).detail?.id;
+    if (typeof id !== 'string' || !this._expanded || this._mode !== 'select') return;
+    this._selectFeatureById(id);
+  }
+
+  _handleFeatureDblClick(event: Event) {
+    const id = (event as CustomEvent<DrawingFeatureEventDetail>).detail?.id;
+    if (typeof id !== 'string') return;
+    this._editFeatureById(id);
+  }
+
+  _selectFeatureById(id: string) {
+    if (!this._store.getDoc().features[id]) return false;
+    this._selectedId = id;
+    this._editingId = '';
+    this._closeEditor({ cleanupBlankText: true });
+    this._syncFormFromSelected();
+    this._sync();
+    return true;
+  }
+
+  _editFeatureById(id: string) {
+    if (!this._store.getDoc().features[id]) return false;
+    if (!this._expanded) this.setExpanded(true);
+    this._selectedId = id;
+    this._editingId = id;
+    this._mode = 'select';
+    this._clearDraft();
+    this._syncFormFromSelected();
+    this._sync();
+    return true;
+  }
+
+  _featureBase(type: DrawingFeature['type'], label = defaultDrawingFeatureLabel(this._store.getDoc(), type)) {
     const now = Date.now();
     return {
       id: createDrawingId(`drawing-${type}`),
       layerId: 'drawing-default',
       type,
-      label: sanitizeDrawingText(this._labelInput.value, 120),
-      note: sanitizeDrawingText(this._noteInput.value, 1200),
+      label,
+      note: '',
       color: this._color,
       createdAt: now,
       updatedAt: now,
@@ -493,38 +632,41 @@ class DrawingToolsControl {
     };
     this._store.upsertFeature(feature);
     this._selectedId = feature.id;
-    this._mode = 'select';
+    this._editingId = feature.id;
     this._setStatus('Marker added');
     this._syncFormFromSelected();
     this._sync();
   }
 
   _addText(coordinate: LngLatTuple) {
-    const label = sanitizeDrawingText(this._labelInput.value, 120) || sanitizeDrawingText(this._noteInput.value, 1200);
-    if (!label) {
-      this._setStatus('Add label or note');
-      return;
-    }
     const feature = {
       ...this._featureBase('text'),
       type: 'text' as const,
-      label,
       coordinate,
     };
     this._store.upsertFeature(feature);
     this._selectedId = feature.id;
-    this._mode = 'select';
+    this._editingId = feature.id;
     this._setStatus('Text added');
     this._syncFormFromSelected();
     this._sync();
   }
 
   async _finishDraftLine() {
+    if (!isDrawingDraftMode(this._mode)) return;
+    const completion = resolveDrawingDraftCompletion(this._mode, this._draftPoints.length);
+    if (completion.action === 'discard') {
+      this._clearDraft();
+      this._setStatus(completion.status);
+      this._sync();
+      return;
+    }
+    if (completion.action === 'wait') {
+      this._setStatus(completion.status);
+      return;
+    }
+
     if (this._mode === 'path') {
-      if (this._draftPoints.length < 2) {
-        this._setStatus('Add at least 2 points');
-        return;
-      }
       const feature = {
         ...this._featureBase('path'),
         type: 'path' as const,
@@ -534,7 +676,7 @@ class DrawingToolsControl {
       };
       this._store.upsertFeature(feature);
       this._selectedId = feature.id;
-      this._mode = 'select';
+      this._editingId = feature.id;
       this._clearDraft();
       this._setStatus('Line added');
       this._syncFormFromSelected();
@@ -542,10 +684,6 @@ class DrawingToolsControl {
       return;
     }
     if (this._mode === 'polygon') {
-      if (this._draftPoints.length < 3) {
-        this._setStatus('Add at least 3 points');
-        return;
-      }
       const feature = {
         ...this._featureBase('polygon'),
         type: 'polygon' as const,
@@ -555,16 +693,11 @@ class DrawingToolsControl {
       };
       this._store.upsertFeature(feature);
       this._selectedId = feature.id;
-      this._mode = 'select';
+      this._editingId = feature.id;
       this._clearDraft();
       this._setStatus('Area added');
       this._syncFormFromSelected();
       this._sync();
-      return;
-    }
-    if (this._mode !== 'route') return;
-    if (this._draftPoints.length < 2) {
-      this._setStatus('Pick start and end');
       return;
     }
     await this._addRoute(this._draftPoints[0], this._draftPoints[this._draftPoints.length - 1]);
@@ -593,8 +726,18 @@ class DrawingToolsControl {
       }
       const distance = Number(route.distance);
       const duration = Number(route.duration);
+      const distanceText = formatDistance(distance);
+      const durationText = formatDuration(duration);
+      const waypoints = data.waypoints || [];
+      const routeLabel = defaultDrawingFeatureLabel(this._store.getDoc(), 'route', {
+        profile,
+        distanceText,
+        durationText,
+        fromName: osrmWaypointName(waypoints[0]),
+        toName: osrmWaypointName(waypoints[waypoints.length - 1]),
+      });
       const feature = {
-        ...this._featureBase('route'),
+        ...this._featureBase('route', routeLabel),
         type: 'route' as const,
         waypoints: [from, to],
         profile,
@@ -603,12 +746,12 @@ class DrawingToolsControl {
         geometry: route.geometry.coordinates as LngLatTuple[],
         distance: Number.isFinite(distance) ? distance : null,
         duration: Number.isFinite(duration) ? duration : null,
-        distanceText: formatDistance(distance),
-        durationText: formatDuration(duration),
+        distanceText,
+        durationText,
       };
       this._store.upsertFeature(feature);
       this._selectedId = feature.id;
-      this._mode = 'select';
+      this._editingId = feature.id;
       this._clearDraft();
       this._setStatus(['Route added', feature.distanceText, feature.durationText].filter(Boolean).join(' - '));
       this._syncFormFromSelected();
@@ -625,12 +768,23 @@ class DrawingToolsControl {
   }
 
   _selectFeatureAt(point: unknown) {
+    const id = this._featureIdAt(point);
+    if (!id) {
+      this._selectedId = '';
+      this._editingId = '';
+      this._closeEditor({ cleanupBlankText: true });
+      this._syncFormFromSelected();
+      this._sync();
+      return false;
+    }
+    return this._selectFeatureById(id);
+  }
+
+  _featureIdAt(point: unknown) {
+    if (!this._drawingReady) return '';
     const features = this._map.queryRenderedFeatures(point);
     const feature = features.find((item) => featureIdFromRendered(item));
-    const id = feature ? featureIdFromRendered(feature) : '';
-    this._selectedId = id;
-    this._syncFormFromSelected();
-    this._sync();
+    return feature ? featureIdFromRendered(feature) : '';
   }
 
   _selectedFeature() {
@@ -671,11 +825,173 @@ class DrawingToolsControl {
     this._store.upsertFeature(next);
   }
 
+  _updateEditingFromEditor() {
+    const feature = this._selectedFeature();
+    if (!feature || this._editingId !== feature.id) return;
+    const color = this._editorColorInput?.value || feature.color || DEFAULT_COLOR;
+    const next: DrawingFeature = {
+      ...feature,
+      label: sanitizeDrawingText(this._editorLabelInput?.value || '', 120),
+      note: sanitizeDrawingText(this._editorNoteInput?.value || '', 1200),
+      color: /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR,
+      updatedAt: Date.now(),
+    } as DrawingFeature;
+    if (next.type === 'path' || next.type === 'route') {
+      next.directed = this._editorDirectedInput?.checked !== false;
+    }
+    this._store.upsertFeature(next);
+    this._syncEditorSwatches(next.color);
+  }
+
+  _setEditorColor(color: string) {
+    const sanitized = /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR;
+    if (this._editorColorInput) this._editorColorInput.value = sanitized;
+    this._updateEditingFromEditor();
+  }
+
+  _closeEditor({ cleanupBlankText = false }: { cleanupBlankText?: boolean } = {}) {
+    const id = this._editorFeatureId;
+    this._editorPopup?.remove();
+    this._editorPopup = null;
+    this._editorFeatureId = '';
+    this._editorLabelInput = null;
+    this._editorNoteInput = null;
+    this._editorColorInput = null;
+    this._editorDirectedInput = null;
+    this._editorSwatches = null;
+    if (cleanupBlankText && id) {
+      const feature = this._store.getDoc().features[id];
+      if (feature?.type === 'text' && !feature.label && !feature.note) {
+        this._store.deleteFeature(id);
+        if (this._selectedId === id) this._selectedId = '';
+        if (this._editingId === id) this._editingId = '';
+      }
+    }
+  }
+
+  _dismissEditorFromMapClick(event: DrawingMapClickEvent) {
+    if (!this._editorPopup || !this._editorFeatureId) return false;
+    const target = event.originalEvent?.target;
+    if (target instanceof Element && target.closest('.drawing-edit-popup')) return false;
+    event.preventDefault?.();
+    event.originalEvent?.preventDefault();
+    event.originalEvent?.stopPropagation();
+    if (event.originalEvent) event.originalEvent.drawingHandled = true;
+    this._editingId = '';
+    this._closeEditor({ cleanupBlankText: true });
+    this._sync();
+    return true;
+  }
+
+  _openEditor(feature: DrawingFeature) {
+    if (this._editorPopup && this._editorFeatureId === feature.id) {
+      this._editorPopup.setLngLat(featureAnchor(feature));
+      return;
+    }
+    this._closeEditor({ cleanupBlankText: true });
+    this._map.getContainer().dispatchEvent(new CustomEvent('drawing:editopen', { detail: { id: feature.id } }));
+
+    const editor = el('div', 'drawing-editor');
+    stopMapControlPropagation(editor);
+
+    const header = el('div', 'drawing-editor-header', editor);
+    const title = el('div', 'drawing-editor-title', header);
+    title.textContent = drawingTypeLabel(feature);
+    const closeButton = el('button', 'drawing-editor-close', header);
+    closeButton.type = 'button';
+    closeButton.title = 'Close editor';
+    closeButton.setAttribute('aria-label', 'Close editor');
+    appendIcon(closeButton, XIcon);
+    closeButton.addEventListener('click', () => {
+      this._editingId = '';
+      this._closeEditor({ cleanupBlankText: true });
+      this._sync();
+    });
+
+    const labelField = el('label', 'drawing-editor-field', editor);
+    const labelText = el('span', 'drawing-field-label', labelField);
+    labelText.textContent = 'Label';
+    this._editorLabelInput = el('input', 'drawing-input', labelField);
+    this._editorLabelInput.type = 'text';
+    this._editorLabelInput.maxLength = 120;
+    this._editorLabelInput.value = feature.label || '';
+    this._editorLabelInput.placeholder = feature.type === 'text' ? 'Text on map' : 'Label';
+    this._editorLabelInput.addEventListener('input', () => this._updateEditingFromEditor());
+
+    const noteField = el('label', 'drawing-editor-field', editor);
+    const noteText = el('span', 'drawing-field-label', noteField);
+    noteText.textContent = 'Note';
+    this._editorNoteInput = el('textarea', 'drawing-note', noteField);
+    this._editorNoteInput.maxLength = 1200;
+    this._editorNoteInput.rows = 3;
+    this._editorNoteInput.value = feature.note || '';
+    this._editorNoteInput.addEventListener('input', () => this._updateEditingFromEditor());
+
+    const styleField = el('div', 'drawing-editor-field', editor);
+    const styleText = el('span', 'drawing-field-label', styleField);
+    styleText.textContent = 'Color';
+    this._editorSwatches = el('div', 'drawing-swatches', styleField);
+    for (const color of COLOR_SWATCHES) {
+      const swatch = el('button', 'drawing-swatch', this._editorSwatches);
+      swatch.type = 'button';
+      swatch.title = color;
+      swatch.style.backgroundColor = color;
+      swatch.dataset.color = color;
+      swatch.addEventListener('click', () => this._setEditorColor(color));
+    }
+    this._editorColorInput = el('input', 'drawing-color-input', styleField);
+    this._editorColorInput.type = 'color';
+    this._editorColorInput.value = feature.color || DEFAULT_COLOR;
+    this._editorColorInput.addEventListener('input', () =>
+      this._setEditorColor(this._editorColorInput?.value || DEFAULT_COLOR),
+    );
+
+    if (feature.type === 'path' || feature.type === 'route') {
+      const directedField = el('label', 'drawing-check-field', editor);
+      this._editorDirectedInput = el('input', undefined, directedField);
+      this._editorDirectedInput.type = 'checkbox';
+      this._editorDirectedInput.checked = feature.directed !== false;
+      const directedText = el('span', undefined, directedField);
+      directedText.textContent = 'Directed';
+      this._editorDirectedInput.addEventListener('change', () => this._updateEditingFromEditor());
+    }
+
+    const actions = el('div', 'drawing-editor-actions', editor);
+    const deleteButton = el('button', 'drawing-action drawing-danger', actions);
+    deleteButton.type = 'button';
+    appendIconLabel(deleteButton, TrashIcon, 'Delete');
+    deleteButton.addEventListener('click', () => this._deleteSelected());
+
+    this._editorFeatureId = feature.id;
+    this._syncEditorSwatches(feature.color);
+    this._editorPopup = new maplibregl.Popup({
+      className: 'drawing-edit-popup',
+      closeButton: false,
+      closeOnClick: false,
+      maxWidth: '320px',
+      offset: 12,
+    })
+      .setLngLat(featureAnchor(feature))
+      .setDOMContent(editor)
+      .addTo(this._map as unknown as maplibregl.Map);
+    this._editorLabelInput.focus();
+    this._editorLabelInput.select();
+  }
+
+  _syncEditorSwatches(color: string) {
+    if (!this._editorSwatches) return;
+    for (const swatch of this._editorSwatches.querySelectorAll<HTMLElement>('.drawing-swatch')) {
+      swatch.classList.toggle('selected', swatch.dataset.color === color);
+    }
+  }
+
   _deleteSelected() {
     const id = this._selectedId;
     if (!id) return;
     this._store.deleteFeature(id);
     this._selectedId = '';
+    this._editingId = '';
+    this._closeEditor();
     this._setStatus('Deleted');
     this._sync();
   }
@@ -692,7 +1008,8 @@ class DrawingToolsControl {
   }
 
   _installDraftLayer() {
-    runWhenStyleReady(this._map, () => {
+    runWhenStyleInfrastructureReady(this._map, () => {
+      if (!this._map) return;
       if (!this._map.getSource('drawing-draft-source')) {
         this._map.addSource('drawing-draft-source', {
           type: 'geojson',
@@ -740,7 +1057,9 @@ class DrawingToolsControl {
           },
         });
       }
+      this._drawingReady = true;
       this._syncDraftSource();
+      this._sync();
     });
   }
 
@@ -779,59 +1098,84 @@ class DrawingToolsControl {
     this._status.classList.toggle('visible', Boolean(message));
   }
 
+  _syncActiveFeatureState() {
+    const activeId = this._editingId || this._selectedId;
+    if (activeId === this._lastActiveFeatureId) return;
+    this._lastActiveFeatureId = activeId;
+    this._map.getContainer().dispatchEvent(
+      new CustomEvent(DRAWING_ACTIVE_FEATURE_EVENT, {
+        detail: {
+          activeId,
+          selectedId: this._selectedId,
+          editingId: this._editingId,
+        },
+      }),
+    );
+  }
+
   _sync() {
     if (!this._map) return;
+    this._syncActiveFeatureState();
     const doc = this._store.getDoc();
     const featureCount = doc.featureOrder.length;
     const selected = this._selectedFeature();
     const draftCount = this._draftPoints.length;
-    this._summary.textContent =
-      draftCount > 0
+    const mapLoading = !this._drawingReady;
+    this._summary.textContent = mapLoading
+      ? 'Map style loading'
+      : draftCount > 0
         ? `${draftCount} draft point${draftCount === 1 ? '' : 's'}`
         : selected
           ? `${selected.type} selected`
           : `${featureCount} feature${featureCount === 1 ? '' : 's'}`;
     this._map.getContainer().dataset[DRAWING_PICKER_DATASET_KEY] =
-      this._expanded && this._mode !== 'select' ? 'true' : 'false';
+      this._expanded && this._drawingReady && this._mode !== 'select' ? 'true' : 'false';
 
     for (const [mode, button] of Object.entries(this._modeButtons) as Array<[DrawingMode, HTMLButtonElement]>) {
       button.classList.toggle('active', mode === this._mode);
-      button.disabled = !this._expanded || this._isRouting;
+      button.disabled = !this._expanded || this._isRouting || (mapLoading && mode !== 'select');
     }
 
-    const isDraftMode = this._mode === 'path' || this._mode === 'polygon' || this._mode === 'route';
+    const draftMode = isDrawingDraftMode(this._mode) ? this._mode : null;
+    const isDraftMode = Boolean(draftMode);
     const isLineMode = this._mode === 'path' || this._mode === 'route';
     const isLineSelected = selected?.type === 'path' || selected?.type === 'route';
     const isRouteMode = this._mode === 'route' || selected?.type === 'route';
-    const showFeatureFields = this._mode !== 'select' || Boolean(selected);
+    const isEditingSelected = Boolean(selected && this._editingId === selected.id);
+    const showDraftStyle = this._mode !== 'select' && !isEditingSelected;
     this._selectHint.hidden = this._mode !== 'select' || Boolean(selected);
-    this._labelInput.closest<HTMLElement>('.drawing-field').hidden = !showFeatureFields;
-    this._noteInput.closest<HTMLElement>('.drawing-field').hidden = !showFeatureFields;
-    this._customColor.closest<HTMLElement>('.drawing-field').hidden = !showFeatureFields;
-    this._lineControls.hidden = !(isLineMode || isLineSelected);
-    this._endpointInput.closest<HTMLElement>('.drawing-field').hidden = !isRouteMode;
-    this._profileSelect.closest<HTMLElement>('.drawing-field').hidden = !isRouteMode;
-    this._directedInput.disabled = !this._expanded || this._isRouting || !(isLineMode || isLineSelected);
-    this._undoButton.hidden = !isDraftMode;
-    this._doneButton.hidden = !isDraftMode;
-    this._deleteButton.hidden = !selected;
-    this._undoButton.disabled = !this._expanded || this._isRouting || this._draftPoints.length === 0;
+    this._labelInput.closest<HTMLElement>('.drawing-field').hidden = true;
+    this._noteInput.closest<HTMLElement>('.drawing-field').hidden = true;
+    this._customColor.closest<HTMLElement>('.drawing-field').hidden = !showDraftStyle;
+    this._lineControls.hidden = isEditingSelected || !(isLineMode || isLineSelected);
+    this._endpointInput.closest<HTMLElement>('.drawing-field').hidden = isEditingSelected || !isRouteMode;
+    this._profileSelect.closest<HTMLElement>('.drawing-field').hidden = isEditingSelected || !isRouteMode;
+    this._directedInput.disabled = !this._expanded || this._isRouting || mapLoading || !(isLineMode || isLineSelected);
+    this._undoButton.hidden = isEditingSelected || !isDraftMode;
+    this._doneButton.hidden = isEditingSelected || !isDraftMode;
+    this._deleteButton.hidden = !selected || isEditingSelected;
+    this._undoButton.disabled = !this._expanded || this._isRouting || mapLoading || this._draftPoints.length === 0;
     this._doneButton.disabled =
       !this._expanded ||
       this._isRouting ||
-      !isDraftMode ||
-      this._draftPoints.length < (this._mode === 'polygon' ? 3 : 2);
+      mapLoading ||
+      !draftMode ||
+      !canSubmitDrawingDraft(draftMode, this._draftPoints.length);
     this._deleteButton.disabled = !this._expanded || this._isRouting || !selected;
     this._labelInput.disabled = !this._expanded || this._isRouting;
     this._noteInput.disabled = !this._expanded || this._isRouting;
-    this._customColor.disabled = !this._expanded || this._isRouting;
+    this._customColor.disabled = !this._expanded || this._isRouting || mapLoading;
+    if (this._expanded && mapLoading) this._setStatus('Map style loading...');
+    if (!mapLoading && this._status.textContent === 'Map style loading...') this._setStatus('');
     this._syncSwatches();
+    if (selected && this._editingId === selected.id) this._openEditor(selected);
+    if (!selected || this._editingId !== selected.id) this._closeEditor();
   }
 
   _syncSwatches() {
     for (const swatch of this._colorSwatches.querySelectorAll<HTMLElement>('.drawing-swatch')) {
       swatch.classList.toggle('selected', swatch.dataset.color === this._color);
-      (swatch as HTMLButtonElement).disabled = !this._expanded || this._isRouting;
+      (swatch as HTMLButtonElement).disabled = !this._expanded || this._isRouting || !this._drawingReady;
     }
   }
 }

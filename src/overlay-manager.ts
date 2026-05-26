@@ -594,7 +594,8 @@ class OverlayManagerControl {
     map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
-    this._unsubscribeDrawingStore = this._drawingStore?.subscribe((event) => this._handleDrawingStoreEvent(event)) || null;
+    this._unsubscribeDrawingStore =
+      this._drawingStore?.subscribe((event) => this._handleDrawingStoreEvent(event)) || null;
     this._upsertDrawingOverlay({ force: true, render: false });
     this._syncViewportMode();
     this._syncPanelInteractivity();
@@ -683,9 +684,7 @@ class OverlayManagerControl {
     if (!this._drawingStore) return;
     const doc = this._drawingStore.getDoc();
     const layer = doc.layers[DRAWING_DEFAULT_LAYER_ID];
-    const featureCount = doc.featureOrder.filter(
-      (id) => doc.features[id]?.layerId === DRAWING_DEFAULT_LAYER_ID,
-    ).length;
+    const featureCount = doc.featureOrder.filter((id) => doc.features[id]?.layerId === DRAWING_DEFAULT_LAYER_ID).length;
     const existingIndex = this._overlays.findIndex((overlay) => overlay.id === DRAWING_OVERLAY_ID);
     if (!force && existingIndex === -1 && featureCount === 0) return;
 

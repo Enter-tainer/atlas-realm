@@ -36,19 +36,54 @@
  */
 
 type StyleReadyMap = {
+  _loaded?: boolean;
   _styleInitialized?: boolean;
+  _styleInfrastructureInitialized?: boolean;
+  _styleReadyLoadMarkerInstalled?: boolean;
+  style?: { _loaded?: boolean };
   isStyleLoaded(): boolean | void;
   setGlobalStateProperty(propertyName: string, value: unknown): void;
-  once(event: 'load', callback: () => void): void;
+  once(event: 'load' | 'style.load', callback: () => void): void;
+  on?(event: 'load' | 'style.load', callback: () => void): void;
+  off?(event: 'load' | 'style.load', callback: () => void): void;
 };
+
+function isFullStyleReady(map: StyleReadyMap) {
+  return Boolean(map._styleInitialized || map._loaded || map.isStyleLoaded());
+}
+
+function isStyleInfrastructureReady(map: StyleReadyMap) {
+  return Boolean(map._styleInfrastructureInitialized || isFullStyleReady(map) || map.style?._loaded);
+}
+
+function markStyleReady(map: StyleReadyMap) {
+  map._styleInitialized = true;
+  map._styleInfrastructureInitialized = true;
+}
+
+function markStyleInfrastructureReady(map: StyleReadyMap) {
+  map._styleInfrastructureInitialized = true;
+}
+
+function ensureStyleReadyLoadMarker(map: StyleReadyMap) {
+  if (isFullStyleReady(map)) {
+    markStyleReady(map);
+    return;
+  }
+  if (map._styleReadyLoadMarkerInstalled) return;
+  map._styleReadyLoadMarkerInstalled = true;
+  map.once('load', () => {
+    markStyleReady(map);
+  });
+}
 
 /**
  * Set a global state property on the map.
  * Once the style has been initialised, always sets synchronously.
  */
 export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName: string, value: unknown) {
-  if (map.isStyleLoaded()) {
-    map._styleInitialized = true;
+  if (isFullStyleReady(map)) {
+    markStyleReady(map);
     map.setGlobalStateProperty(propertyName, value);
     return;
   }
@@ -57,7 +92,7 @@ export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName
     return;
   }
   map.once('load', () => {
-    map._styleInitialized = true;
+    markStyleReady(map);
     map.setGlobalStateProperty(propertyName, value);
   });
 }
@@ -67,8 +102,8 @@ export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName
  * After the first load, runs synchronously (tile loading state ignored).
  */
 export function runWhenStyleReady(map: StyleReadyMap, callback: () => void) {
-  if (map.isStyleLoaded()) {
-    map._styleInitialized = true;
+  if (isFullStyleReady(map)) {
+    markStyleReady(map);
     callback();
     return;
   }
@@ -77,7 +112,56 @@ export function runWhenStyleReady(map: StyleReadyMap, callback: () => void) {
     return;
   }
   map.once('load', () => {
-    map._styleInitialized = true;
+    markStyleReady(map);
     callback();
   });
+}
+
+/**
+ * Run a callback once source/layer APIs are safe to use.
+ *
+ * MapLibre's `'style.load'` fires after style JSON has been parsed and
+ * style layers/sources exist, while the later map `'load'` event waits
+ * for all required tiles and images. Annotation sources and draft layers
+ * only need the earlier infrastructure point.
+ */
+export function runWhenStyleInfrastructureReady(map: StyleReadyMap, callback: () => void) {
+  if (isFullStyleReady(map)) {
+    markStyleReady(map);
+    callback();
+    return;
+  }
+
+  if (isStyleInfrastructureReady(map)) {
+    ensureStyleReadyLoadMarker(map);
+    markStyleInfrastructureReady(map);
+    callback();
+    return;
+  }
+
+  ensureStyleReadyLoadMarker(map);
+  let didRun = false;
+  const run = (markFullStyleReady: boolean) => {
+    if (didRun) return;
+    didRun = true;
+    map.off?.('style.load', runFromStyleLoad);
+    map.off?.('load', runFromLoad);
+    if (markFullStyleReady) {
+      markStyleReady(map);
+    } else {
+      markStyleInfrastructureReady(map);
+    }
+    callback();
+  };
+  const runFromStyleLoad = () => run(false);
+  const runFromLoad = () => run(true);
+
+  if (map.on) {
+    map.on('style.load', runFromStyleLoad);
+    map.on('load', runFromLoad);
+    return;
+  }
+
+  map.once('style.load', runFromStyleLoad);
+  map.once('load', runFromLoad);
 }
