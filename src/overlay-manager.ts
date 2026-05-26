@@ -14,6 +14,11 @@ import UploadIcon from 'lucide/dist/esm/icons/upload.mjs';
 import XIcon from 'lucide/dist/esm/icons/x.mjs';
 
 const DEFAULT_COLOR = '#3b82f6';
+const DEFAULT_OPACITY = 0.95;
+const DEFAULT_LINE_WIDTH = 5;
+const GEOJSON_POLYGON_FILL_OPACITY = 0.18;
+const GEOJSON_POLYGON_OUTLINE_OPACITY = 0.8;
+const GEOJSON_POLYGON_OUTLINE_WIDTH = 2;
 const COLOR_SWATCHES = ['#3b82f6', '#ef4444', '#f97316', '#eab308', '#22c55e', '#06b6d4', '#8b5cf6', '#ec4899'];
 const OVERLAY_SOURCE_TYPES = new Set(['gpx', 'geojson']);
 type AnyRecord = Record<string | symbol, unknown>;
@@ -215,14 +220,32 @@ function isOverlayStyleValue(value: unknown): value is OverlayStyleValue {
   );
 }
 
-function withFallbackColor(expression: unknown, color: string): OverlayStyleValue {
+export function withFallbackColor(expression: unknown, color: string): OverlayStyleValue {
   if (!isOverlayStyleValue(expression)) return color;
   if (Array.isArray(expression)) {
-    if (expression[0] === 'get' && (expression[1] === 'color' || expression[1] === 'stroke')) return color;
+    if (expression[0] === 'get' && (expression[1] === 'color' || expression[1] === 'stroke')) return expression;
     return expression.map((item) => withFallbackColor(item, color));
   }
   if (typeof expression === 'string' && /^#|^rgb|^hsl/.test(expression)) return color;
   return expression;
+}
+
+export function scaledGeoJsonFillOpacity(opacity: number | string | null | undefined) {
+  return Math.min(
+    GEOJSON_POLYGON_FILL_OPACITY,
+    (clamp(opacity, 0.2, 1) * GEOJSON_POLYGON_FILL_OPACITY) / DEFAULT_OPACITY,
+  );
+}
+
+export function scaledGeoJsonPolygonOutlineOpacity(opacity: number | string | null | undefined) {
+  return Math.min(
+    GEOJSON_POLYGON_OUTLINE_OPACITY,
+    (clamp(opacity, 0.2, 1) * GEOJSON_POLYGON_OUTLINE_OPACITY) / DEFAULT_OPACITY,
+  );
+}
+
+export function scaledGeoJsonPolygonOutlineWidth(lineWidth: number | string | null | undefined) {
+  return Math.max(1, clamp(lineWidth, 1, 12) - (DEFAULT_LINE_WIDTH - GEOJSON_POLYGON_OUTLINE_WIDTH));
 }
 
 function exportJson(data: OverlayData, filename: string) {
@@ -582,8 +605,8 @@ class OverlayManagerControl {
     );
     const normalized: OverlayLike = {
       color: DEFAULT_COLOR,
-      opacity: 0.95,
-      lineWidth: 5,
+      opacity: DEFAULT_OPACITY,
+      lineWidth: DEFAULT_LINE_WIDTH,
       visible: true,
       layerIds: [],
       syncOverlayId,
@@ -871,6 +894,15 @@ class OverlayManagerControl {
           this._map.setPaintProperty(layerId, 'line-color', color);
           this._map.setPaintProperty(layerId, 'line-width', lineWidth);
           this._map.setPaintProperty(layerId, 'line-opacity', opacity);
+        } else if (/-polygon-outline$/.test(layerId)) {
+          const currentColor = this._map.getPaintProperty(layerId, 'line-color');
+          this._map.setPaintProperty(layerId, 'line-color', withFallbackColor(currentColor || color, color));
+          this._map.setPaintProperty(layerId, 'line-width', [
+            'coalesce',
+            ['get', 'stroke-width'],
+            scaledGeoJsonPolygonOutlineWidth(lineWidth),
+          ]);
+          this._map.setPaintProperty(layerId, 'line-opacity', scaledGeoJsonPolygonOutlineOpacity(opacity));
         } else if (/-stroke$|line-stroke$/.test(layerId)) {
           this._map.setPaintProperty(layerId, 'line-width', lineWidth + 3);
           this._map.setPaintProperty(layerId, 'line-opacity', Math.min(0.9, opacity));
@@ -889,7 +921,7 @@ class OverlayManagerControl {
           ['get', 'marker-color'],
           color,
         ]);
-        this._map.setPaintProperty(layerId, 'fill-opacity', Math.min(0.42, opacity * 0.42));
+        this._map.setPaintProperty(layerId, 'fill-opacity', scaledGeoJsonFillOpacity(opacity));
       } else if (layer.type === 'symbol') {
         if (markerIcon && !/-gap-arrow$/.test(layerId)) {
           this._map.setLayoutProperty(layerId, 'icon-image', markerIcon);
