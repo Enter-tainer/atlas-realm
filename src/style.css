@@ -1372,10 +1372,13 @@ body,
 .drawing-text-note {
   position: relative;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 3px;
   width: 154px;
-  min-height: 58px;
-  max-height: 132px;
+  min-width: 96px;
+  min-height: 48px;
+  max-width: 420px;
+  max-height: 260px;
   padding: 9px 10px;
   border: 1px solid rgba(146, 64, 14, 0.28);
   border-left: 4px solid var(--drawing-note-color, #2563eb);
@@ -1415,12 +1418,18 @@ body,
 }
 
 .drawing-text-note:hover,
-.drawing-text-note:focus {
+.drawing-text-note:focus,
+.drawing-text-note-active,
+.drawing-text-note-resizing {
   outline: 2px solid rgba(37, 99, 235, 0.24);
   outline-offset: 2px;
   box-shadow:
     0 12px 24px rgba(15, 23, 42, 0.24),
     inset 0 1px 0 rgba(255, 255, 255, 0.86);
+}
+
+.drawing-text-note-resizing {
+  cursor: inherit;
 }
 
 .drawing-text-note-title,
@@ -1439,10 +1448,57 @@ body,
 }
 
 .drawing-text-note-body {
+  min-height: 0;
   color: #713f12;
   font-size: 12px;
   font-weight: 650;
-  -webkit-line-clamp: 4;
+  -webkit-line-clamp: 12;
+}
+
+.drawing-text-note-resize-handle {
+  position: absolute;
+  z-index: 1;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: var(--drawing-note-color, #2563eb);
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.28);
+  opacity: 0;
+  pointer-events: none;
+  touch-action: none;
+}
+
+.drawing-text-note-active .drawing-text-note-resize-handle,
+.drawing-text-note:hover .drawing-text-note-resize-handle,
+.drawing-text-note:focus .drawing-text-note-resize-handle,
+.drawing-text-note-resizing .drawing-text-note-resize-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawing-text-note-resize-nw {
+  top: -7px;
+  left: -7px;
+  cursor: nwse-resize;
+}
+
+.drawing-text-note-resize-ne {
+  top: -7px;
+  right: -7px;
+  cursor: nesw-resize;
+}
+
+.drawing-text-note-resize-se {
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+
+.drawing-text-note-resize-sw {
+  bottom: -7px;
+  left: -7px;
+  cursor: nesw-resize;
 }
 
 .drawing-edit-popup .maplibregl-popup-content {

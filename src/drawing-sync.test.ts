@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyDrawingDoc } from './drawing-model.js';
-import { applyDrawingServerMessage, parseDrawingClientMessage, reduceDrawingClientMessage } from './drawing-sync.js';
-import type { DrawingFeature } from './drawing-model.js';
+import {
+  applyDrawingServerMessage,
+  buildDrawingSnapshotMessage,
+  parseDrawingClientMessage,
+  reduceDrawingClientMessage,
+} from './drawing-sync.js';
+import {
+  DRAWING_RANDOM_TEST_NOW,
+  generateDrawingClientMessages,
+  reduceDrawingClientMessages,
+} from './drawing-random-test-helper.js';
+import type { DrawingDoc, DrawingFeature } from './drawing-model.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -53,6 +63,33 @@ function polygonFeature(): DrawingFeature {
     createdAt: NOW,
     updatedAt: NOW,
     updatedBy: 'user-a',
+  };
+}
+
+function textFeature(): DrawingFeature {
+  return {
+    id: 'text-a',
+    type: 'text',
+    layerId: 'drawing-default',
+    coordinate: [121.5, 31.2],
+    width: 210,
+    height: 104,
+    label: 'Shared note',
+    note: 'Resize me',
+    color: '#ca8a04',
+    createdAt: NOW,
+    updatedAt: NOW,
+    updatedBy: 'user-a',
+  };
+}
+
+function comparableDoc(doc: DrawingDoc) {
+  return {
+    revision: doc.revision,
+    layerOrder: doc.layerOrder,
+    featureOrder: doc.featureOrder,
+    layers: doc.layers,
+    features: doc.features,
   };
 }
 
@@ -121,6 +158,32 @@ describe('drawing sync protocol', () => {
     });
   });
 
+  it('preserves resized text annotation dimensions through sync', () => {
+    const parsed = parseDrawingClientMessage({
+      type: 'drawing:feature:upsert',
+      feature: {
+        ...textFeature(),
+        width: 999,
+        height: 20,
+      },
+    });
+
+    expect(parsed?.type).toBe('drawing:feature:upsert');
+    if (parsed?.type !== 'drawing:feature:upsert') return;
+    expect(parsed.feature).toMatchObject({
+      id: 'text-a',
+      type: 'text',
+      width: 420,
+      height: 48,
+    });
+
+    const reduced = reduceDrawingClientMessage(createEmptyDrawingDoc(NOW), parsed, NOW + 1);
+    expect(reduced.outbound).toMatchObject({
+      type: 'drawing:feature:upserted',
+      feature: { id: 'text-a', type: 'text', width: 420, height: 48 },
+    });
+  });
+
   it('reduces client operations into server messages', () => {
     const doc = createEmptyDrawingDoc(NOW);
     const upsert = reduceDrawingClientMessage(
@@ -145,6 +208,100 @@ describe('drawing sync protocol', () => {
       featureId: 'route-a',
     });
     expect(deleted.doc.features['route-a']).toBeUndefined();
+  });
+
+  it('allows trusted collaborators to edit the same feature with last write winning', () => {
+    const initial = reduceDrawingClientMessage(
+      createEmptyDrawingDoc(NOW),
+      { type: 'drawing:feature:upsert', feature: routeFeature() },
+      NOW + 1,
+    );
+    const editedByFriend = reduceDrawingClientMessage(
+      initial.doc,
+      {
+        type: 'drawing:feature:upsert',
+        feature: {
+          ...routeFeature(),
+          label: 'Dinner route',
+          note: 'Edited by a collaborator',
+          color: '#dc2626',
+          updatedAt: NOW + 2,
+          updatedBy: 'user-b',
+        },
+      },
+      NOW + 2,
+    );
+
+    expect(editedByFriend.outbound).toMatchObject({
+      type: 'drawing:feature:upserted',
+      revision: 2,
+      feature: {
+        id: 'route-a',
+        label: 'Dinner route',
+        note: 'Edited by a collaborator',
+        color: '#dc2626',
+        updatedBy: 'user-b',
+      },
+    });
+    expect(editedByFriend.doc.features['route-a']).toMatchObject({
+      label: 'Dinner route',
+      updatedBy: 'user-b',
+    });
+
+    if (!initial.outbound || !editedByFriend.outbound) throw new Error('Expected drawing server messages');
+    let clientA = createEmptyDrawingDoc(NOW);
+    let clientB = createEmptyDrawingDoc(NOW);
+    clientA = applyDrawingServerMessage(clientA, initial.outbound);
+    clientA = applyDrawingServerMessage(clientA, editedByFriend.outbound);
+    clientB = applyDrawingServerMessage(clientB, initial.outbound);
+    clientB = applyDrawingServerMessage(clientB, editedByFriend.outbound);
+
+    expect(clientA).toEqual(clientB);
+    expect(clientA.features['route-a']).toMatchObject({
+      label: 'Dinner route',
+      note: 'Edited by a collaborator',
+      updatedBy: 'user-b',
+    });
+  });
+
+  it('allows collaborators to reorder and delete shared features without ownership checks', () => {
+    let reduced = reduceDrawingClientMessage(
+      createEmptyDrawingDoc(NOW),
+      { type: 'drawing:feature:upsert', feature: routeFeature() },
+      NOW + 1,
+    );
+    reduced = reduceDrawingClientMessage(
+      reduced.doc,
+      { type: 'drawing:feature:upsert', feature: { ...polygonFeature(), updatedBy: 'user-b' } },
+      NOW + 2,
+    );
+    reduced = reduceDrawingClientMessage(
+      reduced.doc,
+      { type: 'drawing:feature:reorder', orderedIds: ['area-a', 'route-a'] },
+      NOW + 3,
+    );
+
+    expect(reduced.outbound).toEqual({
+      type: 'drawing:feature:reordered',
+      revision: 3,
+      orderedIds: ['area-a', 'route-a'],
+    });
+    expect(reduced.doc.featureOrder).toEqual(['area-a', 'route-a']);
+
+    reduced = reduceDrawingClientMessage(
+      reduced.doc,
+      { type: 'drawing:feature:delete', featureId: 'route-a' },
+      NOW + 4,
+    );
+
+    expect(reduced.outbound).toEqual({
+      type: 'drawing:feature:deleted',
+      revision: 4,
+      featureId: 'route-a',
+    });
+    expect(reduced.doc.featureOrder).toEqual(['area-a']);
+    expect(reduced.doc.features['route-a']).toBeUndefined();
+    expect(reduced.doc.features['area-a']).toMatchObject({ updatedBy: 'user-b' });
   });
 
   it('syncs drawing layer metadata as first-class protocol state', () => {
@@ -211,5 +368,41 @@ describe('drawing sync protocol', () => {
     });
     expect(doc.revision).toBe(8);
     expect(doc.featureOrder).toEqual(['route-a']);
+  });
+
+  it('keeps clients converged under deterministic randomized collaborative operations', () => {
+    const seeds = [1, 42, 2_024_052_7, 0xdecafbad];
+    for (const seed of seeds) {
+      const messages = generateDrawingClientMessages(seed, 260);
+      expect(generateDrawingClientMessages(seed, 260)).toEqual(messages);
+
+      let server = createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW);
+      let clientA = createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW);
+      let clientB = createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW);
+      let staleClient = createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW);
+
+      messages.forEach((message, index) => {
+        const result = reduceDrawingClientMessage(server, message, DRAWING_RANDOM_TEST_NOW + 1_000 + index);
+        server = result.doc;
+        if (!result.outbound) return;
+        clientA = applyDrawingServerMessage(clientA, result.outbound);
+        clientB = applyDrawingServerMessage(clientB, result.outbound);
+        if (index < Math.floor(messages.length / 3)) {
+          staleClient = applyDrawingServerMessage(staleClient, result.outbound);
+        }
+      });
+
+      const reduced = reduceDrawingClientMessages(messages);
+      const expectedFeatureIds = Object.keys(server.features).sort();
+      expect(server.revision).toBe(messages.length);
+      expect(new Set(server.featureOrder).size).toBe(server.featureOrder.length);
+      expect(server.featureOrder.slice().sort()).toEqual(expectedFeatureIds);
+      expect(comparableDoc(clientA)).toEqual(comparableDoc(server));
+      expect(comparableDoc(clientB)).toEqual(comparableDoc(server));
+      expect(comparableDoc(reduced)).toEqual(comparableDoc(server));
+
+      staleClient = applyDrawingServerMessage(staleClient, buildDrawingSnapshotMessage(server));
+      expect(comparableDoc(staleClient)).toEqual(comparableDoc(server));
+    }
   });
 });

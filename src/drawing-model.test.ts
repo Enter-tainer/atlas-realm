@@ -35,6 +35,8 @@ function textFeature(id = 'text-a'): DrawingFeature {
     type: 'text',
     layerId: 'drawing-default',
     coordinate: [121.55, 31.25],
+    width: 180,
+    height: 92,
     label: 'Hotel note',
     note: 'Check in before dinner',
     color: '#ca8a04',
@@ -186,10 +188,38 @@ describe('drawing model', () => {
         kind: 'drawing_text',
         drawing_id: 'text-a',
         feature_type: 'text',
+        text_width: 180,
+        text_height: 92,
         name: 'Hotel note',
         description: 'Check in before dinner',
         color: '#ca8a04',
       },
+    });
+  });
+
+  it('sanitizes text annotation box dimensions', () => {
+    expect(
+      sanitizeDrawingFeature({
+        ...textFeature(),
+        width: 12,
+        height: 999,
+      }),
+    ).toMatchObject({
+      type: 'text',
+      width: 96,
+      height: 260,
+    });
+
+    expect(
+      sanitizeDrawingFeature({
+        ...textFeature(),
+        width: 'bad',
+        height: null,
+      }),
+    ).toMatchObject({
+      type: 'text',
+      width: 154,
+      height: 64,
     });
   });
 

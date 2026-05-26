@@ -32,6 +32,11 @@ function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function messageTimestamp(value: unknown, fallback: number) {
+  const timestamp = Number(value);
+  return Number.isFinite(timestamp) ? timestamp : fallback;
+}
+
 function sanitizeFeatureId(value: unknown) {
   if (typeof value !== 'string') return '';
   const id = value.trim();
@@ -75,16 +80,28 @@ export function applyDrawingServerMessage(doc: DrawingDoc, message: DrawingServe
   const normalized = normalizeDrawingDoc(doc);
   if (message.type === 'drawing:snapshot') return normalizeDrawingDoc(message.doc);
   if (message.type === 'drawing:layer:upserted') {
-    return applyDrawingLayerUpsert(normalized, message.layer, { revision: message.revision });
+    return applyDrawingLayerUpsert(normalized, message.layer, {
+      revision: message.revision,
+      now: messageTimestamp(message.layer.updatedAt, normalized.updatedAt),
+    });
   }
   if (message.type === 'drawing:feature:upserted') {
-    return applyDrawingFeatureUpsert(normalized, message.feature, { revision: message.revision });
+    return applyDrawingFeatureUpsert(normalized, message.feature, {
+      revision: message.revision,
+      now: messageTimestamp(message.feature.updatedAt, normalized.updatedAt),
+    });
   }
   if (message.type === 'drawing:feature:deleted') {
-    return applyDrawingFeatureDelete(normalized, message.featureId, { revision: message.revision });
+    return applyDrawingFeatureDelete(normalized, message.featureId, {
+      revision: message.revision,
+      now: normalized.updatedAt,
+    });
   }
   if (message.type === 'drawing:feature:reordered') {
-    return applyDrawingFeatureReorder(normalized, message.orderedIds, { revision: message.revision });
+    return applyDrawingFeatureReorder(normalized, message.orderedIds, {
+      revision: message.revision,
+      now: normalized.updatedAt,
+    });
   }
   return normalized;
 }
