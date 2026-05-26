@@ -13,7 +13,12 @@ import XIcon from 'lucide/dist/esm/icons/x.mjs';
 import maplibregl from 'maplibre-gl';
 import { canSubmitDrawingDraft, resolveDrawingDraftCompletion } from './drawing-draft.js';
 import { defaultDrawingFeatureLabel } from './drawing-labels.js';
-import { createDrawingId, sanitizeDrawingText } from './drawing-model.js';
+import {
+  DRAWING_TEXT_DEFAULT_HEIGHT,
+  DRAWING_TEXT_DEFAULT_WIDTH,
+  createDrawingId,
+  sanitizeDrawingText,
+} from './drawing-model.js';
 import { buildRouteUrl, formatDistance, formatDuration, normalizeEndpoint } from './routing.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
@@ -643,6 +648,8 @@ class DrawingToolsControl {
       ...this._featureBase('text'),
       type: 'text' as const,
       coordinate,
+      width: DRAWING_TEXT_DEFAULT_WIDTH,
+      height: DRAWING_TEXT_DEFAULT_HEIGHT,
     };
     this._store.upsertFeature(feature);
     this._selectedId = feature.id;

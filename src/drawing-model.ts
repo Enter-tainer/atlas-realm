@@ -4,6 +4,12 @@ export const DRAWING_DOC_VERSION = 1;
 export const DRAWING_DEFAULT_LAYER_ID = 'drawing-default';
 export const DRAWING_SOURCE_ID = 'drawing-plan-source';
 export const DRAWING_KIND_PREFIX = 'drawing_';
+export const DRAWING_TEXT_DEFAULT_WIDTH = 154;
+export const DRAWING_TEXT_DEFAULT_HEIGHT = 64;
+export const DRAWING_TEXT_MIN_WIDTH = 96;
+export const DRAWING_TEXT_MIN_HEIGHT = 48;
+export const DRAWING_TEXT_MAX_WIDTH = 420;
+export const DRAWING_TEXT_MAX_HEIGHT = 260;
 
 export type LngLatTuple = [number, number];
 export type DrawingFeatureType = 'point' | 'text' | 'path' | 'route' | 'polygon';
@@ -38,6 +44,8 @@ export type DrawingPointFeature = DrawingFeatureBase & {
 export type DrawingTextFeature = DrawingFeatureBase & {
   type: 'text';
   coordinate: LngLatTuple;
+  width: number;
+  height: number;
 };
 
 export type DrawingPathFeature = DrawingFeatureBase & {
@@ -104,6 +112,8 @@ export type DrawingGeoJsonProperties = {
   width?: number;
   fill_opacity?: number;
   'line-width'?: number;
+  text_width?: number;
+  text_height?: number;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -165,6 +175,16 @@ function sanitizeOptionalNumber(value: unknown, min: number, max: number): numbe
   const number = Number(value);
   if (!Number.isFinite(number)) return null;
   return Math.min(max, Math.max(min, number));
+}
+
+export function sanitizeDrawingTextWidth(value: unknown) {
+  return Math.round(sanitizeNumber(value, DRAWING_TEXT_MIN_WIDTH, DRAWING_TEXT_MAX_WIDTH, DRAWING_TEXT_DEFAULT_WIDTH));
+}
+
+export function sanitizeDrawingTextHeight(value: unknown) {
+  return Math.round(
+    sanitizeNumber(value, DRAWING_TEXT_MIN_HEIGHT, DRAWING_TEXT_MAX_HEIGHT, DRAWING_TEXT_DEFAULT_HEIGHT),
+  );
 }
 
 export function sanitizeLngLat(value: unknown): LngLatTuple | null {
@@ -257,6 +277,15 @@ export function sanitizeDrawingFeature(value: unknown, now = Date.now()): Drawin
   if (type === 'point' || type === 'text') {
     const coordinate = sanitizeLngLat(value.coordinate);
     if (!coordinate) return null;
+    if (type === 'text') {
+      return {
+        ...base,
+        type,
+        coordinate,
+        width: sanitizeDrawingTextWidth(value.width ?? value.text_width),
+        height: sanitizeDrawingTextHeight(value.height ?? value.text_height),
+      };
+    }
     return { ...base, type, coordinate };
   }
 
@@ -555,7 +584,10 @@ export function drawingFeatureToGeoJsonFeatures(feature: DrawingFeature): Featur
     return [
       {
         type: 'Feature',
-        properties: featureBaseProperties(feature, feature.type === 'text' ? 'drawing_text' : 'drawing_point'),
+        properties: {
+          ...featureBaseProperties(feature, feature.type === 'text' ? 'drawing_text' : 'drawing_point'),
+          ...(feature.type === 'text' ? { text_width: feature.width, text_height: feature.height } : {}),
+        },
         geometry: {
           type: 'Point',
           coordinates: feature.coordinate,

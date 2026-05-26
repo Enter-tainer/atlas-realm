@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { reset, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import {
+  DRAWING_RANDOM_TEST_NOW,
+  generateDrawingClientMessages,
+  reduceDrawingClientMessages,
+} from './drawing-random-test-helper.js';
+import { createEmptyDrawingDoc } from './drawing-model.js';
 import { decodeOverlayBinaryMessage, encodeOverlayBinaryMessage } from './overlay-sync.js';
 import type { MapCollaboration } from './worker.js';
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
@@ -165,6 +171,16 @@ function asRecordArray(value: unknown): Array<Record<string, unknown>> {
   return Array.isArray(value)
     ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
     : [];
+}
+
+function comparableDrawingDoc(doc: Record<string, unknown>) {
+  return {
+    revision: doc.revision,
+    layerOrder: doc.layerOrder,
+    featureOrder: doc.featureOrder,
+    layers: doc.layers,
+    features: doc.features,
+  };
 }
 
 function manifest(id: string, contentHash: string, extra: Record<string, unknown> = {}): OverlayManifestFixture {
@@ -572,6 +588,133 @@ describe('MapCollaboration overlay state machine', () => {
         featureOrder: ['polygon-b'],
       },
     });
+  });
+
+  it('serializes collaborative drawing edits from multiple clients in room order', async () => {
+    const stub = roomStub('drawing-collaborators');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const alice = createConnection('alice-client');
+      const bob = createConnection('bob-client');
+
+      await sendWorkerMessage(
+        instance,
+        alice,
+        jsonMessage('drawing:feature:upsert', {
+          feature: drawingFeature('path-a', {
+            label: 'Morning walk',
+            note: 'Alice draft',
+            color: '#2563eb',
+            updatedBy: 'alice',
+          }),
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        bob,
+        jsonMessage('drawing:feature:upsert', {
+          feature: drawingFeature('path-a', {
+            label: 'Dinner route',
+            note: 'Bob changed the shared annotation',
+            color: '#dc2626',
+            updatedBy: 'bob',
+          }),
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        alice,
+        jsonMessage('drawing:feature:upsert', {
+          feature: drawingPolygonFeature('area-a', {
+            label: 'Backup area',
+            updatedBy: 'alice',
+          }),
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        bob,
+        jsonMessage('drawing:feature:reorder', {
+          orderedIds: ['area-a', 'path-a'],
+        }),
+      );
+      await sendWorkerMessage(instance, bob, jsonMessage('drawing:feature:delete', { featureId: 'path-a' }));
+
+      const joining = createConnection('joining-client');
+      await connectWorker(instance, joining, {
+        request: new Request('https://example.com/parties/map-collaboration/drawing-collaborators?name=Carol'),
+      });
+
+      return {
+        doc: drawingDoc(instance),
+        snapshot: sentJson(joining, 'drawing:snapshot')[0],
+      };
+    });
+
+    const features = result.doc.features as Record<string, Record<string, unknown>>;
+    expect(result.doc.revision).toBe(5);
+    expect(result.doc.featureOrder).toEqual(['area-a']);
+    expect(Object.keys(features)).toEqual(['area-a']);
+    expect(features['area-a']).toMatchObject({ label: 'Backup area', updatedBy: 'alice' });
+    expect(result.snapshot).toMatchObject({
+      type: 'drawing:snapshot',
+      revision: 5,
+      doc: {
+        featureOrder: ['area-a'],
+        features: {
+          'area-a': {
+            label: 'Backup area',
+            updatedBy: 'alice',
+          },
+        },
+      },
+    });
+  });
+
+  it('matches the protocol reducer after deterministic randomized drawing operations', async () => {
+    const seed = 0x71ab_2026;
+    const messages = generateDrawingClientMessages(seed, 320);
+    const expected = reduceDrawingClientMessages(messages);
+    const stub = roomStub('drawing-randomized-state');
+
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      instance.sql`
+        INSERT OR REPLACE INTO drawing_state (state_key, doc_json, updated_at)
+        VALUES (${'main'}, ${JSON.stringify(createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW))}, ${DRAWING_RANDOM_TEST_NOW})
+      `;
+      const connections = [
+        createConnection('alice-client'),
+        createConnection('bob-client'),
+        createConnection('carol-client'),
+      ];
+
+      for (let index = 0; index < messages.length; index += 1) {
+        await sendWorkerMessage(instance, connections[index % connections.length], JSON.stringify(messages[index]));
+      }
+
+      const joining = createConnection('joining-client');
+      await connectWorker(instance, joining, {
+        request: new Request('https://example.com/parties/map-collaboration/drawing-randomized-state?name=Snapshot'),
+      });
+
+      return {
+        doc: drawingDoc(instance),
+        snapshot: sentJson(joining, 'drawing:snapshot')[0],
+      };
+    });
+
+    const features = result.doc.features as Record<string, unknown>;
+    const featureOrder = result.doc.featureOrder as string[];
+    expect(result.doc.revision).toBe(messages.length);
+    expect(new Set(featureOrder).size).toBe(featureOrder.length);
+    expect(featureOrder.slice().sort()).toEqual(Object.keys(features).sort());
+    expect(comparableDrawingDoc(result.doc)).toEqual(
+      comparableDrawingDoc(expected as unknown as Record<string, unknown>),
+    );
+    expect(comparableDrawingDoc((result.snapshot.doc || {}) as Record<string, unknown>)).toEqual(
+      comparableDrawingDoc(result.doc),
+    );
   });
 });
 

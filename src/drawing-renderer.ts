@@ -1,5 +1,14 @@
 import maplibregl from 'maplibre-gl';
-import { DRAWING_SOURCE_ID, sanitizeLngLat } from './drawing-model.js';
+import {
+  DRAWING_SOURCE_ID,
+  DRAWING_TEXT_MAX_HEIGHT,
+  DRAWING_TEXT_MAX_WIDTH,
+  DRAWING_TEXT_MIN_HEIGHT,
+  DRAWING_TEXT_MIN_WIDTH,
+  sanitizeDrawingTextHeight,
+  sanitizeDrawingTextWidth,
+  sanitizeLngLat,
+} from './drawing-model.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import type { DrawingFeature, DrawingTextFeature } from './drawing-model.js';
 import type { DrawingStore } from './drawing-store.js';
@@ -35,6 +44,8 @@ type DrawingMap = {
   on?(event: 'load' | 'style.load' | 'zoom', callback: () => void): void;
   off?(event: 'load' | 'style.load' | 'zoom', callback: () => void): void;
   getZoom(): number;
+  project(lngLat: maplibregl.LngLatLike): { x: number; y: number };
+  unproject(point: [number, number]): { lng: number; lat: number };
   addSource(id: string, source: object): void;
   getSource(id: string): unknown;
   addLayer(layer: object): void;
@@ -49,6 +60,23 @@ type DrawingMap = {
 type DrawingTextMarker = {
   marker: maplibregl.Marker;
   element: HTMLElement;
+};
+type TextResizeCorner = 'nw' | 'ne' | 'se' | 'sw';
+type ScreenPoint = { x: number; y: number };
+type TextResizeState = {
+  featureId: string;
+  pointerId: number;
+  marker: maplibregl.Marker;
+  element: HTMLElement;
+  handle: HTMLElement;
+  corner: TextResizeCorner;
+  startPointer: ScreenPoint;
+  startDragged: ScreenPoint;
+  opposite: ScreenPoint;
+  nextCoordinate: DrawingTextFeature['coordinate'];
+  nextWidth: number;
+  nextHeight: number;
+  wasDraggable: boolean;
 };
 type DrawingActiveFeatureDetail = {
   activeId?: unknown;
@@ -311,6 +339,11 @@ function stopTextMarkerPropagation(node: Element) {
   node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
 }
 
+function stopTextResizeHandleEvent(event: Event) {
+  event.preventDefault();
+  event.stopPropagation();
+}
+
 function visibleTextFeatures(
   store: DrawingStore,
   { zoom, activeFeatureId }: { zoom: number; activeFeatureId: string },
@@ -336,7 +369,47 @@ function markerFeatureEvent(type: 'drawing:featureclick' | 'drawing:featuredblcl
   return new CustomEvent(type, { detail: { id: feature.id } });
 }
 
-function createTextMarkerElement(map: DrawingMap, feature: DrawingTextFeature) {
+function textFeatureSize(feature: DrawingTextFeature) {
+  return {
+    width: sanitizeDrawingTextWidth(feature.width),
+    height: sanitizeDrawingTextHeight(feature.height),
+  };
+}
+
+function pointerPoint(map: DrawingMap, event: PointerEvent): ScreenPoint {
+  const rect = map.getContainer().getBoundingClientRect();
+  return {
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+  };
+}
+
+function textMarkerCorner(center: ScreenPoint, width: number, height: number, corner: TextResizeCorner): ScreenPoint {
+  return {
+    x: center.x + (corner.includes('e') ? width / 2 : -width / 2),
+    y: center.y + (corner.includes('s') ? height / 2 : -height / 2),
+  };
+}
+
+function oppositeTextMarkerCorner(corner: TextResizeCorner): TextResizeCorner {
+  if (corner === 'nw') return 'se';
+  if (corner === 'ne') return 'sw';
+  if (corner === 'se') return 'nw';
+  return 'ne';
+}
+
+function clampResizeEdge(value: number, opposite: number, direction: number, min: number, max: number) {
+  const minEdge = opposite + direction * min;
+  const maxEdge = opposite + direction * max;
+  return direction > 0 ? Math.min(maxEdge, Math.max(minEdge, value)) : Math.max(maxEdge, Math.min(minEdge, value));
+}
+
+function applyTextMarkerSize(element: HTMLElement, width: number, height: number) {
+  element.style.width = `${width}px`;
+  element.style.height = `${height}px`;
+}
+
+function createTextMarkerElement(map: DrawingMap, feature: DrawingTextFeature, activeFeatureId: string) {
   const element = document.createElement('button');
   element.type = 'button';
   element.className = 'drawing-text-note';
@@ -357,13 +430,27 @@ function createTextMarkerElement(map: DrawingMap, feature: DrawingTextFeature) {
   const body = document.createElement('div');
   body.className = 'drawing-text-note-body';
   element.appendChild(body);
-  updateTextMarkerElement(element, feature);
+  for (const corner of ['nw', 'ne', 'se', 'sw'] as const) {
+    const handle = document.createElement('span');
+    handle.className = `drawing-text-note-resize-handle drawing-text-note-resize-${corner}`;
+    handle.dataset.corner = corner;
+    handle.setAttribute('aria-hidden', 'true');
+    handle.addEventListener('mousedown', stopTextResizeHandleEvent);
+    handle.addEventListener('touchstart', stopTextResizeHandleEvent);
+    handle.addEventListener('click', stopTextResizeHandleEvent);
+    handle.addEventListener('dblclick', stopTextResizeHandleEvent);
+    element.appendChild(handle);
+  }
+  updateTextMarkerElement(element, feature, activeFeatureId);
   return element;
 }
 
-function updateTextMarkerElement(element: HTMLElement, feature: DrawingTextFeature) {
+function updateTextMarkerElement(element: HTMLElement, feature: DrawingTextFeature, activeFeatureId: string) {
+  const { width, height } = textFeatureSize(feature);
   element.dataset.drawingId = feature.id;
   element.style.setProperty('--drawing-note-color', feature.color || '#2563eb');
+  applyTextMarkerSize(element, width, height);
+  element.classList.toggle('drawing-text-note-active', feature.id === activeFeatureId);
   element.title = feature.label || 'Note';
   element.setAttribute('aria-label', feature.label || 'Note');
   const title = element.querySelector<HTMLElement>('.drawing-text-note-title');
@@ -387,6 +474,134 @@ function updateTextFeatureCoordinate(store: DrawingStore, featureId: string, mar
   });
 }
 
+function updateTextMarkerResize(
+  map: DrawingMap,
+  state: TextResizeState,
+  event: PointerEvent,
+): { coordinate: DrawingTextFeature['coordinate']; width: number; height: number } | null {
+  const pointer = pointerPoint(map, event);
+  const directionX = state.corner.includes('e') ? 1 : -1;
+  const directionY = state.corner.includes('s') ? 1 : -1;
+  const dragged = {
+    x: state.startDragged.x + pointer.x - state.startPointer.x,
+    y: state.startDragged.y + pointer.y - state.startPointer.y,
+  };
+  const edgeX = clampResizeEdge(
+    dragged.x,
+    state.opposite.x,
+    directionX,
+    DRAWING_TEXT_MIN_WIDTH,
+    DRAWING_TEXT_MAX_WIDTH,
+  );
+  const edgeY = clampResizeEdge(
+    dragged.y,
+    state.opposite.y,
+    directionY,
+    DRAWING_TEXT_MIN_HEIGHT,
+    DRAWING_TEXT_MAX_HEIGHT,
+  );
+  const width = Math.round(Math.abs(edgeX - state.opposite.x));
+  const height = Math.round(Math.abs(edgeY - state.opposite.y));
+  const center = {
+    x: (edgeX + state.opposite.x) / 2,
+    y: (edgeY + state.opposite.y) / 2,
+  };
+  const lngLat = map.unproject([center.x, center.y]);
+  const coordinate = sanitizeLngLat([lngLat.lng, lngLat.lat]);
+  if (!coordinate) return null;
+  applyTextMarkerSize(state.element, width, height);
+  state.marker.setLngLat(coordinate);
+  state.nextCoordinate = coordinate;
+  state.nextWidth = width;
+  state.nextHeight = height;
+  return { coordinate, width, height };
+}
+
+function installTextMarkerResize(
+  map: DrawingMap,
+  store: DrawingStore,
+  marker: maplibregl.Marker,
+  element: HTMLElement,
+  featureId: string,
+) {
+  let resizeState: TextResizeState | null = null;
+  const beginResize = (event: PointerEvent) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    const corner = handle.dataset.corner as TextResizeCorner | undefined;
+    if (corner !== 'nw' && corner !== 'ne' && corner !== 'se' && corner !== 'sw') return;
+    const feature = store.getDoc().features[featureId];
+    if (feature?.type !== 'text') return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const { width, height } = textFeatureSize(feature);
+    const center = map.project(feature.coordinate);
+    const startCenter = { x: center.x, y: center.y };
+    const opposite = textMarkerCorner(startCenter, width, height, oppositeTextMarkerCorner(corner));
+    resizeState = {
+      featureId,
+      pointerId: event.pointerId,
+      marker,
+      element,
+      handle,
+      corner,
+      startPointer: pointerPoint(map, event),
+      startDragged: textMarkerCorner(startCenter, width, height, corner),
+      opposite,
+      nextCoordinate: feature.coordinate,
+      nextWidth: width,
+      nextHeight: height,
+      wasDraggable: marker.isDraggable(),
+    };
+    marker.setDraggable(false);
+    element.classList.add('drawing-text-note-resizing');
+    handle.setPointerCapture?.(event.pointerId);
+  };
+  const moveResize = (event: PointerEvent) => {
+    if (!resizeState || resizeState.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    updateTextMarkerResize(map, resizeState, event);
+  };
+  const finishResize = (event: PointerEvent) => {
+    const state = resizeState;
+    if (!state || state.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    if (state.handle.hasPointerCapture?.(state.pointerId)) state.handle.releasePointerCapture(state.pointerId);
+    state.element.classList.remove('drawing-text-note-resizing');
+    state.marker.setDraggable(state.wasDraggable);
+    resizeState = null;
+
+    const feature = store.getDoc().features[state.featureId];
+    if (feature?.type !== 'text') return;
+    if (
+      feature.width === state.nextWidth &&
+      feature.height === state.nextHeight &&
+      feature.coordinate[0] === state.nextCoordinate[0] &&
+      feature.coordinate[1] === state.nextCoordinate[1]
+    ) {
+      return;
+    }
+    store.upsertFeature({
+      ...feature,
+      coordinate: state.nextCoordinate,
+      width: state.nextWidth,
+      height: state.nextHeight,
+      updatedAt: Date.now(),
+    });
+  };
+
+  for (const handle of element.querySelectorAll<HTMLElement>('.drawing-text-note-resize-handle')) {
+    handle.addEventListener('pointerdown', beginResize);
+    handle.addEventListener('pointermove', moveResize);
+    handle.addEventListener('pointerup', finishResize);
+    handle.addEventListener('pointercancel', finishResize);
+  }
+}
+
 function syncTextMarkers(
   map: DrawingMap,
   store: DrawingStore,
@@ -404,15 +619,16 @@ function syncTextMarkers(
   for (const feature of features) {
     const existing = markers.get(feature.id);
     if (existing) {
-      updateTextMarkerElement(existing.element, feature);
+      updateTextMarkerElement(existing.element, feature, viewState.activeFeatureId);
       existing.marker.setLngLat(feature.coordinate);
       continue;
     }
-    const element = createTextMarkerElement(map, feature);
+    const element = createTextMarkerElement(map, feature, viewState.activeFeatureId);
     const marker = new maplibregl.Marker({ element, anchor: 'center', draggable: true })
       .setLngLat(feature.coordinate)
       .addTo(map as unknown as maplibregl.Map);
     marker.on('dragend', () => updateTextFeatureCoordinate(store, feature.id, marker));
+    installTextMarkerResize(map, store, marker, element, feature.id);
     markers.set(feature.id, { marker, element });
   }
 }
