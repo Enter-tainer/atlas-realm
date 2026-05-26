@@ -1,15 +1,24 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runWhenStyleReady, setGlobalStatePropertyWhenReady } from './style-ready.js';
+import { runWhenStyleInfrastructureReady, runWhenStyleReady, setGlobalStatePropertyWhenReady } from './style-ready.js';
 
 type MockStyleMap = {
+  _loaded?: boolean;
   _styleLoaded: boolean;
   _styleInitialized?: boolean;
+  _styleInfrastructureInitialized?: boolean;
+  _styleReadyLoadMarkerInstalled?: boolean;
+  style: { _loaded?: boolean };
   _globalState: Record<string, unknown>;
   isStyleLoaded(): boolean;
   once(event: string, callback: () => void): void;
+  on(event: string, callback: () => void): void;
+  off(event: string, callback: () => void): void;
   setGlobalStateProperty(name: string, value: unknown): void;
   _setStyleLoaded(loaded: boolean): void;
+  _setMapLoaded(loaded: boolean): void;
+  _setStyleInfrastructureLoaded(loaded: boolean): void;
   _emit(event: string): void;
+  _listenerCount(event: string): number;
 };
 
 /**
@@ -22,18 +31,41 @@ type MockStyleMap = {
  */
 function createMockMap({ styleLoaded = false }: { styleLoaded?: boolean } = {}) {
   const listeners = new Map<string, Array<() => void>>();
+  const addListener = (event: string, callback: () => void) => {
+    if (!listeners.has(event)) listeners.set(event, []);
+    listeners.get(event)?.push(callback);
+  };
+  const removeListener = (event: string, callback: () => void) => {
+    listeners.set(
+      event,
+      (listeners.get(event) || []).filter((item) => item !== callback),
+    );
+  };
 
   const mock: MockStyleMap = {
     _styleLoaded: styleLoaded,
+    _loaded: false,
     _styleInitialized: undefined,
+    _styleInfrastructureInitialized: undefined,
+    _styleReadyLoadMarkerInstalled: undefined,
+    style: { _loaded: styleLoaded },
     _globalState: {} as Record<string, unknown>,
 
     isStyleLoaded() {
       return this._styleLoaded;
     },
     once(event: string, callback: () => void) {
-      if (!listeners.has(event)) listeners.set(event, []);
-      listeners.get(event)?.push(callback);
+      const onceCallback = () => {
+        removeListener(event, onceCallback);
+        callback();
+      };
+      addListener(event, onceCallback);
+    },
+    on(event: string, callback: () => void) {
+      addListener(event, callback);
+    },
+    off(event: string, callback: () => void) {
+      removeListener(event, callback);
     },
     setGlobalStateProperty(name: string, value: unknown) {
       this._globalState[name] = value;
@@ -43,8 +75,18 @@ function createMockMap({ styleLoaded = false }: { styleLoaded?: boolean } = {}) 
     _setStyleLoaded(loaded: boolean) {
       this._styleLoaded = loaded;
     },
+    _setMapLoaded(loaded: boolean) {
+      this._loaded = loaded;
+    },
+    _setStyleInfrastructureLoaded(loaded: boolean) {
+      this.style._loaded = loaded;
+    },
     _emit(event: string) {
-      for (const cb of listeners.get(event) || []) cb();
+      if (event === 'load') this._loaded = true;
+      for (const cb of [...(listeners.get(event) || [])]) cb();
+    },
+    _listenerCount(event: string) {
+      return listeners.get(event)?.length || 0;
     },
   };
 
@@ -95,6 +137,17 @@ describe('runWhenStyleReady', () => {
     expect(fn2).toHaveBeenCalledOnce(); // synchronous despite tile loading
   });
 
+  it('runs synchronously after the map load event even if tiles later make isStyleLoaded false', () => {
+    const map = createMockMap({ styleLoaded: false });
+    map._setMapLoaded(true);
+
+    const fn = vi.fn();
+    runWhenStyleReady(map, fn);
+
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._styleInitialized).toBe(true);
+  });
+
   it('handles multiple deferred callbacks on the load event', () => {
     const map = createMockMap({ styleLoaded: false });
     const fn1 = vi.fn();
@@ -135,6 +188,73 @@ describe('runWhenStyleReady', () => {
 
     expect(calls).toHaveLength(10);
     expect(calls).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+});
+
+describe('runWhenStyleInfrastructureReady', () => {
+  it('runs synchronously when the full style is loaded', () => {
+    const map = createMockMap({ styleLoaded: true });
+    const fn = vi.fn();
+    runWhenStyleInfrastructureReady(map, fn);
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._styleInfrastructureInitialized).toBe(true);
+  });
+
+  it('runs synchronously when style infrastructure has loaded but tiles are still loading', () => {
+    const map = createMockMap({ styleLoaded: false });
+    map._setStyleInfrastructureLoaded(true);
+    const fn = vi.fn();
+
+    runWhenStyleInfrastructureReady(map, fn);
+
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._styleInfrastructureInitialized).toBe(true);
+    expect(map._styleInitialized).toBeUndefined();
+  });
+
+  it('keeps a full load marker when it runs early on style infrastructure', () => {
+    const map = createMockMap({ styleLoaded: false });
+    map._setStyleInfrastructureLoaded(true);
+    const fn = vi.fn();
+
+    runWhenStyleInfrastructureReady(map, fn);
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._styleReadyLoadMarkerInstalled).toBe(true);
+
+    map._emit('load');
+    expect(map._styleInitialized).toBe(true);
+  });
+
+  it('fires on style.load before the map load event', () => {
+    const map = createMockMap({ styleLoaded: false });
+    const fn = vi.fn();
+    runWhenStyleInfrastructureReady(map, fn);
+
+    expect(fn).not.toHaveBeenCalled();
+    map._emit('style.load');
+
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._styleInfrastructureInitialized).toBe(true);
+    expect(map._styleInitialized).toBeUndefined();
+  });
+
+  it('cleans up paired style.load and load listeners after the first event', () => {
+    const map = createMockMap({ styleLoaded: false });
+    const fn = vi.fn();
+
+    runWhenStyleInfrastructureReady(map, fn);
+    expect(map._listenerCount('style.load')).toBe(1);
+    expect(map._listenerCount('load')).toBe(2);
+
+    map._emit('style.load');
+
+    expect(fn).toHaveBeenCalledOnce();
+    expect(map._listenerCount('style.load')).toBe(0);
+    expect(map._listenerCount('load')).toBe(1);
+
+    map._emit('load');
+    expect(map._listenerCount('load')).toBe(0);
+    expect(map._styleInitialized).toBe(true);
   });
 });
 

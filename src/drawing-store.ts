@@ -77,7 +77,11 @@ export class DrawingStore extends EventTarget {
     return saved;
   }
 
-  patchLayer(layerId: string, patch: Partial<Pick<DrawingLayer, 'name' | 'visible' | 'stackOrder'>>, options: { remote?: boolean } = {}) {
+  patchLayer(
+    layerId: string,
+    patch: Partial<Pick<DrawingLayer, 'name' | 'visible' | 'stackOrder'>>,
+    options: { remote?: boolean } = {},
+  ) {
     const layer = this._doc.layers[layerId];
     if (!layer) return null;
     return this.upsertLayer(

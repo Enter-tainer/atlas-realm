@@ -1,10 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createEmptyDrawingDoc } from './drawing-model.js';
-import {
-  applyDrawingServerMessage,
-  parseDrawingClientMessage,
-  reduceDrawingClientMessage,
-} from './drawing-sync.js';
+import { applyDrawingServerMessage, parseDrawingClientMessage, reduceDrawingClientMessage } from './drawing-sync.js';
 import type { DrawingFeature } from './drawing-model.js';
 
 const NOW = 1_700_000_000_000;
@@ -127,7 +123,11 @@ describe('drawing sync protocol', () => {
 
   it('reduces client operations into server messages', () => {
     const doc = createEmptyDrawingDoc(NOW);
-    const upsert = reduceDrawingClientMessage(doc, { type: 'drawing:feature:upsert', feature: routeFeature() }, NOW + 1);
+    const upsert = reduceDrawingClientMessage(
+      doc,
+      { type: 'drawing:feature:upsert', feature: routeFeature() },
+      NOW + 1,
+    );
     expect(upsert.outbound).toMatchObject({
       type: 'drawing:feature:upserted',
       revision: 1,

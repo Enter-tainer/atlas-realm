@@ -1317,7 +1317,8 @@ function drawingPopupContent(feature: RenderedFeatureLike) {
   const container = el('div', 'orm-popup');
 
   const title = el('h5', 'orm-popup-title', container);
-  title.innerText = stringValue(properties.name || properties.label) || formatDrawingKind(properties.kind) || 'Plan item';
+  title.innerText =
+    stringValue(properties.name || properties.label) || formatDrawingKind(properties.kind) || 'Plan item';
 
   const label = el('h6', 'orm-popup-label', container);
   const marker = el('span', 'orm-color-marker', label);
@@ -1347,6 +1348,10 @@ function drawingPopupContent(feature: RenderedFeatureLike) {
 export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, featuresCatalog: FeaturesCatalog) {
   let popup: PopupBuilderLike | null = null;
   let hoveredFeature: FeatureStateTarget | null = null;
+  map.getContainer().addEventListener('drawing:editopen', () => {
+    popup?.remove();
+    popup = null;
+  });
 
   // Build set of ORM source names for fast lookup
   const ormSources = new Set(
