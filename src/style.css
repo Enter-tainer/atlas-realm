@@ -168,6 +168,11 @@ body,
     0 0 0 4px #fff;
 }
 
+.collab-agent-avatar {
+  border-style: dashed;
+  opacity: 0.86;
+}
+
 .collab-compact-summary {
   display: grid;
   gap: 2px;
@@ -418,6 +423,11 @@ body,
   box-shadow:
     0 0 0 2px #111827,
     0 0 0 4px #fff;
+}
+
+.collab-agent-avatar:hover,
+.collab-agent-avatar:focus {
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.18);
 }
 
 .collab-empty {

@@ -79,6 +79,18 @@ interface UserProfile {
   color: string;
 }
 
+type ClientType = 'human' | 'agent' | 'query';
+
+interface AgentParticipant {
+  id: string;
+  user: UserProfile;
+  clientType: 'agent';
+  active: boolean;
+  lastSeenAt: number;
+  expiresAt: number;
+  lastAction: string;
+}
+
 interface CursorState {
   visible: boolean;
   lngLat: LngLatTuple | null;
@@ -108,6 +120,8 @@ interface ViewportState {
 
 interface PeerState {
   user?: UserProfile;
+  clientType?: ClientType;
+  presenceVisible?: boolean;
   viewport?: ViewportState | null;
   cursor?: CursorState;
   location?: LocationState;
@@ -169,7 +183,9 @@ const OVERLAY_CONTENT_BINARY_VERSION = 1;
 const MAX_OVERLAY_CONTENT_BYTES = 2 * 1024 * 1024;
 const EPHEMERAL_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 const UNREFERENCED_OVERLAY_CONTENT_TTL_MS = 60 * 60 * 1000;
-const SQL_READY_KEY = '__overlay_sql_ready_v2';
+const AGENT_RECENT_TTL_MS = 5 * 60 * 1000;
+const AGENT_TOUCH_THROTTLE_MS = 5 * 1000;
+const SQL_READY_KEY = '__overlay_sql_ready_v3';
 const DRAWING_STATE_KEY = 'main';
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -312,6 +328,14 @@ function sanitizeUser(value: unknown, fallback?: UserProfile): UserProfile {
   };
 }
 
+function sanitizeClientType(value: unknown): ClientType {
+  return value === 'agent' || value === 'query' ? value : 'human';
+}
+
+function sanitizeAction(value: unknown, fallback = 'connect'): string {
+  return sanitizeText(value, fallback, 80);
+}
+
 function sanitizePeerId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const id = value.trim();
@@ -382,10 +406,11 @@ function sanitizeViewState(value: unknown, fallback: ViewState = { terrain: fals
 
 function publicPeer(connection: Connection<PeerState>) {
   const state = connection.state || {};
-  if (!state.user) return null;
+  if (!state.user || state.presenceVisible === false || state.clientType !== 'human') return null;
   return {
     id: connection.id,
     user: state.user,
+    clientType: 'human',
     viewport: state.viewport || null,
     cursor: state.cursor || { visible: false, lngLat: null },
     location: state.location || emptyLocation(),
@@ -439,6 +464,15 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         updated_at INTEGER NOT NULL
       )
     `;
+    this.sql`
+      CREATE TABLE IF NOT EXISTS agent_participants (
+        agent_id TEXT PRIMARY KEY,
+        user_json TEXT NOT NULL,
+        last_seen_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        last_action TEXT NOT NULL
+      )
+    `;
     await this.ctx.storage.put(SQL_READY_KEY, true);
   }
 
@@ -463,6 +497,98 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       `;
     }
     await this.ctx.storage.setAlarm(expiresAt + 60_000);
+  }
+
+  _agentParticipants(now = Date.now()): AgentParticipant[] {
+    return this.sql<{
+      agent_id: string;
+      user_json: string;
+      last_seen_at: number;
+      expires_at: number;
+      last_action: string;
+    }>`
+      SELECT agent_id, user_json, last_seen_at, expires_at, last_action
+      FROM agent_participants
+      WHERE expires_at > ${now}
+      ORDER BY last_seen_at DESC
+    `
+      .map((row) => {
+        try {
+          const user = sanitizeUser(JSON.parse(String(row.user_json)), {
+            id: row.agent_id,
+            name: 'Agent',
+            color: PROFILE_COLORS[7],
+          });
+          return {
+            id: row.agent_id,
+            user: { ...user, id: row.agent_id },
+            clientType: 'agent' as const,
+            active: Number(row.expires_at) > now,
+            lastSeenAt: Number(row.last_seen_at),
+            expiresAt: Number(row.expires_at),
+            lastAction: String(row.last_action || 'connect'),
+          };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean);
+  }
+
+  _pruneAgentParticipants(now = Date.now()): void {
+    this.sql`
+      DELETE FROM agent_participants
+      WHERE expires_at <= ${now}
+    `;
+  }
+
+  _touchAgentParticipant(user: UserProfile, action = 'connect', now = Date.now()): AgentParticipant | null {
+    const agentId = sanitizePeerId(user.id);
+    if (!agentId) return null;
+    const existing = this.sql<{ last_seen_at: number; expires_at: number }>`
+      SELECT last_seen_at, expires_at FROM agent_participants WHERE agent_id = ${agentId} LIMIT 1
+    `[0];
+    const expiresAt = now + AGENT_RECENT_TTL_MS;
+    const lastAction = sanitizeAction(action);
+    const shouldWrite =
+      !existing || now - Number(existing.last_seen_at) >= AGENT_TOUCH_THROTTLE_MS || lastAction !== 'connect';
+    if (shouldWrite) {
+      const storedUser = {
+        id: agentId,
+        name: sanitizeText(user.name, 'Agent', 32),
+        color: sanitizeColor(user.color, PROFILE_COLORS[7]),
+      };
+      this.sql`
+        INSERT OR REPLACE INTO agent_participants (agent_id, user_json, last_seen_at, expires_at, last_action)
+        VALUES (${agentId}, ${JSON.stringify(storedUser)}, ${now}, ${expiresAt}, ${lastAction})
+      `;
+      const participant = {
+        id: agentId,
+        user: storedUser,
+        clientType: 'agent' as const,
+        active: true,
+        lastSeenAt: now,
+        expiresAt,
+        lastAction,
+      };
+      this.broadcast(
+        encodeMessage({
+          type: 'agent:participant:update',
+          agent: participant,
+        }),
+        undefined,
+      );
+      return participant;
+    }
+    return {
+      id: agentId,
+      user,
+      clientType: 'agent',
+      active: Number(existing.expires_at) > now,
+      lastSeenAt: Number(existing.last_seen_at),
+      expiresAt: Number(existing.expires_at),
+      lastAction,
+    };
   }
 
   _listOverlayManifests(): OverlayManifest[] {
@@ -535,6 +661,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   async onConnect(connection: Connection<PeerState>, { request }: ConnectionContext): Promise<void> {
     await this._touchRoom();
     const url = new URL(request.url);
+    const clientType = sanitizeClientType(url.searchParams.get('clientType'));
+    const presenceVisible = clientType === 'human' && url.searchParams.get('headless') !== 'true';
     const color = sanitizeColor(
       url.searchParams.get('color'),
       PROFILE_COLORS[
@@ -546,9 +674,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       name: sanitizeText(url.searchParams.get('name'), `Guest ${connection.id.slice(0, 4)}`, 32),
       color,
     };
+    const agent = clientType === 'agent' ? this._touchAgentParticipant(user, 'connect') : null;
 
     connection.setState({
       user,
+      clientType,
+      presenceVisible,
       viewport: null,
       cursor: { visible: false, lngLat: null },
       location: emptyLocation(),
@@ -568,6 +699,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         id: connection.id,
         room: this.name,
         peers,
+        agents: this._agentParticipants(),
       }),
     );
 
@@ -581,13 +713,22 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
     connection.send(encodeMessage(buildDrawingSnapshotMessage(this._getDrawingDoc())));
 
-    this.broadcast(
-      encodeMessage({
-        type: 'presence:join',
-        peer: publicPeer(connection),
-      }),
-      [connection.id],
-    );
+    if (presenceVisible) {
+      this.broadcast(
+        encodeMessage({
+          type: 'presence:join',
+          peer: publicPeer(connection),
+        }),
+        [connection.id],
+      );
+    } else if (agent) {
+      connection.send(
+        encodeMessage({
+          type: 'agent:participant:update',
+          agent,
+        }),
+      );
+    }
   }
 
   async onMessage(connection: Connection<PeerState>, message: WSMessage): Promise<void> {
@@ -656,6 +797,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         VALUES (${manifest.id}, ${JSON.stringify(manifest)}, ${manifest.contentHash}, ${orderIndex}, ${Date.now()})
       `;
       this._pruneUnreferencedOverlayContent({ immediate: existing.length > 0 });
+      connection.send(
+        encodeMessage({
+          type: 'overlay:upserted',
+          manifest,
+        }),
+      );
       this._broadcastOverlayList(undefined);
       return;
     }
@@ -696,6 +843,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         SET manifest_json = ${JSON.stringify(nextManifest)}, updated_at = ${Date.now()}
         WHERE overlay_id = ${overlayId}
       `;
+      connection.send(
+        encodeMessage({
+          type: 'overlay:patched',
+          manifest: nextManifest,
+        }),
+      );
       this._broadcastOverlayList(connection.id);
       return;
     }
@@ -708,6 +861,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         this
           .sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
       });
+      connection.send(
+        encodeMessage({
+          type: 'overlay:reordered',
+          orderedIds: this._listOverlayManifests().map((manifest) => manifest.id),
+        }),
+      );
       this._broadcastOverlayList(connection.id);
       return;
     }
@@ -717,6 +876,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       if (!overlayId) return;
       this.sql`DELETE FROM overlays WHERE overlay_id = ${overlayId}`;
       this._pruneUnreferencedOverlayContent({ immediate: true });
+      connection.send(encodeMessage({ type: 'overlay:deleted', overlayId }));
       this.broadcast(encodeMessage({ type: 'overlay:delete', overlayId }), [connection.id]);
       return;
     }
@@ -738,9 +898,17 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     if (payload.type !== 'client:update') return;
 
     const previous = connection.state || {};
+    if (previous.clientType === 'agent' && previous.user) {
+      this._touchAgentParticipant(previous.user, sanitizeAction(payload.action, 'client:update'));
+      return;
+    }
+    if (previous.clientType !== 'human' || previous.presenceVisible === false) return;
+
     const followingId = sanitizePeerId(payload.followingId);
     const next = {
       user: sanitizeUser(payload.user, previous.user),
+      clientType: previous.clientType,
+      presenceVisible: previous.presenceVisible,
       viewport: sanitizeViewport(payload.viewport) || previous.viewport || null,
       cursor: sanitizeCursor(payload.cursor),
       location: sanitizeLocation(payload.location, previous.location || emptyLocation()),
@@ -761,12 +929,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 
   onClose(connection: Connection<PeerState>): void {
-    this.broadcast(
-      encodeMessage({
-        type: 'presence:leave',
-        id: connection.id,
-      }),
-    );
+    if (connection.state?.presenceVisible === false || connection.state?.clientType !== 'human') return;
+    this.broadcast(encodeMessage({ type: 'presence:leave', id: connection.id }));
   }
 
   onError(connection: Connection<PeerState>): void {
@@ -791,12 +955,14 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     `[0];
     if (!room || room.persistence === 'persistent') return;
     if (room.expires_at && Number(room.expires_at) > Date.now()) {
+      this._pruneAgentParticipants();
       await this.ctx.storage.setAlarm(Number(room.expires_at) + 60_000);
       return;
     }
     this.sql`DELETE FROM overlays`;
     this.sql`DELETE FROM overlay_contents`;
     this.sql`DELETE FROM drawing_state`;
+    this.sql`DELETE FROM agent_participants`;
     this.sql`DELETE FROM room_meta WHERE room_id = ${this.name}`;
   }
 }

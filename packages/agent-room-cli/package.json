@@ -1,0 +1,35 @@
+{
+  "name": "@orm-pmtiles-demo/agent-room-cli",
+  "version": "0.1.0",
+  "description": "CLI for agents to join ORM map collaboration rooms and manage layers and annotations.",
+  "bin": {
+    "orm-agent-room": "./bin/orm-agent-room.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "skills"
+  ],
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "rm -rf dist",
+    "prepack": "pnpm run build",
+    "test": "vitest run --root ../.. --config vitest.config.js packages/agent-room-cli/test/commands.test.ts"
+  },
+  "dependencies": {
+    "yargs": "^17.7.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

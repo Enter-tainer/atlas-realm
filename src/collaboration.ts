@@ -33,6 +33,15 @@ type EaseToOptions = {
 };
 type UserProfile = { userId: string; name: string; color: string };
 type PeerUser = { id?: string; name: string; color: string };
+type AgentParticipant = {
+  id: string;
+  user: PeerUser;
+  clientType: 'agent';
+  active: boolean;
+  lastSeenAt: number;
+  expiresAt: number;
+  lastAction: string;
+};
 type CursorState = { visible: boolean; lngLat: LngLatTuple | null };
 type LocationState = {
   enabled: boolean;
@@ -71,6 +80,8 @@ type CollaborationMessage = JsonRecord & {
   id?: string;
   peer?: Peer;
   peers?: Peer[];
+  agent?: AgentParticipant;
+  agents?: AgentParticipant[];
   overlays?: OverlayManifest[];
   persistence?: 'ephemeral' | 'persistent';
   contentHash?: string;
@@ -108,6 +119,10 @@ const EMPTY_LOCATION: LocationState = {
 };
 
 const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5'];
+
+export function activeAgentParticipants(agents: Iterable<AgentParticipant>, now = Date.now()): AgentParticipant[] {
+  return [...agents].filter((agent) => agent.active && Number(agent.expiresAt) > now);
+}
 
 function isRecord(value: unknown): value is JsonRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -354,6 +369,7 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
   const clientId = getSessionId();
   const profile = getProfile();
   const peers = new Map<string, Peer>();
+  const agents = new Map<string, AgentParticipant>();
   const overlayManifests = new Map<string, OverlayManifest>();
   const overlayContentBytes = new Map<string, Uint8Array>();
   const pendingOverlayAssets = new Map<string, Map<string, OverlaySyncAsset>>();
@@ -522,13 +538,19 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     }
 
     const totalPeople = peers.size + 1;
+    const activeAgents = activeAgentParticipants(agents.values()).length;
+    const agentText =
+      activeAgents === 0 ? '' : activeAgents === 1 ? ' · 1 agent active' : ` · ${activeAgents} agents active`;
     presenceSummary.textContent =
       peers.size === 0
-        ? 'No one else is here yet'
+        ? `No one else is here yet${agentText}`
         : peers.size === 1
-          ? '1 other person is here'
-          : `${peers.size} other people are here`;
-    avatars.setAttribute('aria-label', `${totalPeople} people in room`);
+          ? `1 other person is here${agentText}`
+          : `${peers.size} other people are here${agentText}`;
+    avatars.setAttribute(
+      'aria-label',
+      activeAgents ? `${totalPeople} people and ${activeAgents} agents in room` : `${totalPeople} people in room`,
+    );
   }
 
   function renderLocalProfile() {
@@ -619,21 +641,37 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       avatar.classList.toggle('following', peer.id === followedPeerId);
       compactAvatars.appendChild(avatar);
     }
+    for (const agent of activeAgentParticipants(agents.values()).slice(0, Math.max(0, 3 - peers.size))) {
+      const avatar = createElement('span', 'collab-compact-avatar collab-agent-avatar');
+      avatar.style.setProperty('--peer-color', safeColor(agent.user.color));
+      avatar.textContent = initials(agent.user.name);
+      compactAvatars.appendChild(avatar);
+    }
   }
 
   function renderPeople() {
     avatars.replaceChildren();
+    const activeAgents = activeAgentParticipants(agents.values());
 
     if (!socket) {
       const empty = createElement('span', 'collab-empty');
       empty.textContent = 'Offline';
       avatars.appendChild(empty);
-    } else if (peers.size === 0) {
+    } else if (peers.size === 0 && activeAgents.length === 0) {
       const empty = createElement('span', 'collab-empty');
       empty.textContent = 'Just you';
       avatars.appendChild(empty);
     } else {
       for (const peer of peers.values()) avatars.appendChild(createAvatarNode(peer));
+      for (const agent of activeAgents) {
+        const avatar = createElement('span', 'collab-avatar collab-agent-avatar', {
+          title: `${agent.user.name} · agent active`,
+          'aria-label': `${agent.user.name}, agent active`,
+        });
+        avatar.style.setProperty('--peer-color', safeColor(agent.user.color));
+        avatar.textContent = initials(agent.user.name);
+        avatars.appendChild(avatar);
+      }
     }
 
     const followedPeer = followedPeerId ? peers.get(followedPeerId) : null;
@@ -1052,6 +1090,20 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     if (peer.id === followedPeerId) scheduleFollow(peer);
   }
 
+  function setAgents(items: AgentParticipant[] | undefined) {
+    agents.clear();
+    for (const agent of items || []) {
+      if (agent?.id) agents.set(agent.id, agent);
+    }
+    renderPeople();
+  }
+
+  function upsertAgent(agent: AgentParticipant | undefined) {
+    if (!agent?.id) return;
+    agents.set(agent.id, agent);
+    renderPeople();
+  }
+
   async function handleMessage(event: MessageEvent) {
     if (typeof event.data !== 'string') {
       await handleOverlayBinaryMessage(event.data);
@@ -1069,6 +1121,7 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       ownConnectionId = message.id || ownConnectionId;
       peers.clear();
       for (const peer of message.peers || []) upsertPeer(peer);
+      setAgents(message.agents);
       if (followedPeerId && !peers.has(followedPeerId)) followedPeerId = null;
       renderPeople();
       scheduleOverlayRender();
@@ -1112,6 +1165,11 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
 
     if (message.type === 'presence:join' || message.type === 'presence:update') {
       upsertPeer(message.peer);
+      return;
+    }
+
+    if (message.type === 'agent:participant:update') {
+      upsertAgent(message.agent);
       return;
     }
 
