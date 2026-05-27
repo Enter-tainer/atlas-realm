@@ -242,6 +242,14 @@ function contentCount(instance: TestMapCollaboration): number {
   );
 }
 
+function agentRows(instance: TestMapCollaboration): TestSqlRow[] {
+  return instance.sql`
+    SELECT agent_id, user_json, last_seen_at, expires_at, last_action
+    FROM agent_participants
+    ORDER BY agent_id ASC
+  `;
+}
+
 describe('MapCollaboration overlay state machine', () => {
   it('stores binary overlay content and acknowledges the content hash', async () => {
     const stub = roomStub('binary-store');
@@ -440,6 +448,65 @@ describe('MapCollaboration overlay state machine', () => {
     expect(result.afterSecondDelete.contentCount).toBe(0);
   });
 
+  it('acknowledges overlay CRUD messages for command-line clients', async () => {
+    const stub = roomStub('overlay-cli-acks');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = createConnection();
+
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
+      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
+      const upserted = sentJson(connection, 'overlay:upserted').at(-1);
+
+      connection.sent = [];
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('overlay:patch', {
+          overlayId: 'overlay-a',
+          patch: { name: 'CLI overlay', visible: false },
+        }),
+      );
+      const patched = sentJson(connection, 'overlay:patched').at(-1);
+
+      await storeContent(instance, connection, HASH_B, CONTENT_B);
+      await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
+      connection.sent = [];
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('overlay:reorder', {
+          orderedIds: ['overlay-b', 'overlay-a'],
+        }),
+      );
+      const reordered = sentJson(connection, 'overlay:reordered').at(-1);
+
+      connection.sent = [];
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-a' }));
+      const deleted = sentJson(connection, 'overlay:deleted').at(-1);
+
+      return {
+        upserted,
+        patched,
+        reordered,
+        deleted,
+        overlays: overlayList(instance).map((overlay) => overlay.id),
+      };
+    });
+
+    expect(result.upserted).toMatchObject({ type: 'overlay:upserted', manifest: { id: 'overlay-a' } });
+    expect(result.patched).toMatchObject({
+      type: 'overlay:patched',
+      manifest: { id: 'overlay-a', name: 'CLI overlay', visible: false },
+    });
+    expect(result.reordered).toEqual({
+      type: 'overlay:reordered',
+      orderedIds: ['overlay-b', 'overlay-a'],
+    });
+    expect(result.deleted).toEqual({ type: 'overlay:deleted', overlayId: 'overlay-a' });
+    expect(result.overlays).toEqual(['overlay-b']);
+  });
+
   it('replaces existing overlay content and removes the old unreferenced blob', async () => {
     const stub = roomStub('replace-content');
     const result = await runInDO(stub, async (instance) => {
@@ -513,6 +580,143 @@ describe('MapCollaboration overlay state machine', () => {
       peers: [],
     });
     expect(asRecordArray(result.overlay.overlays).map((overlay) => overlay.id)).toEqual(['overlay-a']);
+  });
+
+  it('tracks recent agent participants without adding them to live human peers', async () => {
+    const stub = roomStub('agent-presence');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+
+      const agent = createConnection('agent-connection');
+      await connectWorker(instance, agent, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-presence?name=Planner&color=%234f46e5&userId=agent-a&clientType=agent',
+        ),
+      });
+      const agentInit = sentJson(agent, 'presence:init')[0];
+      const agentUpdate = sentJson(agent, 'agent:participant:update')[0];
+
+      const human = createConnection('human-connection');
+      await connectWorker(instance, human, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-presence?name=Alice&color=%23ef4444&userId=user-a',
+        ),
+      });
+      const humanInit = sentJson(human, 'presence:init')[0];
+
+      return {
+        agentState: agent.state,
+        agentInit,
+        agentUpdate,
+        humanInit,
+        rows: agentRows(instance),
+      };
+    });
+
+    expect(result.agentState.clientType).toBe('agent');
+    expect(result.agentState.presenceVisible).toBe(false);
+    expect(result.agentInit).toMatchObject({
+      type: 'presence:init',
+      peers: [],
+      agents: [
+        {
+          id: 'agent-a',
+          user: { id: 'agent-a', name: 'Planner', color: '#4f46e5' },
+          clientType: 'agent',
+          active: true,
+          lastAction: 'connect',
+        },
+      ],
+    });
+    expect(result.agentUpdate).toMatchObject({
+      type: 'agent:participant:update',
+      agent: { id: 'agent-a', lastAction: 'connect' },
+    });
+    expect(result.humanInit).toMatchObject({
+      type: 'presence:init',
+      peers: [],
+      agents: [{ id: 'agent-a', active: true }],
+    });
+    expect(result.rows).toHaveLength(1);
+    expect(result.rows[0]).toMatchObject({ agent_id: 'agent-a', last_action: 'connect' });
+  });
+
+  it('does not write recent agent state for query clients', async () => {
+    const stub = roomStub('query-presence');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+
+      const query = createConnection('query-connection');
+      await connectWorker(instance, query, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/query-presence?name=Reader&userId=query-a&clientType=query',
+        ),
+      });
+
+      return {
+        state: query.state,
+        init: sentJson(query, 'presence:init')[0],
+        rows: agentRows(instance),
+      };
+    });
+
+    expect(result.state.clientType).toBe('query');
+    expect(result.state.presenceVisible).toBe(false);
+    expect(result.init).toMatchObject({ type: 'presence:init', peers: [], agents: [] });
+    expect(result.rows).toEqual([]);
+  });
+
+  it('throttles recent agent touches but refreshes them after the throttle window', async () => {
+    const stub = roomStub('agent-touch-throttle');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+
+      const first = createConnection('agent-first');
+      await connectWorker(instance, first, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
+        ),
+      });
+      const initial = agentRows(instance)[0];
+
+      const attemptedLastSeen = Number(initial.last_seen_at) + 1_000;
+      instance.sql`
+        UPDATE agent_participants
+        SET last_seen_at = ${attemptedLastSeen}, expires_at = ${attemptedLastSeen + 300_000}
+        WHERE agent_id = ${'agent-a'}
+      `;
+      const throttled = createConnection('agent-throttled');
+      await connectWorker(instance, throttled, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
+        ),
+      });
+      const afterThrottled = agentRows(instance)[0];
+
+      const staleLastSeen = Number(afterThrottled.last_seen_at) - 6_000;
+      instance.sql`
+        UPDATE agent_participants
+        SET last_seen_at = ${staleLastSeen}, expires_at = ${staleLastSeen + 300_000}
+        WHERE agent_id = ${'agent-a'}
+      `;
+      const refreshed = createConnection('agent-refreshed');
+      await connectWorker(instance, refreshed, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
+        ),
+      });
+      const afterRefresh = agentRows(instance)[0];
+
+      return {
+        attemptedLastSeen,
+        afterThrottled,
+        staleLastSeen,
+        afterRefresh,
+      };
+    });
+
+    expect(Number(result.afterThrottled.last_seen_at)).toBe(result.attemptedLastSeen);
+    expect(Number(result.afterRefresh.last_seen_at)).toBeGreaterThanOrEqual(result.staleLastSeen + 5_000);
   });
 
   it('stores drawing feature operations and sends snapshots on connect', async () => {
@@ -780,6 +984,43 @@ describe('MapCollaboration room lifecycle', () => {
 
     expect(result.drawing).toEqual([]);
     expect(result.rooms).toEqual([]);
+  });
+
+  it('garbage-collects expired recent agent participants while room storage is still alive', async () => {
+    const stub = roomStub('expired-agent-participants');
+
+    await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const agent = createConnection('agent-connection');
+      await connectWorker(instance, agent, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/expired-agent-participants?name=Planner&userId=agent-a&clientType=agent',
+        ),
+      });
+      instance.sql`
+        UPDATE agent_participants
+        SET expires_at = ${Date.now() - 1}
+        WHERE agent_id = ${'agent-a'}
+      `;
+      instance.sql`
+        UPDATE room_meta
+        SET expires_at = ${Date.now() + 60_000}
+        WHERE room_id = ${'expired-agent-participants'}
+      `;
+    });
+
+    await expect(runAlarm(stub)).resolves.toBe(true);
+
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      return {
+        agents: agentRows(instance),
+        rooms: instance.sql`SELECT room_id FROM room_meta`,
+      };
+    });
+
+    expect(result.agents).toEqual([]);
+    expect(result.rooms).toEqual([{ room_id: 'expired-agent-participants' }]);
   });
 
   it('keeps persistent room storage when the alarm runs', async () => {
