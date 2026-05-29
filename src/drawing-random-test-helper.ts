@@ -192,10 +192,19 @@ export function generateDrawingClientMessages(seed: number, count: number): Draw
         type: 'drawing:feature:reorder',
         orderedIds,
       };
-    } else {
+    } else if (roll < 0.96) {
       message = {
         type: 'drawing:layer:upsert',
         layer: layerPatchFromDoc(random, shadow, step),
+      };
+    } else {
+      const orderedIds = shuffled(random, shadow.layerOrder);
+      if (orderedIds.length > 0 && random() < 0.35) {
+        orderedIds.splice(randomInt(random, orderedIds.length + 1), 0, `missing-layer-${step}`);
+      }
+      message = {
+        type: 'drawing:layer:reorder',
+        orderedIds,
       };
     }
 

@@ -2,6 +2,7 @@ import {
   applyDrawingFeatureDelete,
   applyDrawingFeatureReorder,
   applyDrawingFeatureUpsert,
+  applyDrawingLayerReorder,
   applyDrawingLayerUpsert,
   createEmptyDrawingDoc,
   normalizeDrawingDoc,
@@ -15,6 +16,7 @@ export const DRAWING_SYNC_VERSION = 1;
 export type DrawingClientMessage =
   | { type: 'drawing:snapshot:request' }
   | { type: 'drawing:layer:upsert'; layer: DrawingLayer }
+  | { type: 'drawing:layer:reorder'; orderedIds: string[] }
   | { type: 'drawing:feature:upsert'; feature: DrawingFeature }
   | { type: 'drawing:feature:delete'; featureId: string }
   | { type: 'drawing:feature:reorder'; orderedIds: string[] };
@@ -22,6 +24,7 @@ export type DrawingClientMessage =
 export type DrawingServerMessage =
   | { type: 'drawing:snapshot'; revision: number; doc: DrawingDoc }
   | { type: 'drawing:layer:upserted'; revision: number; layer: DrawingLayer }
+  | { type: 'drawing:layer:reordered'; revision: number; orderedIds: string[] }
   | { type: 'drawing:feature:upserted'; revision: number; feature: DrawingFeature }
   | { type: 'drawing:feature:deleted'; revision: number; featureId: string }
   | { type: 'drawing:feature:reordered'; revision: number; orderedIds: string[] };
@@ -49,6 +52,12 @@ export function parseDrawingClientMessage(value: unknown, now = Date.now()): Dra
   if (value.type === 'drawing:layer:upsert') {
     const layer = sanitizeDrawingLayer(value.layer, now);
     return layer ? { type: 'drawing:layer:upsert', layer } : null;
+  }
+  if (value.type === 'drawing:layer:reorder') {
+    const orderedIds = Array.isArray(value.orderedIds)
+      ? value.orderedIds.map(sanitizeFeatureId).filter(Boolean).slice(0, 128)
+      : [];
+    return { type: 'drawing:layer:reorder', orderedIds };
   }
   if (value.type === 'drawing:feature:upsert') {
     const feature = sanitizeDrawingFeature(value.feature, now);
@@ -83,6 +92,12 @@ export function applyDrawingServerMessage(doc: DrawingDoc, message: DrawingServe
     return applyDrawingLayerUpsert(normalized, message.layer, {
       revision: message.revision,
       now: messageTimestamp(message.layer.updatedAt, normalized.updatedAt),
+    });
+  }
+  if (message.type === 'drawing:layer:reordered') {
+    return applyDrawingLayerReorder(normalized, message.orderedIds, {
+      revision: message.revision,
+      now: normalized.updatedAt,
     });
   }
   if (message.type === 'drawing:feature:upserted') {
@@ -127,6 +142,17 @@ export function reduceDrawingClientMessage(
         type: 'drawing:layer:upserted',
         revision: next.revision,
         layer: next.layers[message.layer.id],
+      },
+    };
+  }
+  if (message.type === 'drawing:layer:reorder') {
+    const next = applyDrawingLayerReorder(current, message.orderedIds, { revision, now });
+    return {
+      doc: next,
+      outbound: {
+        type: 'drawing:layer:reordered',
+        revision: next.revision,
+        orderedIds: next.layerOrder,
       },
     };
   }

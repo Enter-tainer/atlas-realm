@@ -423,6 +423,65 @@ describe('MapCollaboration overlay state machine', () => {
     expect(result.after).toEqual(['overlay-b', 'overlay-a']);
   });
 
+  it('reorders the combined layers stack and annotation stack order in one state transition', async () => {
+    const stub = roomStub('combined-stack-reorder');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const alice = createConnection('alice');
+
+      await storeContent(instance, alice, HASH_A, CONTENT_A);
+      await storeContent(instance, alice, HASH_B, CONTENT_B);
+      await upsertOverlay(instance, alice, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
+      await upsertOverlay(instance, alice, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
+      await sendWorkerMessage(
+        instance,
+        alice,
+        jsonMessage('drawing:layer:upsert', {
+          layer: {
+            id: 'drawing-default',
+            name: 'Annotations',
+            visible: true,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+      alice.sent = [];
+
+      await sendWorkerMessage(
+        instance,
+        alice,
+        jsonMessage('overlay:stack:reorder', {
+          stackItems: [
+            { kind: 'overlay', id: 'overlay-b' },
+            { kind: 'drawing', layerId: 'drawing-default' },
+            { kind: 'overlay', id: 'overlay-a' },
+          ],
+        }),
+      );
+
+      const doc = drawingDoc(instance);
+      const layers = doc.layers as Record<string, Record<string, unknown>>;
+      return {
+        overlayIds: overlayList(instance).map((overlay) => overlay.id),
+        stackOrder: layers['drawing-default'].stackOrder,
+        ack: sentJson(alice, 'overlay:reordered').at(-1),
+      };
+    });
+
+    expect(result.overlayIds).toEqual(['overlay-b', 'overlay-a']);
+    expect(result.stackOrder).toBe(1);
+    expect(result.ack).toMatchObject({
+      type: 'overlay:reordered',
+      orderedIds: ['overlay-b', 'overlay-a'],
+      stackItems: [
+        { kind: 'overlay', id: 'overlay-b' },
+        { kind: 'drawing', layerId: 'drawing-default' },
+        { kind: 'overlay', id: 'overlay-a' },
+      ],
+    });
+  });
+
   it('deletes overlays and prunes content only when it is unreferenced', async () => {
     const stub = roomStub('delete-prune');
     const result = await runInDO(stub, async (instance) => {
@@ -735,6 +794,20 @@ describe('MapCollaboration overlay state machine', () => {
         connection,
         jsonMessage('drawing:layer:upsert', {
           layer: {
+            id: 'custom-layer',
+            name: 'Custom layer',
+            visible: true,
+            stackOrder: 0,
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:layer:upsert', {
+          layer: {
             id: 'drawing-default',
             name: 'Shared Tokyo plan',
             visible: false,
@@ -743,6 +816,11 @@ describe('MapCollaboration overlay state machine', () => {
             updatedAt: Date.now(),
           },
         }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('drawing:layer:reorder', { orderedIds: ['custom-layer', 'drawing-default', 'bad/id'] }),
       );
       await sendWorkerMessage(
         instance,
@@ -773,6 +851,7 @@ describe('MapCollaboration overlay state machine', () => {
       visible: false,
       stackOrder: 1,
     });
+    expect(result.doc.layerOrder).toEqual(['custom-layer', 'drawing-default']);
     expect(result.doc.featureOrder).toEqual(['polygon-b']);
     expect(Object.keys(result.doc.features as Record<string, unknown>)).toEqual(['polygon-b']);
     expect((result.doc.features as Record<string, Record<string, unknown>>)['polygon-b']).toMatchObject({
@@ -789,6 +868,7 @@ describe('MapCollaboration overlay state machine', () => {
             stackOrder: 1,
           },
         },
+        layerOrder: ['custom-layer', 'drawing-default'],
         featureOrder: ['polygon-b'],
       },
     });

@@ -3,6 +3,7 @@ import {
   applyDrawingFeatureDelete,
   applyDrawingFeatureReorder,
   applyDrawingFeatureUpsert,
+  applyDrawingLayerReorder,
   applyDrawingLayerUpsert,
   createEmptyDrawingDoc,
   drawingDocBounds,
@@ -156,6 +157,37 @@ describe('drawing model', () => {
     expect(doc.featureOrder).toEqual(['point-a']);
     expect(doc.features['path-a']).toBeUndefined();
     expect(doc.revision).toBe(4);
+  });
+
+  it('reorders annotation layers without dropping unknown existing layers', () => {
+    let doc = createEmptyDrawingDoc(NOW);
+    doc = applyDrawingLayerUpsert(
+      doc,
+      {
+        id: 'custom-a',
+        name: 'Custom A',
+        visible: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+      { now: NOW + 1 },
+    );
+    doc = applyDrawingLayerUpsert(
+      doc,
+      {
+        id: 'custom-b',
+        name: 'Custom B',
+        visible: true,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+      { now: NOW + 2 },
+    );
+
+    doc = applyDrawingLayerReorder(doc, ['custom-b', 'bad/id', 'drawing-default'], { now: NOW + 3 });
+
+    expect(doc.layerOrder).toEqual(['custom-b', 'drawing-default', 'custom-a']);
+    expect(doc.revision).toBe(3);
   });
 
   it('projects editable features into GeoJSON render features', () => {

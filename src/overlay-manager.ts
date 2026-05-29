@@ -341,6 +341,71 @@ function hasSyncOrigin(overlay: OverlayLike | null | undefined) {
   return Boolean(overlay?.syncOverlayId || overlay?.remoteOverlayId);
 }
 
+type OverlayOrderLike = {
+  id?: string;
+  syncOverlayId?: string;
+  remoteOverlayId?: string | null;
+};
+type OverlayStackSyncItem = { kind: 'overlay'; id: string } | { kind: 'drawing'; layerId: string };
+
+function overlaySyncOrderId(overlay: OverlayOrderLike | null | undefined) {
+  return overlay?.remoteOverlayId || overlay?.syncOverlayId || overlay?.id || '';
+}
+
+export function applyRemoteOverlayManifestOrder<T extends OverlayOrderLike>(
+  overlays: readonly T[],
+  orderedIds: readonly string[],
+): T[] {
+  const order = new Map<string, number>();
+  for (const id of orderedIds) {
+    if (typeof id === 'string' && id && !order.has(id)) order.set(id, order.size);
+  }
+  if (order.size === 0) return overlays.slice();
+
+  return overlays
+    .map((overlay, index) => ({ overlay, index }))
+    .sort((a, b) => {
+      const aId = overlaySyncOrderId(a.overlay);
+      const bId = overlaySyncOrderId(b.overlay);
+      const aOrder = order.get(aId);
+      const bOrder = order.get(bId);
+      const aHasOrder = aOrder !== undefined;
+      const bHasOrder = bOrder !== undefined;
+      if (aHasOrder && bHasOrder) return aOrder - bOrder || a.index - b.index;
+      if (aHasOrder) return -1;
+      if (bHasOrder) return 1;
+      return a.index - b.index;
+    })
+    .map((item) => item.overlay);
+}
+
+export function overlayStackSyncItems<
+  T extends { id?: string; type?: string; syncOverlayId?: string; drawingLayerId?: string },
+>(overlays: readonly T[]): OverlayStackSyncItem[] {
+  return overlays
+    .map((overlay) =>
+      overlay.type === 'drawing'
+        ? { kind: 'drawing' as const, layerId: overlay.drawingLayerId || DRAWING_DEFAULT_LAYER_ID }
+        : { kind: 'overlay' as const, id: overlay.syncOverlayId || overlay.id || '' },
+    )
+    .filter((item) => (item.kind === 'overlay' ? Boolean(item.id) : Boolean(item.layerId)));
+}
+
+export function applyDrawingOverlayStackOrder<T extends { id?: string }>(
+  overlays: readonly T[],
+  drawingOverlayId: string,
+  stackOrder: unknown,
+): T[] {
+  const order = Number(stackOrder);
+  const sourceIndex = overlays.findIndex((overlay) => overlay.id === drawingOverlayId);
+  if (sourceIndex === -1 || !Number.isFinite(order)) return overlays.slice();
+  const next = overlays.slice();
+  const [drawingOverlay] = next.splice(sourceIndex, 1);
+  const destinationIndex = Math.min(next.length, Math.max(0, Math.round(order)));
+  next.splice(destinationIndex, 0, drawingOverlay);
+  return next;
+}
+
 function manifestOverlayMetadata(manifest: OverlayLike & { type: 'gpx' | 'geojson' }) {
   const metadata = overlayManifestPatch(manifest);
   delete metadata.id;
@@ -388,11 +453,15 @@ class OverlayManagerControl {
   _importStatusTimer: number;
   _isImportingUrl: boolean;
   _dragState: OverlayDragState | null;
+  _remoteOverlayOrder: string[];
   _boundOverlayAdded: (event: CustomEvent<OverlayLike>) => void;
   _boundOverlayRemoteAdd: (event: CustomEvent<OverlayRemoteAddDetail>) => void;
   _boundOverlayRemoteList: (event: CustomEvent<OverlayListDetail>) => void;
   _boundOverlayRemoteDelete: (event: CustomEvent<{ overlayId?: string }>) => void;
   _boundKeydown: (event: KeyboardEvent) => void;
+  _boundReorderPointerMove: (event: PointerEvent) => void;
+  _boundReorderPointerUp: (event: PointerEvent) => void;
+  _boundReorderPointerCancel: (event: PointerEvent) => void;
   _boundViewportChange: () => void;
   _boundRoutingPanelOpen: () => void;
   _boundAnyPanelOpen: (event: Event) => void;
@@ -406,11 +475,15 @@ class OverlayManagerControl {
     this._importStatusTimer = 0;
     this._isImportingUrl = false;
     this._dragState = null;
+    this._remoteOverlayOrder = [];
     this._boundOverlayAdded = (event) => this._registerOverlay(event.detail);
     this._boundOverlayRemoteAdd = (event) => this._addRemoteOverlay(event.detail);
     this._boundOverlayRemoteList = (event) => this._applyRemoteOverlayList(event.detail);
     this._boundOverlayRemoteDelete = (event) => this._deleteRemoteOverlay(event.detail?.overlayId);
     this._boundKeydown = (event) => this._handleKeydown(event);
+    this._boundReorderPointerMove = (event) => this._updateReorder(event);
+    this._boundReorderPointerUp = (event) => this._finishReorder(event);
+    this._boundReorderPointerCancel = (event) => this._finishReorder(event);
     this._boundViewportChange = () => this._syncViewportMode();
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
     this._boundAnyPanelOpen = (event) => {
@@ -610,6 +683,7 @@ class OverlayManagerControl {
     this._map.getContainer().removeEventListener('overlay-sync:remote-delete', this._boundOverlayRemoteDelete);
     this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
+    this._cancelReorderListeners();
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
     this._unsubscribeDrawingStore?.();
@@ -669,6 +743,8 @@ class OverlayManagerControl {
     } else {
       this._overlays[existingIndex] = { ...this._overlays[existingIndex], ...normalized };
     }
+    if (remote) this._sortOverlaysByRemoteManifestOrder();
+    else this._placeDrawingOverlayByStackOrder();
     if (remote) this._syncPanelInteractivity();
     else this.setExpanded(true);
     this._syncOverlayLayerOrder();
@@ -711,6 +787,7 @@ class OverlayManagerControl {
       this._overlays.splice(index, 0, overlay);
     } else {
       this._overlays[existingIndex] = { ...this._overlays[existingIndex], ...overlay };
+      this._placeDrawingOverlayByStackOrder();
     }
     if (select || !this._selectedId) this._selectedId = overlay.id;
     this._applyDrawingVisibility(overlay);
@@ -753,6 +830,7 @@ class OverlayManagerControl {
           orderedIds: this._overlays
             .filter((overlay) => !isDrawingOverlay(overlay))
             .map((overlay) => overlay.syncOverlayId || overlay.id),
+          stackItems: overlayStackSyncItems(this._overlays),
         },
       }),
     );
@@ -770,7 +848,7 @@ class OverlayManagerControl {
 
   _applyRemoteOverlayList(detail: OverlayListDetail) {
     const manifests = Array.isArray(detail?.overlays) ? detail.overlays : [];
-    const order = new Map(manifests.map((manifest: OverlayLike, index: number) => [manifest.id, index]));
+    this._remoteOverlayOrder = manifests.map((manifest: OverlayLike) => manifest.id).filter(Boolean);
     const remoteIds = new Set(manifests.map((manifest: OverlayLike) => manifest.id));
     for (const overlay of this._overlays.slice()) {
       if (isDrawingOverlay(overlay)) continue;
@@ -778,16 +856,6 @@ class OverlayManagerControl {
         this._removeOverlay(overlay, { emit: false });
       }
     }
-    this._overlays.sort((a, b) => {
-      if (isDrawingOverlay(a) || isDrawingOverlay(b)) return 0;
-      const aOrder = order.has(a.remoteOverlayId || a.syncOverlayId)
-        ? Number(order.get(a.remoteOverlayId || a.syncOverlayId))
-        : Number.MAX_SAFE_INTEGER;
-      const bOrder = order.has(b.remoteOverlayId || b.syncOverlayId)
-        ? Number(order.get(b.remoteOverlayId || b.syncOverlayId))
-        : Number.MAX_SAFE_INTEGER;
-      return aOrder - bOrder;
-    });
     for (const manifest of manifests) {
       if (!isFileOverlay(manifest)) continue;
       const overlay = this._overlays.find(
@@ -808,6 +876,7 @@ class OverlayManagerControl {
       }
       if (manifest.type !== 'gpx' && manifest.subType !== 'osrm') this._applyOverlayStyle(overlay);
     }
+    this._sortOverlaysByRemoteManifestOrder();
     this._syncOverlayLayerOrder();
     this._render();
   }
@@ -853,6 +922,7 @@ class OverlayManagerControl {
         }
       }
       this._applyOverlayStyle(local);
+      this._sortOverlaysByRemoteManifestOrder();
       this._syncOverlayLayerOrder();
       this._render();
     }
@@ -1123,6 +1193,17 @@ class OverlayManagerControl {
     }
   }
 
+  _placeDrawingOverlayByStackOrder() {
+    const stackOrder = this._drawingStore?.getDoc().layers[DRAWING_DEFAULT_LAYER_ID]?.stackOrder;
+    if (!Number.isFinite(Number(stackOrder))) return;
+    this._overlays = applyDrawingOverlayStackOrder(this._overlays, DRAWING_OVERLAY_ID, stackOrder);
+  }
+
+  _sortOverlaysByRemoteManifestOrder() {
+    this._overlays = applyRemoteOverlayManifestOrder(this._overlays, this._remoteOverlayOrder);
+    this._placeDrawingOverlayByStackOrder();
+  }
+
   _moveOverlayToIndex(
     overlayId: string,
     destinationIndex: number,
@@ -1151,7 +1232,7 @@ class OverlayManagerControl {
   _persistDrawingStackOrder() {
     const index = this._overlays.findIndex((overlay) => isDrawingOverlay(overlay));
     if (index === -1) return;
-    this._drawingStore?.patchLayer(DRAWING_DEFAULT_LAYER_ID, { stackOrder: index });
+    this._drawingStore?.patchLayer(DRAWING_DEFAULT_LAYER_ID, { stackOrder: index }, { remote: true });
   }
 
   _focusReorderHandle(overlayId: string) {
@@ -1205,6 +1286,19 @@ class OverlayManagerControl {
     row.classList.add('reordering');
     this._list.classList.add('overlay-manager-list-reordering');
     handle.setPointerCapture?.(event.pointerId);
+    this._watchReorderPointerEvents();
+  }
+
+  _watchReorderPointerEvents() {
+    window.addEventListener('pointermove', this._boundReorderPointerMove);
+    window.addEventListener('pointerup', this._boundReorderPointerUp);
+    window.addEventListener('pointercancel', this._boundReorderPointerCancel);
+  }
+
+  _cancelReorderListeners() {
+    window.removeEventListener('pointermove', this._boundReorderPointerMove);
+    window.removeEventListener('pointerup', this._boundReorderPointerUp);
+    window.removeEventListener('pointercancel', this._boundReorderPointerCancel);
   }
 
   _updateReorder(event: PointerEvent) {
@@ -1242,6 +1336,7 @@ class OverlayManagerControl {
     if (state.handle.hasPointerCapture?.(state.pointerId)) {
       state.handle.releasePointerCapture(state.pointerId);
     }
+    this._cancelReorderListeners();
     state.row.classList.remove('reordering');
     this._list.classList.remove('overlay-manager-list-reordering');
     this._dragState = null;

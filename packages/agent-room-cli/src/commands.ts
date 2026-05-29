@@ -243,6 +243,20 @@ export async function handleAnnotationLayerCommand(
     };
   }
 
+  if (action === 'reorder') {
+    const orderedIds = command.ids || [];
+    if (orderedIds.length === 0) throw new Error('annotation layers reorder requires one or more ids');
+    client.sendJson({ type: 'drawing:layer:reorder', orderedIds });
+    const ack = await client.waitFor(
+      (event: RoomEvent) => event.json?.type === 'drawing:layer:reordered',
+      'drawing layer reorder',
+    );
+    return {
+      result: { ok: true, room: client.config.room, orderedIds: ack.json.orderedIds, revision: ack.json.revision },
+      human: (data: JsonRecord) => `Reordered annotation layers: ${data.orderedIds.join(', ')}`,
+    };
+  }
+
   throw new Error(`Unknown annotation layer command: ${action}`);
 }
 
