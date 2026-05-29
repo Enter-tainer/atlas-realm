@@ -78,6 +78,14 @@ class FakeRoomClient {
       const featureId = this.sentJson.at(-1)?.featureId;
       return { json: { type: 'drawing:feature:deleted', featureId, revision: 2 } };
     }
+    if (label.startsWith('drawing layer reorder')) {
+      const orderedIds = this.sentJson.at(-1)?.orderedIds || [];
+      this.drawingDoc.layerOrder = [
+        ...orderedIds.filter((id) => this.drawingDoc.layers[id]),
+        ...this.drawingDoc.layerOrder.filter((id) => this.drawingDoc.layers[id] && !orderedIds.includes(id)),
+      ];
+      return { json: { type: 'drawing:layer:reordered', orderedIds: this.drawingDoc.layerOrder, revision: 3 } };
+    }
     throw new Error(`Unexpected waitFor: ${label}`);
   }
 }
@@ -243,5 +251,30 @@ describe('agent-room CLI package', () => {
     expect(client.sentJson[1]).toEqual({ type: 'drawing:feature:delete', featureId: 'stop-a' });
     expect(upsert.result.annotation.id).toBe('stop-a');
     expect(deleted.result.annotationId).toBe('stop-a');
+  });
+
+  it('sends drawing layer reorder protocol messages for annotation layers', async () => {
+    const client = new FakeRoomClient();
+    client.drawingDoc.layers['custom-layer'] = {
+      id: 'custom-layer',
+      name: 'Custom layer',
+      visible: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    };
+    client.drawingDoc.layerOrder.push('custom-layer');
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'layers',
+      layerAction: 'reorder',
+      ids: ['custom-layer', 'drawing-default'],
+    });
+
+    expect(client.sentJson[0]).toEqual({
+      type: 'drawing:layer:reorder',
+      orderedIds: ['custom-layer', 'drawing-default'],
+    });
+    expect(response.result.orderedIds).toEqual(['custom-layer', 'drawing-default']);
   });
 });

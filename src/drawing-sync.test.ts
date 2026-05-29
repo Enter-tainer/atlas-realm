@@ -338,6 +338,62 @@ describe('drawing sync protocol', () => {
     });
   });
 
+  it('syncs drawing layer order as first-class protocol state', () => {
+    let doc = createEmptyDrawingDoc(NOW);
+    doc = reduceDrawingClientMessage(
+      doc,
+      {
+        type: 'drawing:layer:upsert',
+        layer: {
+          id: 'custom-a',
+          name: 'Custom A',
+          visible: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      },
+      NOW + 1,
+    ).doc;
+    doc = reduceDrawingClientMessage(
+      doc,
+      {
+        type: 'drawing:layer:upsert',
+        layer: {
+          id: 'custom-b',
+          name: 'Custom B',
+          visible: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      },
+      NOW + 2,
+    ).doc;
+
+    const parsed = parseDrawingClientMessage({
+      type: 'drawing:layer:reorder',
+      orderedIds: ['custom-b', 'bad/id', 'drawing-default'],
+    });
+    expect(parsed).toEqual({
+      type: 'drawing:layer:reorder',
+      orderedIds: ['custom-b', 'drawing-default'],
+    });
+    if (!parsed || parsed.type !== 'drawing:layer:reorder') return;
+
+    const reduced = reduceDrawingClientMessage(doc, parsed, NOW + 3);
+    expect(reduced.outbound).toEqual({
+      type: 'drawing:layer:reordered',
+      revision: 3,
+      orderedIds: ['custom-b', 'drawing-default', 'custom-a'],
+    });
+
+    const client = applyDrawingServerMessage(createEmptyDrawingDoc(NOW), buildDrawingSnapshotMessage(doc));
+    expect(applyDrawingServerMessage(client, reduced.outbound).layerOrder).toEqual([
+      'custom-b',
+      'drawing-default',
+      'custom-a',
+    ]);
+  });
+
   it('applies server messages on clients', () => {
     let doc = createEmptyDrawingDoc(NOW);
     doc = applyDrawingServerMessage(doc, {
@@ -362,11 +418,19 @@ describe('drawing sync protocol', () => {
     expect(doc.features['route-a']).toMatchObject({ label: 'Airport route' });
 
     doc = applyDrawingServerMessage(doc, {
-      type: 'drawing:feature:reordered',
+      type: 'drawing:layer:reordered',
       revision: 8,
-      orderedIds: ['route-a'],
+      orderedIds: ['drawing-default'],
     });
     expect(doc.revision).toBe(8);
+    expect(doc.layerOrder).toEqual(['drawing-default']);
+
+    doc = applyDrawingServerMessage(doc, {
+      type: 'drawing:feature:reordered',
+      revision: 9,
+      orderedIds: ['route-a'],
+    });
+    expect(doc.revision).toBe(9);
     expect(doc.featureOrder).toEqual(['route-a']);
   });
 

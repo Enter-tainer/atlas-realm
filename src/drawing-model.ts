@@ -431,6 +431,21 @@ export function applyDrawingLayerUpsert(
   };
 }
 
+export function applyDrawingLayerReorder(
+  doc: DrawingDoc,
+  orderedIds: readonly string[],
+  options: DrawingMutationOptions = {},
+): DrawingDoc {
+  const explicit = orderedIds.map((id) => sanitizeId(id)).filter((id) => id && doc.layers[id]);
+  const layerOrder = [...explicit, ...doc.layerOrder.filter((id) => doc.layers[id] && !explicit.includes(id))];
+  return {
+    ...doc,
+    layerOrder,
+    revision: nextRevision(doc, options),
+    updatedAt: options.now || Date.now(),
+  };
+}
+
 export function applyDrawingFeatureDelete(
   doc: DrawingDoc,
   featureId: string,

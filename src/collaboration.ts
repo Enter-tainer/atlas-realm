@@ -91,6 +91,7 @@ type CollaborationMessage = JsonRecord & {
   feature?: unknown;
   featureId?: string;
   orderedIds?: string[];
+  stackItems?: unknown[];
   revision?: number;
 };
 type CollaborationMap = {
@@ -973,6 +974,12 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
         orderedIds: doc.featureOrder,
       });
     }
+    if (doc.layerOrder.length > 1) {
+      sendDrawingMessage({
+        type: 'drawing:layer:reorder',
+        orderedIds: doc.layerOrder,
+      });
+    }
   }
 
   function completePendingOverlayUpload(contentHash: string | undefined) {
@@ -1155,6 +1162,7 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     if (
       message.type === 'drawing:snapshot' ||
       message.type === 'drawing:layer:upserted' ||
+      message.type === 'drawing:layer:reordered' ||
       message.type === 'drawing:feature:upserted' ||
       message.type === 'drawing:feature:deleted' ||
       message.type === 'drawing:feature:reordered'
@@ -1355,6 +1363,7 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
   const handleLocalOverlayReorder = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
     const orderedIds = Array.isArray(detail?.orderedIds) ? detail.orderedIds.filter(Boolean).map(String) : [];
+    const stackItems = Array.isArray(detail?.stackItems) ? detail.stackItems : [];
     if (pendingOverlayAssets.size > 0) {
       const order = new Map(orderedIds.map((id: string, index: number) => [id, index]));
       for (const assets of pendingOverlayAssets.values()) {
@@ -1371,8 +1380,9 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       }
     }
     sendOverlayMessage({
-      type: 'overlay:reorder',
+      type: stackItems.length > 0 ? 'overlay:stack:reorder' : 'overlay:reorder',
       orderedIds,
+      stackItems,
     });
   };
   const handleLocalOverlayDelete = (event: Event) => {
@@ -1401,6 +1411,8 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     if (event.remote) return;
     if (event.type === 'layer:upsert') {
       sendDrawingMessage({ type: 'drawing:layer:upsert', layer: event.layer });
+    } else if (event.type === 'layer:reorder') {
+      sendDrawingMessage({ type: 'drawing:layer:reorder', orderedIds: event.orderedIds });
     } else if (event.type === 'feature:upsert') {
       sendDrawingMessage({ type: 'drawing:feature:upsert', feature: event.feature });
     } else if (event.type === 'feature:delete') {

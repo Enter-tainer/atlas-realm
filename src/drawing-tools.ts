@@ -185,6 +185,20 @@ function isDrawingDraftMode(mode: DrawingMode): mode is DrawingDraftMode {
   return mode === 'path' || mode === 'polygon' || mode === 'route';
 }
 
+export function isDrawingPickerInteractionActive({
+  expanded,
+  layerVisible,
+  drawingReady,
+  mode,
+}: {
+  expanded: boolean;
+  layerVisible: boolean;
+  drawingReady: boolean;
+  mode: string;
+}) {
+  return Boolean(expanded && layerVisible && drawingReady && mode !== 'select');
+}
+
 function profileFromValue(value: string): DrawingRouteProfile {
   if (value === 'walking' || value === 'cycling') return value;
   return 'driving';
@@ -508,6 +522,10 @@ class DrawingToolsControl {
     this._editingId = '';
     this._closeEditor({ cleanupBlankText: true });
     this._sync();
+  }
+
+  _isActiveLayerVisible() {
+    return this._store.getDoc().layers['drawing-default']?.visible !== false;
   }
 
   _setColor(color: string) {
@@ -1122,8 +1140,15 @@ class DrawingToolsControl {
 
   _sync() {
     if (!this._map) return;
-    this._syncActiveFeatureState();
     const doc = this._store.getDoc();
+    const layerVisible = this._isActiveLayerVisible();
+    if (!layerVisible && this._mode !== 'select') {
+      this._mode = 'select';
+      this._clearDraft();
+      this._editingId = '';
+      this._closeEditor({ cleanupBlankText: true });
+    }
+    this._syncActiveFeatureState();
     const featureCount = doc.featureOrder.length;
     const selected = this._selectedFeature();
     const draftCount = this._draftPoints.length;
@@ -1135,12 +1160,18 @@ class DrawingToolsControl {
         : selected
           ? `${selected.type} selected`
           : `${featureCount} feature${featureCount === 1 ? '' : 's'}`;
-    this._map.getContainer().dataset[DRAWING_PICKER_DATASET_KEY] =
-      this._expanded && this._drawingReady && this._mode !== 'select' ? 'true' : 'false';
+    this._map.getContainer().dataset[DRAWING_PICKER_DATASET_KEY] = isDrawingPickerInteractionActive({
+      expanded: this._expanded,
+      layerVisible,
+      drawingReady: this._drawingReady,
+      mode: this._mode,
+    })
+      ? 'true'
+      : 'false';
 
     for (const [mode, button] of Object.entries(this._modeButtons) as Array<[DrawingMode, HTMLButtonElement]>) {
       button.classList.toggle('active', mode === this._mode);
-      button.disabled = !this._expanded || this._isRouting || (mapLoading && mode !== 'select');
+      button.disabled = !this._expanded || this._isRouting || !layerVisible || (mapLoading && mode !== 'select');
     }
 
     const draftMode = isDrawingDraftMode(this._mode) ? this._mode : null;
@@ -1157,7 +1188,8 @@ class DrawingToolsControl {
     this._lineControls.hidden = isEditingSelected || !(isLineMode || isLineSelected);
     this._endpointInput.closest<HTMLElement>('.drawing-field').hidden = isEditingSelected || !isRouteMode;
     this._profileSelect.closest<HTMLElement>('.drawing-field').hidden = isEditingSelected || !isRouteMode;
-    this._directedInput.disabled = !this._expanded || this._isRouting || mapLoading || !(isLineMode || isLineSelected);
+    this._directedInput.disabled =
+      !this._expanded || this._isRouting || !layerVisible || mapLoading || !(isLineMode || isLineSelected);
     this._undoButton.hidden = isEditingSelected || !isDraftMode;
     this._doneButton.hidden = isEditingSelected || !isDraftMode;
     this._deleteButton.hidden = !selected || isEditingSelected;
@@ -1171,7 +1203,7 @@ class DrawingToolsControl {
     this._deleteButton.disabled = !this._expanded || this._isRouting || !selected;
     this._labelInput.disabled = !this._expanded || this._isRouting;
     this._noteInput.disabled = !this._expanded || this._isRouting;
-    this._customColor.disabled = !this._expanded || this._isRouting || mapLoading;
+    this._customColor.disabled = !this._expanded || this._isRouting || !layerVisible || mapLoading;
     if (this._expanded && mapLoading) this._setStatus('Map style loading...');
     if (!mapLoading && this._status.textContent === 'Map style loading...') this._setStatus('');
     this._syncSwatches();
@@ -1182,7 +1214,8 @@ class DrawingToolsControl {
   _syncSwatches() {
     for (const swatch of this._colorSwatches.querySelectorAll<HTMLElement>('.drawing-swatch')) {
       swatch.classList.toggle('selected', swatch.dataset.color === this._color);
-      (swatch as HTMLButtonElement).disabled = !this._expanded || this._isRouting || !this._drawingReady;
+      (swatch as HTMLButtonElement).disabled =
+        !this._expanded || this._isRouting || !this._isActiveLayerVisible() || !this._drawingReady;
     }
   }
 }

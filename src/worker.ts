@@ -1,6 +1,6 @@
 import { PMTiles, ResolvedValueCache, type RangeResponse, type Source, TileType } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
-import { createEmptyDrawingDoc, normalizeDrawingDoc } from './drawing-model.js';
+import { createEmptyDrawingDoc, DRAWING_DEFAULT_LAYER_ID, normalizeDrawingDoc } from './drawing-model.js';
 import { buildDrawingSnapshotMessage, parseDrawingClientMessage, reduceDrawingClientMessage } from './drawing-sync.js';
 import type { DrawingDoc } from './drawing-model.js';
 
@@ -90,6 +90,8 @@ interface AgentParticipant {
   expiresAt: number;
   lastAction: string;
 }
+
+type OverlayStackItem = { kind: 'overlay'; id: string } | { kind: 'drawing'; layerId: string };
 
 interface CursorState {
   visible: boolean;
@@ -218,6 +220,33 @@ function sanitizeOverlayId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const id = value.trim();
   return /^[0-9a-zA-Z_-]{1,96}$/.test(id) ? id : null;
+}
+
+function sanitizeDrawingLayerId(value: unknown): string | null {
+  return sanitizeOverlayId(value);
+}
+
+function sanitizeOverlayStackItems(value: unknown): OverlayStackItem[] {
+  if (!Array.isArray(value)) return [];
+  const items: OverlayStackItem[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (item.kind === 'overlay') {
+      const id = sanitizeOverlayId(item.id);
+      const key = id ? `overlay:${id}` : '';
+      if (!id || seen.has(key)) continue;
+      seen.add(key);
+      items.push({ kind: 'overlay', id });
+    } else if (item.kind === 'drawing') {
+      const layerId = sanitizeDrawingLayerId(item.layerId) || DRAWING_DEFAULT_LAYER_ID;
+      const key = `drawing:${layerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ kind: 'drawing', layerId });
+    }
+  }
+  return items.slice(0, 256);
 }
 
 function sanitizeContentHash(value: unknown): string | null {
@@ -634,6 +663,19 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     );
   }
 
+  _broadcastDrawingLayerUpsert(layerId: string) {
+    const doc = this._getDrawingDoc();
+    const layer = doc.layers[layerId];
+    if (!layer) return;
+    this.broadcast(
+      encodeMessage({
+        type: 'drawing:layer:upserted',
+        revision: doc.revision,
+        layer,
+      }),
+    );
+  }
+
   _getDrawingDoc(): DrawingDoc {
     const row = this.sql<{ doc_json: string }>`
       SELECT doc_json FROM drawing_state WHERE state_key = ${DRAWING_STATE_KEY} LIMIT 1
@@ -868,6 +910,53 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         }),
       );
       this._broadcastOverlayList(connection.id);
+      return;
+    }
+
+    if (payload.type === 'overlay:stack:reorder') {
+      const stackItems = sanitizeOverlayStackItems(payload.stackItems);
+      const orderedOverlayIds = stackItems.filter((item) => item.kind === 'overlay').map((item) => item.id);
+      orderedOverlayIds.forEach((overlayId, index) => {
+        this
+          .sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
+      });
+
+      const drawingItems = stackItems
+        .map((item, index) => (item.kind === 'drawing' ? { layerId: item.layerId, stackOrder: index } : null))
+        .filter(Boolean) as Array<{ layerId: string; stackOrder: number }>;
+      const drawingLayerIds: string[] = [];
+      if (drawingItems.length > 0) {
+        const doc = this._getDrawingDoc();
+        let changed = false;
+        let nextRevision = doc.revision;
+        for (const item of drawingItems) {
+          const layer = doc.layers[item.layerId];
+          if (!layer || layer.stackOrder === item.stackOrder) continue;
+          doc.layers[item.layerId] = {
+            ...layer,
+            stackOrder: item.stackOrder,
+            updatedAt: Date.now(),
+          };
+          nextRevision += 1;
+          changed = true;
+          drawingLayerIds.push(item.layerId);
+        }
+        if (changed) {
+          doc.revision = nextRevision;
+          doc.updatedAt = Date.now();
+          this._saveDrawingDoc(doc);
+        }
+      }
+
+      connection.send(
+        encodeMessage({
+          type: 'overlay:reordered',
+          orderedIds: this._listOverlayManifests().map((manifest) => manifest.id),
+          stackItems,
+        }),
+      );
+      this._broadcastOverlayList(connection.id);
+      for (const layerId of drawingLayerIds) this._broadcastDrawingLayerUpsert(layerId);
       return;
     }
 

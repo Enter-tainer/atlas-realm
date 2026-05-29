@@ -2,6 +2,7 @@ import {
   applyDrawingFeatureDelete,
   applyDrawingFeatureReorder,
   applyDrawingFeatureUpsert,
+  applyDrawingLayerReorder,
   applyDrawingLayerUpsert,
   createEmptyDrawingDoc,
   DRAWING_DEFAULT_LAYER_ID,
@@ -16,6 +17,7 @@ import type { DrawingServerMessage } from './drawing-sync.js';
 export type DrawingStoreEvent =
   | { type: 'snapshot'; doc: DrawingDoc; remote: boolean }
   | { type: 'layer:upsert'; doc: DrawingDoc; layer: DrawingLayer; remote: boolean }
+  | { type: 'layer:reorder'; doc: DrawingDoc; orderedIds: string[]; remote: boolean }
   | { type: 'feature:upsert'; doc: DrawingDoc; feature: DrawingFeature; remote: boolean }
   | { type: 'feature:delete'; doc: DrawingDoc; featureId: string; remote: boolean }
   | { type: 'feature:reorder'; doc: DrawingDoc; orderedIds: string[]; remote: boolean };
@@ -77,6 +79,11 @@ export class DrawingStore extends EventTarget {
     return saved;
   }
 
+  reorderLayers(orderedIds: string[], { remote = false }: { remote?: boolean } = {}) {
+    this._doc = applyDrawingLayerReorder(this._doc, orderedIds);
+    this._emit({ type: 'layer:reorder', doc: this._doc, orderedIds: this._doc.layerOrder, remote });
+  }
+
   patchLayer(
     layerId: string,
     patch: Partial<Pick<DrawingLayer, 'name' | 'visible' | 'stackOrder'>>,
@@ -122,6 +129,8 @@ export class DrawingStore extends EventTarget {
         layer: this._doc.layers[message.layer.id],
         remote: true,
       });
+    } else if (message.type === 'drawing:layer:reordered') {
+      this._emit({ type: 'layer:reorder', doc: this._doc, orderedIds: this._doc.layerOrder, remote: true });
     } else if (message.type === 'drawing:feature:upserted') {
       this._emit({
         type: 'feature:upsert',
