@@ -35,6 +35,8 @@ function pathFeature(id = 'path-a', layerId = ANNOTATION_DEFAULT_LAYER_ID): Anno
     ],
     directed: true,
     width: 4,
+    lineStyle: 'solid',
+    opacity: 0.95,
     label: 'Path A',
     note: 'Walk',
     color: '#dc2626',
@@ -55,6 +57,8 @@ function polygonFeature(id = 'polygon-a', layerId = ANNOTATION_DEFAULT_LAYER_ID)
       [121.6, 31.4],
     ],
     width: 3,
+    lineStyle: 'solid',
+    opacity: 0.95,
     fillOpacity: 0.22,
     label: 'Area A',
     note: '',
@@ -99,6 +103,38 @@ describe('annotation model', () => {
       name: 'Path A',
       description: 'Walk',
       directed: true,
+      line_style: 'solid',
+      opacity: 0.95,
+    });
+  });
+
+  it('sanitizes line, route, and area style fields', () => {
+    expect(
+      sanitizeAnnotationFeaturePayload({
+        ...pathFeature(),
+        width: 99,
+        lineStyle: 'dash',
+        opacity: -1,
+      }),
+    ).toMatchObject({
+      type: 'path',
+      width: 12,
+      lineStyle: 'dashed',
+      opacity: 0.05,
+    });
+
+    expect(
+      sanitizeAnnotationFeaturePayload({
+        ...polygonFeature(),
+        lineStyle: 'dot',
+        opacity: 2,
+        fillOpacity: 2,
+      }),
+    ).toMatchObject({
+      type: 'polygon',
+      lineStyle: 'dotted',
+      opacity: 1,
+      fillOpacity: 1,
     });
   });
 
@@ -110,7 +146,16 @@ describe('annotation model', () => {
       'annotation_polygon_outline',
     ]);
     expect(geojson.features[0].geometry.type).toBe('Polygon');
+    expect(geojson.features[0].properties).toMatchObject({
+      line_style: 'solid',
+      opacity: 0.95,
+      fill_opacity: 0.22,
+    });
     expect(geojson.features[1].geometry.type).toBe('LineString');
+    expect(geojson.features[1].properties).toMatchObject({
+      line_style: 'solid',
+      opacity: 0.95,
+    });
   });
 
   it('can filter GeoJSON and bounds by annotation layer', () => {

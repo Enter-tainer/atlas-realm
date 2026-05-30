@@ -1264,7 +1264,7 @@ body,
 
 .annotation-line-controls {
   display: grid;
-  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   align-items: end;
 }
@@ -1283,9 +1283,33 @@ body,
   font-weight: 800;
 }
 
+.annotation-check-field[hidden] {
+  display: none;
+}
+
 .annotation-check-field input {
   width: 16px;
   height: 16px;
+  accent-color: #2563eb;
+}
+
+.annotation-field-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.annotation-value {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.annotation-range {
+  width: 100%;
+  min-width: 0;
   accent-color: #2563eb;
 }
 
@@ -2158,7 +2182,7 @@ body,
   }
 
   .annotation-line-controls {
-    grid-template-columns: minmax(0, 0.64fr) minmax(0, 1fr);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .annotation-actions {

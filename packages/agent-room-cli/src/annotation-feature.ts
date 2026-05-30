@@ -3,6 +3,23 @@ import { coordinateFromOptions, listFromOptions } from './coordinates.js';
 import { coerceBoolean, coerceNumber, normalizeColor, normalizeId, parseJson, randomId } from './validation.js';
 import type { AgentRoomConfig, AnnotationFeaturePayload, JsonRecord } from './types.js';
 
+const LINE_STYLES = new Set(['solid', 'dashed', 'dotted']);
+
+function normalizeLineStyle(value: unknown, fallback = 'solid') {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, '-');
+  if (normalized === 'dash') return 'dashed';
+  if (normalized === 'dot') return 'dotted';
+  return LINE_STYLES.has(normalized) ? normalized : fallback;
+}
+
+function featureStyle(seed: JsonRecord) {
+  return seed.style && typeof seed.style === 'object' && !Array.isArray(seed.style) ? seed.style : {};
+}
+
 export async function buildFeatureFromOptions(
   options: JsonRecord = {},
   config: Partial<AgentRoomConfig> = {},
@@ -37,6 +54,7 @@ export function buildFeatureFromParts({
     ...(patch || {}),
     ...(fullFeature || {}),
   } as JsonRecord;
+  const style = featureStyle(seed);
   const type = options.type || typeHint || seed.type || 'point';
   const id = normalizeId(options.id, seed.id || randomId('annotation'));
   const layerId = normalizeId(options.layerId, seed.layerId || 'annotation-default');
@@ -67,13 +85,26 @@ export function buildFeatureFromParts({
     }
     feature.directed = coerceBoolean(options.directed, seed.directed !== false);
     feature.width = coerceNumber(options.width, seed.width || 4);
+    feature.lineStyle = normalizeLineStyle(
+      options.lineStyle,
+      seed.lineStyle || seed.line_style || style.lineStyle || style.line_style || 'solid',
+    );
+    feature.opacity = coerceNumber(options.opacity, seed.opacity ?? style.opacity ?? 0.95);
   } else if (type === 'polygon') {
     feature.points = listFromOptions(options, 'points', seed.points);
     if (!Array.isArray(feature.points) || feature.points.length < 3) {
       throw new Error('polygon annotations require at least three --points');
     }
     feature.width = coerceNumber(options.width, seed.width || 3);
-    feature.fillOpacity = coerceNumber(options.fillOpacity, seed.fillOpacity ?? seed.fill_opacity ?? 0.22);
+    feature.lineStyle = normalizeLineStyle(
+      options.lineStyle,
+      seed.lineStyle || seed.line_style || style.lineStyle || style.line_style || 'solid',
+    );
+    feature.opacity = coerceNumber(options.opacity, seed.opacity ?? style.opacity ?? 0.95);
+    feature.fillOpacity = coerceNumber(
+      options.fillOpacity,
+      seed.fillOpacity ?? seed.fill_opacity ?? style.fillOpacity ?? style.fill_opacity ?? 0.22,
+    );
   } else if (type === 'route') {
     feature.waypoints = listFromOptions(options, 'waypoints', seed.waypoints);
     if (!Array.isArray(feature.waypoints) || feature.waypoints.length < 2) {
@@ -85,6 +116,11 @@ export function buildFeatureFromParts({
       : seed.profile || 'driving';
     feature.directed = coerceBoolean(options.directed, seed.directed !== false);
     feature.width = coerceNumber(options.width, seed.width || 5);
+    feature.lineStyle = normalizeLineStyle(
+      options.lineStyle,
+      seed.lineStyle || seed.line_style || style.lineStyle || style.line_style || 'solid',
+    );
+    feature.opacity = coerceNumber(options.opacity, seed.opacity ?? style.opacity ?? 0.95);
     feature.distance = coerceNumber(options.distance, seed.distance ?? null);
     feature.duration = coerceNumber(options.duration, seed.duration ?? null);
     feature.distanceText = options.distanceText || seed.distanceText || seed.distance_text || '';

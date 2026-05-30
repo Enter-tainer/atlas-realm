@@ -98,6 +98,18 @@ function kindFilter(kinds: string[]) {
   return ['in', ['get', 'kind'], ['literal', kinds]];
 }
 
+function annotationLineDashExpression() {
+  return [
+    'match',
+    ['get', 'line_style'],
+    'dashed',
+    ['literal', [1.8, 1.2]],
+    'dotted',
+    ['literal', [0.05, 1.45]],
+    ['literal', [1, 0]],
+  ];
+}
+
 function asAnnotationSource(source: unknown): AnnotationSource | null {
   return source && typeof (source as AnnotationSource).setData === 'function' ? (source as AnnotationSource) : null;
 }
@@ -195,7 +207,8 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       paint: {
         'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
         'line-width': ['coalesce', ['get', 'line-width'], 3],
-        'line-opacity': 0.95,
+        'line-opacity': ['coalesce', ['get', 'opacity'], 0.95],
+        'line-dasharray': annotationLineDashExpression(),
       },
     });
   }
@@ -205,12 +218,16 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       id: layerIds.lineStroke,
       type: 'line',
       source: sourceId,
-      filter: kindFilter(['annotation_path', 'annotation_route']),
+      filter: [
+        'all',
+        kindFilter(['annotation_path', 'annotation_route']),
+        ['any', ['!', ['has', 'line_style']], ['==', ['get', 'line_style'], 'solid']],
+      ],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
         'line-color': '#111827',
         'line-width': ['+', ['coalesce', ['get', 'line-width'], 4], 3],
-        'line-opacity': 0.82,
+        'line-opacity': ['*', ['coalesce', ['get', 'opacity'], 0.95], 0.85],
       },
     });
   }
@@ -225,7 +242,8 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       paint: {
         'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
         'line-width': ['coalesce', ['get', 'line-width'], 4],
-        'line-opacity': 0.96,
+        'line-opacity': ['coalesce', ['get', 'opacity'], 0.96],
+        'line-dasharray': annotationLineDashExpression(),
       },
     });
   }
@@ -373,7 +391,7 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
         'icon-ignore-placement': true,
       },
       paint: {
-        'icon-opacity': 0.9,
+        'icon-opacity': ['coalesce', ['get', 'opacity'], 0.9],
       },
     });
   }

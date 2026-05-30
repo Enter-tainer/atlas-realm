@@ -18,6 +18,9 @@ import {
   ANNOTATION_SOURCE_ID,
   ANNOTATION_TEXT_DEFAULT_HEIGHT,
   ANNOTATION_TEXT_DEFAULT_WIDTH,
+  sanitizeAnnotationFillOpacity,
+  sanitizeAnnotationLineStyle,
+  sanitizeAnnotationOpacity,
   createAnnotationId,
   sanitizeAnnotationText,
 } from './annotation-model.js';
@@ -25,7 +28,12 @@ import { buildRouteUrl, formatDistance, formatDuration, normalizeEndpoint } from
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 import type { AnnotationDraftMode } from './annotation-draft.js';
-import type { AnnotationFeaturePayload, AnnotationRouteProfile, LngLatTuple } from './annotation-model.js';
+import type {
+  AnnotationFeaturePayload,
+  AnnotationLineStyle,
+  AnnotationRouteProfile,
+  LngLatTuple,
+} from './annotation-model.js';
 import type { LayerStore } from './layer-store.js';
 import type { OsrmRouteResponse } from './routing.js';
 
@@ -34,6 +42,9 @@ const ANNOTATION_ENDPOINT_KEY = 'orm-annotation-osrm-endpoint';
 const ANNOTATION_ACTIVE_FEATURE_EVENT = 'annotation:activefeaturechange';
 const ANNOTATION_ACTIVE_LAYER_EVENT = 'annotation:activelayerchange';
 const DEFAULT_COLOR = '#2563eb';
+const DEFAULT_LINE_STYLE: AnnotationLineStyle = 'solid';
+const DEFAULT_LINE_OPACITY = 0.95;
+const DEFAULT_FILL_OPACITY = 0.22;
 const COLOR_SWATCHES = ['#2563eb', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#7c3aed', '#db2777'];
 
 type LngLatLike = { lng: number; lat: number };
@@ -153,10 +164,10 @@ function emptyFeatureCollection() {
   return { type: 'FeatureCollection', features: [] as object[] };
 }
 
-function lineFeature(points: LngLatTuple[], color: string) {
+function lineFeature(points: LngLatTuple[], color: string, lineStyle: AnnotationLineStyle) {
   return {
     type: 'Feature',
-    properties: { color, 'line-width': 4 },
+    properties: { color, line_style: lineStyle, 'line-width': 4 },
     geometry: { type: 'LineString', coordinates: points },
   };
 }
@@ -169,10 +180,10 @@ function closedRing(points: LngLatTuple[]) {
   return ring;
 }
 
-function polygonFeature(points: LngLatTuple[], color: string) {
+function polygonFeature(points: LngLatTuple[], color: string, fillOpacity: number) {
   return {
     type: 'Feature',
-    properties: { color, fill_opacity: 0.2 },
+    properties: { color, fill_opacity: fillOpacity },
     geometry: { type: 'Polygon', coordinates: [closedRing(points)] },
   };
 }
@@ -185,6 +196,18 @@ function featureIdFromRendered(feature: RenderedFeatureLike) {
 
 function asAnnotationSource(source: unknown): AnnotationSource | null {
   return source && typeof (source as AnnotationSource).setData === 'function' ? (source as AnnotationSource) : null;
+}
+
+function annotationLineDashExpression() {
+  return [
+    'match',
+    ['get', 'line_style'],
+    'dashed',
+    ['literal', [1.8, 1.2]],
+    'dotted',
+    ['literal', [0.05, 1.45]],
+    ['literal', [1, 0]],
+  ];
 }
 
 function isAnnotationDraftMode(mode: AnnotationMode): mode is AnnotationDraftMode {
@@ -267,6 +290,11 @@ class AnnotationToolsControl {
   _colorSwatches: HTMLElement;
   _customColor: HTMLInputElement;
   _directedInput: HTMLInputElement;
+  _lineStyleSelect: HTMLSelectElement;
+  _opacityInput: HTMLInputElement;
+  _opacityValue: HTMLElement;
+  _fillOpacityInput: HTMLInputElement;
+  _fillOpacityValue: HTMLElement;
   _profileSelect: HTMLSelectElement;
   _endpointInput: HTMLInputElement;
   _undoButton: HTMLButtonElement;
@@ -281,6 +309,9 @@ class AnnotationToolsControl {
   _editorNoteInput: HTMLTextAreaElement | null = null;
   _editorColorInput: HTMLInputElement | null = null;
   _editorDirectedInput: HTMLInputElement | null = null;
+  _editorLineStyleSelect: HTMLSelectElement | null = null;
+  _editorOpacityInput: HTMLInputElement | null = null;
+  _editorFillOpacityInput: HTMLInputElement | null = null;
   _editorSwatches: HTMLElement | null = null;
   _expanded = false;
   _mode: AnnotationMode = 'select';
@@ -292,6 +323,9 @@ class AnnotationToolsControl {
   _isRouting = false;
   _annotationReady = false;
   _color = DEFAULT_COLOR;
+  _lineStyle: AnnotationLineStyle = DEFAULT_LINE_STYLE;
+  _opacity = DEFAULT_LINE_OPACITY;
+  _fillOpacity = DEFAULT_FILL_OPACITY;
   _abortController: AbortController | null = null;
   _boundMapClick: (event: AnnotationMapClickEvent) => void;
   _boundMapDblClick: (event: AnnotationMapDblClickEvent) => void;
@@ -412,6 +446,52 @@ class AnnotationToolsControl {
     this._customColor.addEventListener('input', () => this._setColor(this._customColor.value));
 
     this._lineControls = el('div', 'annotation-line-controls', body);
+
+    const lineStyleField = el('label', 'annotation-field annotation-line-style-field', this._lineControls);
+    const lineStyleLabel = el('span', 'annotation-field-label', lineStyleField);
+    lineStyleLabel.textContent = 'Line style';
+    this._lineStyleSelect = el('select', 'annotation-input', lineStyleField);
+    for (const [value, label] of [
+      ['solid', 'Solid'],
+      ['dashed', 'Dashed'],
+      ['dotted', 'Dotted'],
+    ]) {
+      const option = document.createElement('option');
+      option.value = value;
+      option.textContent = label;
+      this._lineStyleSelect.appendChild(option);
+    }
+    this._lineStyleSelect.value = this._lineStyle;
+    this._lineStyleSelect.addEventListener('change', () => this._setLineStyle(this._lineStyleSelect.value));
+
+    const opacityField = el('label', 'annotation-field annotation-opacity-field', this._lineControls);
+    const opacityHeader = el('span', 'annotation-field-row', opacityField);
+    const opacityLabel = el('span', 'annotation-field-label', opacityHeader);
+    opacityLabel.textContent = 'Opacity';
+    this._opacityValue = el('span', 'annotation-value', opacityHeader);
+    this._opacityInput = el('input', 'annotation-range', opacityField);
+    this._opacityInput.type = 'range';
+    this._opacityInput.min = '5';
+    this._opacityInput.max = '100';
+    this._opacityInput.step = '5';
+    this._opacityInput.value = String(Math.round(this._opacity * 100));
+    this._opacityInput.addEventListener('input', () => this._setOpacity(Number(this._opacityInput.value) / 100));
+
+    const fillOpacityField = el('label', 'annotation-field annotation-fill-opacity-field', this._lineControls);
+    const fillOpacityHeader = el('span', 'annotation-field-row', fillOpacityField);
+    const fillOpacityLabel = el('span', 'annotation-field-label', fillOpacityHeader);
+    fillOpacityLabel.textContent = 'Fill';
+    this._fillOpacityValue = el('span', 'annotation-value', fillOpacityHeader);
+    this._fillOpacityInput = el('input', 'annotation-range', fillOpacityField);
+    this._fillOpacityInput.type = 'range';
+    this._fillOpacityInput.min = '5';
+    this._fillOpacityInput.max = '100';
+    this._fillOpacityInput.step = '5';
+    this._fillOpacityInput.value = String(Math.round(this._fillOpacity * 100));
+    this._fillOpacityInput.addEventListener('input', () =>
+      this._setFillOpacity(Number(this._fillOpacityInput.value) / 100),
+    );
+
     const directedField = el('label', 'annotation-check-field', this._lineControls);
     this._directedInput = el('input', undefined, directedField);
     this._directedInput.type = 'checkbox';
@@ -575,6 +655,30 @@ class AnnotationToolsControl {
     this._color = /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR;
     this._customColor.value = this._color;
     this._updateSelectedFromForm();
+    this._sync();
+  }
+
+  _setLineStyle(value: string) {
+    this._lineStyle = sanitizeAnnotationLineStyle(value);
+    this._lineStyleSelect.value = this._lineStyle;
+    this._updateSelectedFromForm();
+    this._syncDraftSource();
+    this._sync();
+  }
+
+  _setOpacity(value: number) {
+    this._opacity = sanitizeAnnotationOpacity(value);
+    this._opacityInput.value = String(Math.round(this._opacity * 100));
+    this._updateSelectedFromForm();
+    this._syncDraftSource();
+    this._sync();
+  }
+
+  _setFillOpacity(value: number) {
+    this._fillOpacity = sanitizeAnnotationFillOpacity(value);
+    this._fillOpacityInput.value = String(Math.round(this._fillOpacity * 100));
+    this._updateSelectedFromForm();
+    this._syncDraftSource();
     this._sync();
   }
 
@@ -754,6 +858,8 @@ class AnnotationToolsControl {
         points: this._draftPoints.slice(),
         directed: this._directedInput.checked,
         width: 4,
+        lineStyle: this._lineStyle,
+        opacity: this._opacity,
       };
       this._store.upsertFeature(feature);
       this._selectedId = feature.id;
@@ -770,7 +876,9 @@ class AnnotationToolsControl {
         type: 'polygon' as const,
         points: this._draftPoints.slice(),
         width: 3,
-        fillOpacity: 0.22,
+        lineStyle: this._lineStyle,
+        opacity: this._opacity,
+        fillOpacity: this._fillOpacity,
       };
       this._store.upsertFeature(feature);
       this._selectedId = feature.id;
@@ -824,6 +932,8 @@ class AnnotationToolsControl {
         profile,
         directed: this._directedInput.checked,
         width: 5,
+        lineStyle: this._lineStyle,
+        opacity: this._opacity,
         geometry: route.geometry.coordinates as LngLatTuple[],
         distance: Number.isFinite(distance) ? distance : null,
         duration: Number.isFinite(duration) ? duration : null,
@@ -881,7 +991,17 @@ class AnnotationToolsControl {
     this._customColor.value = this._color;
     if (feature.type === 'path' || feature.type === 'route') {
       this._directedInput.checked = feature.directed !== false;
+      this._lineStyle = feature.lineStyle || DEFAULT_LINE_STYLE;
+      this._opacity = sanitizeAnnotationOpacity(feature.opacity);
     }
+    if (feature.type === 'polygon') {
+      this._lineStyle = feature.lineStyle || DEFAULT_LINE_STYLE;
+      this._opacity = sanitizeAnnotationOpacity(feature.opacity);
+      this._fillOpacity = sanitizeAnnotationFillOpacity(feature.fillOpacity);
+    }
+    this._lineStyleSelect.value = this._lineStyle;
+    this._opacityInput.value = String(Math.round(this._opacity * 100));
+    this._fillOpacityInput.value = String(Math.round(this._fillOpacity * 100));
     if (feature.type === 'route') {
       this._profileSelect.value = feature.profile;
     }
@@ -899,6 +1019,13 @@ class AnnotationToolsControl {
     } as AnnotationFeaturePayload;
     if (next.type === 'path' || next.type === 'route') {
       next.directed = this._directedInput.checked;
+      next.lineStyle = this._lineStyle;
+      next.opacity = this._opacity;
+    }
+    if (next.type === 'polygon') {
+      next.lineStyle = this._lineStyle;
+      next.opacity = this._opacity;
+      next.fillOpacity = this._fillOpacity;
     }
     if (next.type === 'route') {
       next.profile = profileFromValue(this._profileSelect.value);
@@ -919,6 +1046,16 @@ class AnnotationToolsControl {
     } as AnnotationFeaturePayload;
     if (next.type === 'path' || next.type === 'route') {
       next.directed = this._editorDirectedInput?.checked !== false;
+      next.lineStyle = sanitizeAnnotationLineStyle(this._editorLineStyleSelect?.value ?? next.lineStyle);
+      next.opacity = sanitizeAnnotationOpacity(Number(this._editorOpacityInput?.value) / 100, next.opacity);
+    }
+    if (next.type === 'polygon') {
+      next.lineStyle = sanitizeAnnotationLineStyle(this._editorLineStyleSelect?.value ?? next.lineStyle);
+      next.opacity = sanitizeAnnotationOpacity(Number(this._editorOpacityInput?.value) / 100, next.opacity);
+      next.fillOpacity = sanitizeAnnotationFillOpacity(
+        Number(this._editorFillOpacityInput?.value) / 100,
+        next.fillOpacity,
+      );
     }
     this._store.upsertFeature(next);
     this._syncEditorSwatches(next.color);
@@ -939,6 +1076,9 @@ class AnnotationToolsControl {
     this._editorNoteInput = null;
     this._editorColorInput = null;
     this._editorDirectedInput = null;
+    this._editorLineStyleSelect = null;
+    this._editorOpacityInput = null;
+    this._editorFillOpacityInput = null;
     this._editorSwatches = null;
     if (cleanupBlankText && id) {
       const feature = this._store.getAnnotationFeaturePayload(id);
@@ -1026,6 +1166,67 @@ class AnnotationToolsControl {
     this._editorColorInput.addEventListener('input', () =>
       this._setEditorColor(this._editorColorInput?.value || DEFAULT_COLOR),
     );
+
+    if (feature.type === 'path' || feature.type === 'route' || feature.type === 'polygon') {
+      const lineStyleField = el('label', 'annotation-editor-field', editor);
+      const lineStyleText = el('span', 'annotation-field-label', lineStyleField);
+      lineStyleText.textContent = 'Line style';
+      this._editorLineStyleSelect = el('select', 'annotation-input', lineStyleField);
+      for (const [value, label] of [
+        ['solid', 'Solid'],
+        ['dashed', 'Dashed'],
+        ['dotted', 'Dotted'],
+      ]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        this._editorLineStyleSelect.appendChild(option);
+      }
+      this._editorLineStyleSelect.value = feature.lineStyle || DEFAULT_LINE_STYLE;
+      this._editorLineStyleSelect.addEventListener('change', () => this._updateEditingFromEditor());
+
+      const opacityField = el('label', 'annotation-editor-field', editor);
+      const opacityHeader = el('span', 'annotation-field-row', opacityField);
+      const opacityText = el('span', 'annotation-field-label', opacityHeader);
+      opacityText.textContent = 'Opacity';
+      const opacityValue = el('span', 'annotation-value', opacityHeader);
+      this._editorOpacityInput = el('input', 'annotation-range', opacityField);
+      this._editorOpacityInput.type = 'range';
+      this._editorOpacityInput.min = '5';
+      this._editorOpacityInput.max = '100';
+      this._editorOpacityInput.step = '5';
+      this._editorOpacityInput.value = String(Math.round(sanitizeAnnotationOpacity(feature.opacity) * 100));
+      const syncOpacityValue = () => {
+        opacityValue.textContent = `${this._editorOpacityInput?.value || 95}%`;
+      };
+      syncOpacityValue();
+      this._editorOpacityInput.addEventListener('input', () => {
+        syncOpacityValue();
+        this._updateEditingFromEditor();
+      });
+    }
+
+    if (feature.type === 'polygon') {
+      const fillOpacityField = el('label', 'annotation-editor-field', editor);
+      const fillOpacityHeader = el('span', 'annotation-field-row', fillOpacityField);
+      const fillOpacityText = el('span', 'annotation-field-label', fillOpacityHeader);
+      fillOpacityText.textContent = 'Fill';
+      const fillOpacityValue = el('span', 'annotation-value', fillOpacityHeader);
+      this._editorFillOpacityInput = el('input', 'annotation-range', fillOpacityField);
+      this._editorFillOpacityInput.type = 'range';
+      this._editorFillOpacityInput.min = '5';
+      this._editorFillOpacityInput.max = '100';
+      this._editorFillOpacityInput.step = '5';
+      this._editorFillOpacityInput.value = String(Math.round(sanitizeAnnotationFillOpacity(feature.fillOpacity) * 100));
+      const syncFillOpacityValue = () => {
+        fillOpacityValue.textContent = `${this._editorFillOpacityInput?.value || 22}%`;
+      };
+      syncFillOpacityValue();
+      this._editorFillOpacityInput.addEventListener('input', () => {
+        syncFillOpacityValue();
+        this._updateEditingFromEditor();
+      });
+    }
 
     if (feature.type === 'path' || feature.type === 'route') {
       const directedField = el('label', 'annotation-check-field', editor);
@@ -1119,7 +1320,7 @@ class AnnotationToolsControl {
           paint: {
             'line-color': ['coalesce', ['get', 'color'], DEFAULT_COLOR],
             'line-width': 4,
-            'line-dasharray': [1.5, 1.2],
+            'line-dasharray': annotationLineDashExpression(),
             'line-opacity': 0.92,
           },
         });
@@ -1154,10 +1355,10 @@ class AnnotationToolsControl {
   _syncDraftSource() {
     const features = [];
     if (this._mode === 'polygon' && this._draftPoints.length >= 3) {
-      features.push(polygonFeature(this._draftPoints, this._color));
-      features.push(lineFeature(closedRing(this._draftPoints), this._color));
+      features.push(polygonFeature(this._draftPoints, this._color, this._fillOpacity));
+      features.push(lineFeature(closedRing(this._draftPoints), this._color, this._lineStyle));
     } else if (this._draftPoints.length >= 2) {
-      features.push(lineFeature(this._draftPoints, this._color));
+      features.push(lineFeature(this._draftPoints, this._color, this._lineStyle));
     }
     if (this._draftPoints.length > 0) {
       features.push(
@@ -1235,6 +1436,9 @@ class AnnotationToolsControl {
     const isDraftMode = Boolean(draftMode);
     const isLineMode = this._mode === 'path' || this._mode === 'route';
     const isLineSelected = selected?.type === 'path' || selected?.type === 'route';
+    const isAreaMode = this._mode === 'polygon';
+    const isAreaSelected = selected?.type === 'polygon';
+    const hasLineStyleControls = isLineMode || isLineSelected || isAreaMode || isAreaSelected;
     const isRouteMode = this._mode === 'route' || selected?.type === 'route';
     const isEditingSelected = Boolean(selected && this._editingId === selected.id);
     const showDraftStyle = this._mode !== 'select' && !isEditingSelected;
@@ -1242,11 +1446,23 @@ class AnnotationToolsControl {
     this._labelInput.closest<HTMLElement>('.annotation-field').hidden = true;
     this._noteInput.closest<HTMLElement>('.annotation-field').hidden = true;
     this._customColor.closest<HTMLElement>('.annotation-field').hidden = !showDraftStyle;
-    this._lineControls.hidden = isEditingSelected || !(isLineMode || isLineSelected);
+    this._lineControls.hidden = isEditingSelected || !hasLineStyleControls;
+    this._directedInput.closest<HTMLElement>('.annotation-check-field').hidden = !(isLineMode || isLineSelected);
+    this._fillOpacityInput.closest<HTMLElement>('.annotation-field').hidden = !(isAreaMode || isAreaSelected);
     this._endpointInput.closest<HTMLElement>('.annotation-field').hidden = isEditingSelected || !isRouteMode;
     this._profileSelect.closest<HTMLElement>('.annotation-field').hidden = isEditingSelected || !isRouteMode;
+    const styleDisabled = !this._expanded || this._isRouting || !layerVisible || mapLoading || !hasLineStyleControls;
     this._directedInput.disabled =
       !this._expanded || this._isRouting || !layerVisible || mapLoading || !(isLineMode || isLineSelected);
+    this._lineStyleSelect.disabled = styleDisabled;
+    this._opacityInput.disabled = styleDisabled;
+    this._fillOpacityInput.disabled =
+      !this._expanded || this._isRouting || !layerVisible || mapLoading || !(isAreaMode || isAreaSelected);
+    this._lineStyleSelect.value = this._lineStyle;
+    this._opacityInput.value = String(Math.round(this._opacity * 100));
+    this._opacityValue.textContent = `${Math.round(this._opacity * 100)}%`;
+    this._fillOpacityInput.value = String(Math.round(this._fillOpacity * 100));
+    this._fillOpacityValue.textContent = `${Math.round(this._fillOpacity * 100)}%`;
     this._undoButton.hidden = isEditingSelected || !isDraftMode;
     this._doneButton.hidden = isEditingSelected || !isDraftMode;
     this._deleteButton.hidden = !selected || isEditingSelected;
