@@ -1,57 +1,57 @@
 import { addGpxToMap, addGeoJsonToMap, mergeBounds } from './gpx.js';
 
-export const OVERLAY_SYNC_MAX_COMPRESSED_BYTES = 2 * 1024 * 1024;
+export const FILE_LAYER_SYNC_MAX_COMPRESSED_BYTES = 2 * 1024 * 1024;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 const GZIP_MAGIC_0 = 0x1f;
 const GZIP_MAGIC_1 = 0x8b;
 
-type OverlayType = 'gpx' | 'geojson';
-type OverlayContentEncoding = 'gzip' | 'identity';
-type OverlayBounds = [[number, number], [number, number]];
+type FileLayerType = 'gpx' | 'geojson';
+type FileContentEncoding = 'gzip' | 'identity';
+type FileLayerBounds = [[number, number], [number, number]];
 type JsonRecord = Record<string, unknown>;
-export type OverlayContent = string | object;
-type OverlayMapLike = Parameters<typeof addGpxToMap>[0];
+export type FileLayerContent = string | object;
+type FileLayerMapLike = Parameters<typeof addGpxToMap>[0];
 
-export interface OverlayManifest extends JsonRecord {
+export interface FileLayerManifest extends JsonRecord {
   id: string;
-  type: OverlayType;
+  type: FileLayerType;
   name: string;
   visible: boolean;
   color?: string;
   opacity?: number;
   lineWidth?: number;
-  bounds?: OverlayBounds | null;
+  bounds?: FileLayerBounds | null;
   contentHash?: string;
   contentType?: string;
-  contentEncoding?: OverlayContentEncoding;
+  contentEncoding?: FileContentEncoding;
   contentByteLength?: number;
   rawByteLength?: number;
   syncVersion?: number;
   persistence?: 'ephemeral' | 'persistent';
 }
 
-interface RuntimeOverlay extends Partial<OverlayManifest> {
+interface RuntimeFileLayer extends Partial<FileLayerManifest> {
   id: string;
-  data: OverlayContent;
+  data: FileLayerContent;
   rawText?: string;
   layerIds?: string[];
   sourceId?: string;
-  remoteOverlayId?: string;
-  syncOverlayId?: string;
+  remoteLayerId?: string;
+  syncLayerId?: string;
 }
 
-interface BuildOverlaySyncAssetOptions {
-  manifest?: Partial<OverlayManifest>;
+interface BuildFileLayerSyncAssetOptions {
+  manifest?: Partial<FileLayerManifest>;
 }
 
-export interface OverlaySyncAsset {
+export interface FileLayerSyncAsset {
   envelope: {
     id: string;
-    manifest: OverlayManifest & {
+    manifest: FileLayerManifest & {
       contentHash: string;
       contentType: string;
-      contentEncoding: OverlayContentEncoding;
+      contentEncoding: FileContentEncoding;
       contentByteLength: number;
       rawByteLength: number;
     };
@@ -59,7 +59,7 @@ export interface OverlaySyncAsset {
   content: Uint8Array;
 }
 
-export interface OverlayBinaryMessage {
+export interface FileContentMessage {
   contentHash: string;
   content: Uint8Array;
 }
@@ -71,23 +71,23 @@ function normalizeString(value: unknown, fallback = '') {
   return normalized || fallback;
 }
 
-function isRuntimeOverlay(value: unknown): value is RuntimeOverlay {
+function isRuntimeFileLayer(value: unknown): value is RuntimeFileLayer {
   return Boolean(value && typeof value === 'object' && 'id' in value && 'data' in value);
 }
 
-function stripRuntimeOverlayFields(overlay: Partial<RuntimeOverlay | OverlayManifest>): OverlayManifest {
-  const { remoteOverlayId, syncOverlayId, ...manifestWithRuntimeFields } = overlay || {};
+function stripRuntimeFileLayerFields(fileLayer: Partial<RuntimeFileLayer | FileLayerManifest>): FileLayerManifest {
+  const { remoteLayerId, syncLayerId, ...manifestWithRuntimeFields } = fileLayer || {};
   delete manifestWithRuntimeFields.layerIds;
   delete manifestWithRuntimeFields.sourceId;
   delete manifestWithRuntimeFields.data;
   delete manifestWithRuntimeFields.rawText;
   const manifest = manifestWithRuntimeFields;
-  const id = syncOverlayId || remoteOverlayId || manifest.id;
+  const id = syncLayerId || remoteLayerId || manifest.id;
   return {
     ...manifest,
     id: String(id || ''),
     type: manifest.type === 'gpx' ? 'gpx' : 'geojson',
-    name: normalizeString(manifest.name, String(id || 'Overlay')),
+    name: normalizeString(manifest.name, String(id || 'File layer')),
     visible: manifest.visible !== false,
   };
 }
@@ -124,16 +124,16 @@ function bytesToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-async function gzipBytes(bytes: Uint8Array): Promise<{ bytes: Uint8Array; encoding: OverlayContentEncoding }> {
+async function gzipBytes(bytes: Uint8Array): Promise<{ bytes: Uint8Array; encoding: FileContentEncoding }> {
   if (!globalThis.CompressionStream) return { bytes, encoding: 'identity' };
   const stream = new Blob([bytesToArrayBuffer(bytes)]).stream().pipeThrough(new CompressionStream('gzip'));
   return { bytes: await streamToUint8Array(stream), encoding: 'gzip' };
 }
 
-async function gunzipBytes(bytes: Uint8Array, encoding: OverlayContentEncoding | string) {
+async function gunzipBytes(bytes: Uint8Array, encoding: FileContentEncoding | string) {
   if (encoding !== 'gzip') return bytes;
   if (!globalThis.DecompressionStream) {
-    throw new Error('This browser cannot decompress shared overlays');
+    throw new Error('This browser cannot decompress shared file layers');
   }
   const stream = new Blob([bytesToArrayBuffer(bytes)]).stream().pipeThrough(new DecompressionStream('gzip'));
   return streamToUint8Array(stream);
@@ -143,32 +143,34 @@ function isGzip(bytes: Uint8Array) {
   return bytes?.[0] === GZIP_MAGIC_0 && bytes?.[1] === GZIP_MAGIC_1;
 }
 
-export async function buildOverlaySyncAsset(
-  overlay: unknown,
-  options: BuildOverlaySyncAssetOptions = {},
-): Promise<OverlaySyncAsset | null> {
-  if (!isRuntimeOverlay(overlay)) return null;
+export async function buildFileLayerSyncAsset(
+  fileLayer: unknown,
+  options: BuildFileLayerSyncAssetOptions = {},
+): Promise<FileLayerSyncAsset | null> {
+  if (!isRuntimeFileLayer(fileLayer)) return null;
 
-  const manifest: OverlayManifest & {
+  const manifest: FileLayerManifest & {
     persistence: 'ephemeral' | 'persistent';
     syncVersion: number;
     createdAt: number;
     updatedAt: number;
   } = {
-    ...stripRuntimeOverlayFields(overlay),
+    ...stripRuntimeFileLayerFields(fileLayer),
     syncVersion: 1,
     persistence: 'ephemeral' as const,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     ...options.manifest,
   };
-  const contentType = overlay.type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json';
+  const contentType = fileLayer.type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json';
   const rawText =
-    overlay.type === 'gpx' && typeof overlay.rawText === 'string' ? overlay.rawText : JSON.stringify(overlay.data);
+    fileLayer.type === 'gpx' && typeof fileLayer.rawText === 'string'
+      ? fileLayer.rawText
+      : JSON.stringify(fileLayer.data);
   const rawBytes = TEXT_ENCODER.encode(rawText);
   const compressed = await gzipBytes(rawBytes);
-  if (compressed.bytes.byteLength > OVERLAY_SYNC_MAX_COMPRESSED_BYTES) {
-    throw new Error('Overlay is too large to sync');
+  if (compressed.bytes.byteLength > FILE_LAYER_SYNC_MAX_COMPRESSED_BYTES) {
+    throw new Error('File layer is too large to sync');
   }
   const hash = arrayBufferToHex(await crypto.subtle.digest('SHA-256', bytesToArrayBuffer(compressed.bytes)));
 
@@ -188,7 +190,7 @@ export async function buildOverlaySyncAsset(
   };
 }
 
-export function encodeOverlayBinaryMessage(contentHash: string, contentBytes: Uint8Array) {
+export function encodeFileContentMessage(contentHash: string, contentBytes: Uint8Array) {
   const hashBytes = TEXT_ENCODER.encode(contentHash);
   if (hashBytes.byteLength > 255) throw new Error('content hash is too long');
   const buffer = new Uint8Array(2 + hashBytes.byteLength + contentBytes.byteLength);
@@ -199,7 +201,7 @@ export function encodeOverlayBinaryMessage(contentHash: string, contentBytes: Ui
   return buffer;
 }
 
-export function decodeOverlayBinaryMessage(message: unknown): OverlayBinaryMessage | null {
+export function decodeFileContentMessage(message: unknown): FileContentMessage | null {
   const bytes =
     message instanceof Uint8Array
       ? message
@@ -217,10 +219,10 @@ export function decodeOverlayBinaryMessage(message: unknown): OverlayBinaryMessa
   };
 }
 
-export async function materializeOverlayContent(
-  manifest: OverlayManifest,
+export async function materializeFileLayerContent(
+  manifest: FileLayerManifest,
   content: Uint8Array | ArrayBuffer,
-): Promise<OverlayContent> {
+): Promise<FileLayerContent> {
   const compressed = content instanceof Uint8Array ? content : new Uint8Array(content);
   const encoding = manifest.contentEncoding || (isGzip(compressed) ? 'gzip' : 'identity');
   const rawBytes = await gunzipBytes(compressed, encoding);
@@ -229,38 +231,41 @@ export async function materializeOverlayContent(
   return JSON.parse(text);
 }
 
-export async function addSyncedOverlayToMap(
-  map: OverlayMapLike,
-  manifest: OverlayManifest,
+export async function addSyncedFileLayerToMap(
+  map: FileLayerMapLike,
+  manifest: FileLayerManifest,
   content: Uint8Array | ArrayBuffer,
 ) {
-  const payload = await materializeOverlayContent(manifest, content);
+  const payload = await materializeFileLayerContent(manifest, content);
   const options = { name: manifest.name, remote: true };
-  let overlay = null;
+  let fileLayer = null;
   if (manifest.type === 'gpx') {
     if (typeof payload !== 'string') return null;
-    overlay = addGpxToMap(map, payload, options);
+    fileLayer = addGpxToMap(map, payload, options);
   } else {
-    overlay = addGeoJsonToMap(map, payload, {
+    fileLayer = addGeoJsonToMap(map, payload, {
       ...options,
       color: manifest.color,
     });
   }
-  if (!overlay) return null;
+  if (!fileLayer) return null;
   return {
-    ...overlay,
-    ...stripRuntimeOverlayFields(manifest),
-    id: overlay.id,
-    remoteOverlayId: manifest.id,
-    syncOverlayId: manifest.id,
+    ...fileLayer,
+    ...stripRuntimeFileLayerFields(manifest),
+    id: fileLayer.id,
+    remoteLayerId: manifest.id,
+    syncLayerId: manifest.id,
     contentHash: manifest.contentHash,
   };
 }
 
-export function overlayManifestPatch(overlay: Partial<RuntimeOverlay | OverlayManifest>) {
-  return stripRuntimeOverlayFields(overlay);
+export function fileLayerManifestPatch(fileLayer: Partial<RuntimeFileLayer | FileLayerManifest>) {
+  return stripRuntimeFileLayerFields(fileLayer);
 }
 
-export function mergeOverlayBounds(overlays: Array<{ bounds?: OverlayBounds | null }>) {
-  return overlays.reduce<OverlayBounds | null>((bounds, overlay) => mergeBounds(bounds, overlay.bounds) || null, null);
+export function mergeFileLayerBounds(fileLayers: Array<{ bounds?: FileLayerBounds | null }>) {
+  return fileLayers.reduce<FileLayerBounds | null>(
+    (bounds, fileLayer) => mergeBounds(bounds, fileLayer.bounds) || null,
+    null,
+  );
 }

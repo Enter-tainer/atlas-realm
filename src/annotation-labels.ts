@@ -1,7 +1,7 @@
-import type { DrawingDoc, DrawingFeatureType, DrawingRouteProfile } from './drawing-model.js';
+import type { AnnotationFeaturePayload, AnnotationFeatureType, AnnotationRouteProfile } from './annotation-model.js';
 
-type DrawingLabelOptions = {
-  profile?: DrawingRouteProfile;
+type AnnotationLabelOptions = {
+  profile?: AnnotationRouteProfile;
   distanceText?: string;
   durationText?: string;
   fromName?: string;
@@ -15,22 +15,25 @@ function normalizeLabelPart(value: unknown, maxLength = 48) {
     .slice(0, maxLength);
 }
 
-function routeProfileLabel(profile: DrawingRouteProfile | undefined) {
+function routeProfileLabel(profile: AnnotationRouteProfile | undefined) {
   if (profile === 'walking') return 'Walking';
   if (profile === 'cycling') return 'Cycling';
   return 'Driving';
 }
 
-export function nextDrawingFeatureNumber(doc: DrawingDoc, type: DrawingFeatureType) {
-  return doc.featureOrder.filter((id) => doc.features[id]?.type === type).length + 1;
+export function nextAnnotationFeatureNumber(
+  features: readonly AnnotationFeaturePayload[],
+  type: AnnotationFeatureType,
+) {
+  return features.filter((feature) => feature.type === type).length + 1;
 }
 
-export function defaultDrawingFeatureLabel(
-  doc: DrawingDoc,
-  type: DrawingFeatureType,
-  options: DrawingLabelOptions = {},
+export function defaultAnnotationFeatureLabel(
+  features: readonly AnnotationFeaturePayload[],
+  type: AnnotationFeatureType,
+  options: AnnotationLabelOptions = {},
 ) {
-  const number = nextDrawingFeatureNumber(doc, type);
+  const number = nextAnnotationFeatureNumber(features, type);
   if (type === 'point') return `Marker ${number}`;
   if (type === 'text') return `Note ${number}`;
   if (type === 'path') return `Line ${number}`;

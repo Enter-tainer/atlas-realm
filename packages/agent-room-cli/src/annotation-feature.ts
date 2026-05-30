@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { coordinateFromOptions, listFromOptions } from './coordinates.js';
 import { coerceBoolean, coerceNumber, normalizeColor, normalizeId, parseJson, randomId } from './validation.js';
-import type { AgentRoomConfig, DrawingFeature, JsonRecord } from './types.js';
+import type { AgentRoomConfig, AnnotationFeaturePayload, JsonRecord } from './types.js';
 
 export async function buildFeatureFromOptions(
   options: JsonRecord = {},
@@ -9,7 +9,7 @@ export async function buildFeatureFromOptions(
   typeHint?: string,
   existing: JsonRecord | null = null,
   now = Date.now(),
-): Promise<DrawingFeature> {
+): Promise<AnnotationFeaturePayload> {
   const fullFeature = await readJsonOption(options.featureFile, options.featureJson, 'feature');
   const patch = await readJsonOption(options.patchFile, options.patchJson, 'patch');
   return buildFeatureFromParts({ options, config, typeHint, existing, fullFeature, patch, now });
@@ -31,7 +31,7 @@ export function buildFeatureFromParts({
   fullFeature?: JsonRecord | null;
   patch?: JsonRecord | null;
   now: number;
-}): DrawingFeature {
+}): AnnotationFeaturePayload {
   const seed = {
     ...(existing || {}),
     ...(patch || {}),
@@ -39,8 +39,8 @@ export function buildFeatureFromParts({
   } as JsonRecord;
   const type = options.type || typeHint || seed.type || 'point';
   const id = normalizeId(options.id, seed.id || randomId('annotation'));
-  const layerId = normalizeId(options.layerId, seed.layerId || 'drawing-default');
-  const feature: DrawingFeature = {
+  const layerId = normalizeId(options.layerId, seed.layerId || 'annotation-default');
+  const feature: AnnotationFeaturePayload = {
     ...seed,
     id,
     layerId,

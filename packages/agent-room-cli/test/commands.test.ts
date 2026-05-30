@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildFeatureFromParts } from '../src/drawing-feature.js';
-import { buildOverlayAssetFromText } from '../src/overlay-asset.js';
+import { buildFeatureFromParts } from '../src/annotation-feature.js';
+import { buildFileLayerAssetFromText } from '../src/file-layer-asset.js';
 import { buildSocketUrl, createConfig } from '../src/config.js';
 import { executeCommand } from '../src/commands.js';
 
@@ -12,7 +12,20 @@ const NOW = 1_700_000_000_000;
 class FakeRoomClient {
   constructor() {
     this.config = { room: 'test-room', agentName: 'Agent', timeoutMs: 1000 };
-    this.overlays = [];
+    this.layers = [
+      {
+        id: 'annotation-default',
+        kind: 'annotation',
+        name: 'Annotations',
+        visible: true,
+        sortKey: '000010',
+        payload: { version: 1 },
+        revision: 0,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ];
+    this.annotationFeatures = [];
     this.peers = [];
     this.agents = [
       {
@@ -25,20 +38,6 @@ class FakeRoomClient {
         lastAction: 'connect',
       },
     ];
-    this.drawingDoc = {
-      layers: {
-        'drawing-default': {
-          id: 'drawing-default',
-          name: 'Annotations',
-          visible: true,
-          createdAt: NOW,
-          updatedAt: NOW,
-        },
-      },
-      layerOrder: ['drawing-default'],
-      features: {},
-      featureOrder: [],
-    };
     this.sentJson = [];
     this.sentBinary = [];
   }
@@ -51,42 +50,65 @@ class FakeRoomClient {
     this.sentBinary.push(bytes);
   }
 
-  async waitFor(predicate, label) {
-    if (label.startsWith('overlay content store')) {
+  async waitFor(_predicate, label) {
+    if (label.startsWith('file content store')) {
       const contentHash = label.split(' ').at(-1);
-      return { json: { type: 'overlay:content:stored', contentHash } };
+      return { json: { type: 'file:content:stored', contentHash } };
     }
-    if (label.startsWith('overlay upsert')) {
-      const manifest = this.sentJson.at(-1)?.manifest;
-      this.overlays.unshift(manifest);
-      return { json: { type: 'overlay:upserted', manifest } };
+    if (label.startsWith('layer create')) {
+      const layer = this.sentJson.at(-1)?.layer;
+      this.upsertLayer(layer);
+      return { json: { type: 'layer:created', layer } };
     }
-    if (label.startsWith('overlay patch')) {
-      const overlayId = this.sentJson.at(-1)?.overlayId;
-      const patch = this.sentJson.at(-1)?.patch;
-      const existing = this.overlays.find((overlay) => overlay.id === overlayId);
-      const manifest = { ...existing, ...patch, id: overlayId };
-      return { json: { type: 'overlay:patched', manifest } };
+    if (label.startsWith('layer update') || label.startsWith('annotation layer update')) {
+      const message = this.sentJson.at(-1);
+      const layer = this.layers.find((item) => item.id === message.layerId);
+      const next = { ...layer, ...message.patch, updatedAt: NOW + 1 };
+      if (message.patch?.payload?.style && next.payload?.style) {
+        next.payload = { ...next.payload, style: { ...next.payload.style, ...message.patch.payload.style } };
+      }
+      this.upsertLayer(next);
+      return { json: { type: 'layer:updated', layer: next } };
     }
-    if (label.startsWith('drawing feature upsert')) {
+    if (label.startsWith('layer delete') || label.startsWith('annotation layer delete')) {
+      const layerId = this.sentJson.at(-1)?.layerId;
+      this.layers = this.layers.filter((layer) => layer.id !== layerId);
+      return { json: { type: 'layer:deleted', layerId } };
+    }
+    if (label === 'layer reorder' || label === 'annotation layer reorder') {
+      for (const update of this.sentJson.at(-1)?.updates || []) {
+        const layer = this.layers.find((item) => item.id === update.layerId);
+        if (layer) layer.sortKey = update.sortKey;
+      }
+      this.layers.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+      return { json: { type: 'layer:reordered', layers: this.layers } };
+    }
+    if (label.startsWith('annotation feature upsert') || label.startsWith('annotation feature update')) {
       const feature = this.sentJson.at(-1)?.feature;
-      this.drawingDoc.features[feature.id] = feature;
-      if (!this.drawingDoc.featureOrder.includes(feature.id)) this.drawingDoc.featureOrder.push(feature.id);
-      return { json: { type: 'drawing:feature:upserted', feature, revision: 1 } };
+      const index = this.annotationFeatures.findIndex((item) => item.id === feature.id);
+      if (index === -1) this.annotationFeatures.push(feature);
+      else this.annotationFeatures[index] = feature;
+      return { json: { type: 'annotation-feature:upserted', feature } };
     }
-    if (label.startsWith('drawing feature delete')) {
+    if (label.startsWith('annotation feature delete')) {
       const featureId = this.sentJson.at(-1)?.featureId;
-      return { json: { type: 'drawing:feature:deleted', featureId, revision: 2 } };
+      return { json: { type: 'annotation-feature:deleted', featureId } };
     }
-    if (label.startsWith('drawing layer reorder')) {
-      const orderedIds = this.sentJson.at(-1)?.orderedIds || [];
-      this.drawingDoc.layerOrder = [
-        ...orderedIds.filter((id) => this.drawingDoc.layers[id]),
-        ...this.drawingDoc.layerOrder.filter((id) => this.drawingDoc.layers[id] && !orderedIds.includes(id)),
-      ];
-      return { json: { type: 'drawing:layer:reordered', orderedIds: this.drawingDoc.layerOrder, revision: 3 } };
+    if (label === 'annotation feature reorder') {
+      for (const update of this.sentJson.at(-1)?.updates || []) {
+        const feature = this.annotationFeatures.find((item) => item.id === update.featureId);
+        if (feature) feature.sortKey = update.sortKey;
+      }
+      this.annotationFeatures.sort((a, b) => a.sortKey.localeCompare(b.sortKey));
+      return { json: { type: 'annotation-feature:reordered', features: this.annotationFeatures } };
     }
     throw new Error(`Unexpected waitFor: ${label}`);
+  }
+
+  upsertLayer(layer) {
+    const index = this.layers.findIndex((item) => item.id === layer.id);
+    if (index === -1) this.layers.push(layer);
+    else this.layers[index] = layer;
   }
 }
 
@@ -113,12 +135,13 @@ describe('agent-room CLI package', () => {
     const presence = await executeCommand(client, { subject: 'presence', action: 'list' });
 
     expect(snapshot.result.presence.agents[0]).toMatchObject({ id: 'agent-a', active: true });
+    expect(snapshot.result.layers[0]).toMatchObject({ id: 'annotation-default', kind: 'annotation' });
     expect(presence.result.agents[0]).toMatchObject({ id: 'agent-a', lastAction: 'connect' });
     expect(presence.result.peers).toEqual([]);
   });
 
-  it('builds overlay assets with manifest metadata and compressed content', () => {
-    const asset = buildOverlayAssetFromText(
+  it('builds file layer assets with metadata and compressed content', () => {
+    const asset = buildFileLayerAssetFromText(
       'route.geojson',
       JSON.stringify({
         type: 'FeatureCollection',
@@ -157,7 +180,7 @@ describe('agent-room CLI package', () => {
     expect(asset.content.byteLength).toBeGreaterThan(0);
   });
 
-  it('builds point annotations from command options', () => {
+  it('builds point annotation payloads from command options', () => {
     const feature = buildFeatureFromParts({
       options: {
         id: 'stop-a',
@@ -179,7 +202,7 @@ describe('agent-room CLI package', () => {
     });
   });
 
-  it('sends overlay upload protocol messages for layer upsert', async () => {
+  it('sends file content upload followed by layer:create for file layers', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-'));
     const file = join(dir, 'route.geojson');
     await writeFile(
@@ -220,13 +243,18 @@ describe('agent-room CLI package', () => {
     expect(client.sentBinary).toHaveLength(1);
     expect(client.sentJson).toHaveLength(1);
     expect(client.sentJson[0]).toMatchObject({
-      type: 'overlay:upsert',
-      manifest: { id: 'route-layer', name: 'Route layer' },
+      type: 'layer:create',
+      layer: {
+        id: 'route-layer',
+        kind: 'file',
+        name: 'Route layer',
+        payload: { fileType: 'geojson' },
+      },
     });
-    expect(response.result.overlay.id).toBe('route-layer');
+    expect(response.result.layer.id).toBe('route-layer');
   });
 
-  it('sends drawing upsert and delete protocol messages for annotations', async () => {
+  it('sends annotation-feature upsert and delete protocol messages for annotations', async () => {
     const client = new FakeRoomClient();
     const upsert = await executeCommand(client, {
       subject: 'annotations',
@@ -245,36 +273,42 @@ describe('agent-room CLI package', () => {
     });
 
     expect(client.sentJson[0]).toMatchObject({
-      type: 'drawing:feature:upsert',
-      feature: { id: 'stop-a', type: 'point' },
+      type: 'annotation-feature:upsert',
+      feature: { id: 'stop-a', featureType: 'point', payload: { type: 'point' } },
     });
-    expect(client.sentJson[1]).toEqual({ type: 'drawing:feature:delete', featureId: 'stop-a' });
+    expect(client.sentJson[1]).toEqual({ type: 'annotation-feature:delete', featureId: 'stop-a' });
     expect(upsert.result.annotation.id).toBe('stop-a');
     expect(deleted.result.annotationId).toBe('stop-a');
   });
 
-  it('sends drawing layer reorder protocol messages for annotation layers', async () => {
+  it('sends layer:reorder messages for annotation layers', async () => {
     const client = new FakeRoomClient();
-    client.drawingDoc.layers['custom-layer'] = {
+    client.layers.push({
       id: 'custom-layer',
+      kind: 'annotation',
       name: 'Custom layer',
       visible: true,
+      sortKey: '000020',
+      payload: { version: 1 },
+      revision: 0,
       createdAt: NOW,
       updatedAt: NOW,
-    };
-    client.drawingDoc.layerOrder.push('custom-layer');
+    });
 
     const response = await executeCommand(client, {
       subject: 'annotations',
       action: 'layers',
       layerAction: 'reorder',
-      ids: ['custom-layer', 'drawing-default'],
+      ids: ['custom-layer', 'annotation-default'],
     });
 
     expect(client.sentJson[0]).toEqual({
-      type: 'drawing:layer:reorder',
-      orderedIds: ['custom-layer', 'drawing-default'],
+      type: 'layer:reorder',
+      updates: [
+        { layerId: 'custom-layer', sortKey: '000010' },
+        { layerId: 'annotation-default', sortKey: '000020' },
+      ],
     });
-    expect(response.result.orderedIds).toEqual(['custom-layer', 'drawing-default']);
+    expect(response.result.orderedIds).toEqual(['custom-layer', 'annotation-default']);
   });
 });

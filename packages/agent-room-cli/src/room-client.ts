@@ -1,24 +1,43 @@
 import { buildSocketUrl } from './config.js';
-import { decodeOverlayBinaryMessage } from './protocol.js';
+import { decodeFileContentMessage } from './protocol.js';
 import type {
   AgentRoomConfig,
   AgentParticipant,
-  DrawingDoc,
+  AnnotationFeature,
   JsonRecord,
-  OverlayManifest,
+  Layer,
   RoomEvent,
   RoomWaiter,
   WebSocketConstructorLike,
   WebSocketLike,
 } from './types.js';
 
+function compareRows(
+  a: { id: string; sortKey?: string; createdAt?: number },
+  b: { id: string; sortKey?: string; createdAt?: number },
+) {
+  return (
+    String(a.sortKey || '').localeCompare(String(b.sortKey || '')) ||
+    Number(a.createdAt || 0) - Number(b.createdAt || 0) ||
+    String(a.id || '').localeCompare(String(b.id || ''))
+  );
+}
+
+function sortLayers(layers: Layer[]) {
+  return layers.slice().sort(compareRows);
+}
+
+function sortAnnotationFeatures(features: AnnotationFeature[]) {
+  return features.slice().sort(compareRows);
+}
+
 export class RoomClient {
   config: AgentRoomConfig;
   WebSocketImpl: WebSocketConstructorLike;
   events: RoomEvent[];
   waiters: Set<RoomWaiter>;
-  overlays: OverlayManifest[];
-  drawingDoc: DrawingDoc | null;
+  layers: Layer[];
+  annotationFeatures: AnnotationFeature[];
   peers: JsonRecord[];
   agents: AgentParticipant[];
   socket: WebSocketLike | null;
@@ -35,8 +54,8 @@ export class RoomClient {
     this.WebSocketImpl = WebSocketImpl;
     this.events = [];
     this.waiters = new Set();
-    this.overlays = [];
-    this.drawingDoc = null;
+    this.layers = [];
+    this.annotationFeatures = [];
     this.peers = [];
     this.agents = [];
     this.socket = null;
@@ -79,13 +98,13 @@ export class RoomClient {
 
     await Promise.all([
       this.waitFor((event: RoomEvent) => event.json?.type === 'presence:init', 'presence:init'),
-      this.waitFor((event: RoomEvent) => event.json?.type === 'overlay:init', 'overlay:init'),
-      this.waitFor((event: RoomEvent) => event.json?.type === 'drawing:snapshot', 'drawing:snapshot'),
+      this.waitFor((event: RoomEvent) => event.json?.type === 'layer:list', 'layer:list'),
+      this.waitFor((event: RoomEvent) => event.json?.type === 'annotation-feature:list', 'annotation-feature:list'),
     ]);
   }
 
   handleMessage(data: unknown): void {
-    const binaryFrame = decodeOverlayBinaryMessage(data);
+    const binaryFrame = decodeFileContentMessage(data);
     if (binaryFrame) {
       this.addEvent({ binary: binaryFrame });
       return;
@@ -119,20 +138,52 @@ export class RoomClient {
       const index = this.agents.findIndex((agent: AgentParticipant) => agent.id === json.agent.id);
       if (index === -1) this.agents.unshift(json.agent);
       else this.agents[index] = json.agent;
-    } else if (json.type === 'overlay:init' || json.type === 'overlay:list') {
-      this.overlays = Array.isArray(json.overlays) ? json.overlays : [];
-    } else if (json.type === 'overlay:upserted' && json.manifest?.id) {
-      const index = this.overlays.findIndex((overlay: OverlayManifest) => overlay.id === json.manifest.id);
-      if (index === -1) this.overlays.unshift(json.manifest);
-      else this.overlays[index] = json.manifest;
-    } else if (json.type === 'overlay:patched' && json.manifest?.id) {
-      const index = this.overlays.findIndex((overlay: OverlayManifest) => overlay.id === json.manifest.id);
-      if (index !== -1) this.overlays[index] = json.manifest;
-    } else if (json.type === 'overlay:deleted' || json.type === 'overlay:delete') {
-      this.overlays = this.overlays.filter((overlay: OverlayManifest) => overlay.id !== json.overlayId);
-    } else if (json.type === 'drawing:snapshot') {
-      this.drawingDoc = json.doc;
+    } else if (json.type === 'layer:list') {
+      this.layers = sortLayers(Array.isArray(json.layers) ? json.layers : []);
+    } else if ((json.type === 'layer:created' || json.type === 'layer:updated') && json.layer?.id) {
+      this.upsertLayer(json.layer);
+    } else if (json.type === 'layer:deleted' && json.layerId) {
+      this.layers = this.layers.filter((layer: Layer) => layer.id !== json.layerId);
+      this.annotationFeatures = this.annotationFeatures.filter(
+        (feature: AnnotationFeature) => feature.layerId !== json.layerId,
+      );
+    } else if (json.type === 'layer:reordered') {
+      this.layers = sortLayers(Array.isArray(json.layers) ? json.layers : this.layers);
+    } else if (json.type === 'annotation-feature:list') {
+      const features = Array.isArray(json.features) ? json.features : [];
+      if (typeof json.layerId === 'string') {
+        this.annotationFeatures = sortAnnotationFeatures([
+          ...this.annotationFeatures.filter((feature: AnnotationFeature) => feature.layerId !== json.layerId),
+          ...features,
+        ]);
+      } else {
+        this.annotationFeatures = sortAnnotationFeatures(features);
+      }
+    } else if (json.type === 'annotation-feature:upserted' && json.feature?.id) {
+      this.upsertAnnotationFeature(json.feature);
+    } else if (json.type === 'annotation-feature:deleted' && json.featureId) {
+      this.annotationFeatures = this.annotationFeatures.filter(
+        (feature: AnnotationFeature) => feature.id !== json.featureId,
+      );
+    } else if (json.type === 'annotation-feature:reordered') {
+      this.annotationFeatures = sortAnnotationFeatures(
+        Array.isArray(json.features) ? json.features : this.annotationFeatures,
+      );
     }
+  }
+
+  upsertLayer(layer: Layer): void {
+    const index = this.layers.findIndex((item: Layer) => item.id === layer.id);
+    if (index === -1) this.layers.push(layer);
+    else this.layers[index] = layer;
+    this.layers = sortLayers(this.layers);
+  }
+
+  upsertAnnotationFeature(feature: AnnotationFeature): void {
+    const index = this.annotationFeatures.findIndex((item: AnnotationFeature) => item.id === feature.id);
+    if (index === -1) this.annotationFeatures.push(feature);
+    else this.annotationFeatures[index] = feature;
+    this.annotationFeatures = sortAnnotationFeatures(this.annotationFeatures);
   }
 
   addEvent(event: RoomEvent): void {

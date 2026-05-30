@@ -1,4 +1,4 @@
-import type { JsonRecord, LngLatTuple, OverlaySummary } from './types.js';
+import type { JsonRecord, LngLatTuple, FileLayerSummary } from './types.js';
 
 type CoordinateVisitor = (lng: number, lat: number) => void;
 
@@ -42,7 +42,7 @@ export function geoJsonFeatures(geojson: unknown): JsonRecord[] {
   return [];
 }
 
-export function summarizeGeoJson(geojson: unknown): OverlaySummary {
+export function summarizeGeoJson(geojson: unknown): FileLayerSummary {
   let minLng = Infinity;
   let minLat = Infinity;
   let maxLng = -Infinity;
@@ -79,7 +79,7 @@ export function summarizeGeoJson(geojson: unknown): OverlaySummary {
   };
 }
 
-export function summarizeGpx(text: string): OverlaySummary {
+export function summarizeGpx(text: string): FileLayerSummary {
   const coords: LngLatTuple[] = [];
   const tagRe = /<(?:trkpt|rtept|wpt)\b([^>]*)>/gi;
   let tagMatch: RegExpExecArray | null;

@@ -1,12 +1,9 @@
-import type { OverlayBinaryFrame } from './types.js';
+import type { FileContentFrame } from './types.js';
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-export function encodeOverlayBinaryMessage(
-  contentHash: string,
-  contentBytes: Uint8Array | ArrayBufferLike,
-): Uint8Array {
+export function encodeFileContentMessage(contentHash: string, contentBytes: Uint8Array | ArrayBufferLike): Uint8Array {
   const hashBytes = textEncoder.encode(contentHash);
   if (hashBytes.byteLength > 255) throw new Error('content hash is too long');
   const payload = contentBytes instanceof Uint8Array ? contentBytes : new Uint8Array(contentBytes);
@@ -18,7 +15,7 @@ export function encodeOverlayBinaryMessage(
   return buffer;
 }
 
-export function decodeOverlayBinaryMessage(data: unknown): OverlayBinaryFrame | null {
+export function decodeFileContentMessage(data: unknown): FileContentFrame | null {
   const bytes = normalizeBinary(data);
   if (!bytes || bytes.byteLength < 2 || bytes[0] !== 1) return null;
   const hashLength = bytes[1];
