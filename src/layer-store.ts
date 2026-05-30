@@ -43,6 +43,13 @@ function isAnnotationLayer(layer: Layer | undefined): layer is AnnotationLayer {
   return layer?.kind === 'annotation';
 }
 
+function hasAnnotationLayer(layers: Iterable<Layer>) {
+  for (const layer of layers) {
+    if (isAnnotationLayer(layer)) return true;
+  }
+  return false;
+}
+
 export class LayerStore extends EventTarget {
   _layers = new Map<string, Layer>();
   _features = new Map<string, AnnotationFeature>();
@@ -55,7 +62,7 @@ export class LayerStore extends EventTarget {
       const normalized = sanitizeLayer(layer, layer.createdAt, layer);
       if (normalized) this._layers.set(normalized.id, normalized);
     }
-    if (!this._layers.has(ANNOTATION_DEFAULT_LAYER_ID)) {
+    if (!hasAnnotationLayer(this._layers.values())) {
       const defaultLayer = createDefaultAnnotationLayer();
       this._layers.set(defaultLayer.id, defaultLayer);
     }
@@ -163,7 +170,7 @@ export class LayerStore extends EventTarget {
       const normalized = sanitizeLayer(layer, layer.createdAt, layer);
       if (normalized) this._layers.set(normalized.id, normalized);
     }
-    if (!this._layers.has(ANNOTATION_DEFAULT_LAYER_ID)) {
+    if (!hasAnnotationLayer(this._layers.values())) {
       const defaultLayer = createDefaultAnnotationLayer();
       this._layers.set(defaultLayer.id, defaultLayer);
     }
@@ -283,9 +290,10 @@ export class LayerStore extends EventTarget {
   clearLayer(layerId: string, { remote = false, hidden = false }: { remote?: boolean; hidden?: boolean } = {}) {
     if (hidden) this.patchLayer(layerId, { visible: false }, { remote });
     for (const [featureId, feature] of Array.from(this._features.entries())) {
-      if (feature.layerId === layerId) this._features.delete(featureId);
+      if (feature.layerId !== layerId) continue;
+      this._features.delete(featureId);
+      this._emit({ type: 'feature:delete', featureId, remote });
     }
-    this._emitSnapshot(remote);
   }
 
   reorderFeatures(orderedIds: string[], { remote = false }: { remote?: boolean } = {}) {
