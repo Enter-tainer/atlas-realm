@@ -1,13 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { reset, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
-import {
-  DRAWING_RANDOM_TEST_NOW,
-  generateDrawingClientMessages,
-  reduceDrawingClientMessages,
-} from './drawing-random-test-helper.js';
-import { createEmptyDrawingDoc } from './drawing-model.js';
-import { decodeOverlayBinaryMessage, encodeOverlayBinaryMessage } from './overlay-sync.js';
 import type { MapCollaboration } from './worker.js';
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 
@@ -25,7 +18,8 @@ interface TestConnection {
 }
 
 type TestMapCollaboration = MapCollaboration & {
-  _listOverlayManifests(): Array<Record<string, unknown>>;
+  _listLayers(): Array<Record<string, unknown>>;
+  _listAnnotationFeatures(layerId?: string): Array<Record<string, unknown>>;
   sql<T extends TestSqlRow = TestSqlRow>(
     strings: TemplateStringsArray,
     ...values: (string | number | boolean | null)[]
@@ -33,28 +27,12 @@ type TestMapCollaboration = MapCollaboration & {
 };
 type WorkerConnection = Parameters<MapCollaboration['onMessage']>[0];
 
-interface OverlayManifestFixture extends Record<string, unknown> {
-  id: string;
-  type: 'geojson';
-  name: string;
-  visible: boolean;
-  color: string;
-  opacity: number;
-  lineWidth: number;
-  bounds: [[number, number], [number, number]];
-  contentHash: string;
-  contentType: string;
-  contentEncoding: 'identity';
-  contentByteLength: number;
-  rawByteLength: number;
-  syncVersion: 1;
-  persistence: 'ephemeral';
-}
-
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
 const CONTENT_A = new Uint8Array([1, 2, 3]);
 const CONTENT_B = new Uint8Array([4, 5, 6, 7]);
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
 afterEach(async () => {
   await reset();
@@ -91,20 +69,8 @@ function createConnection(id = 'client-a'): TestConnection {
   };
 }
 
-function jsonMessage(type: string, payload: Record<string, unknown> = {}): string {
-  return JSON.stringify({ type, ...payload });
-}
-
 function workerConnection(connection: TestConnection): WorkerConnection {
   return connection as unknown as WorkerConnection;
-}
-
-async function sendWorkerMessage(
-  instance: TestMapCollaboration,
-  connection: TestConnection,
-  message: WSMessage,
-): Promise<void> {
-  await instance.onMessage(workerConnection(connection), message);
 }
 
 async function connectWorker(
@@ -115,20 +81,102 @@ async function connectWorker(
   await instance.onConnect(connection as unknown as Connection, context);
 }
 
-function sentJson(connection: TestConnection, type: string): Array<Record<string, unknown>> {
+async function sendWorkerMessage(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  message: WSMessage,
+): Promise<void> {
+  await instance.onMessage(workerConnection(connection), message);
+}
+
+function jsonMessage(type: string, payload: Record<string, unknown> = {}): string {
+  return JSON.stringify({ type, ...payload });
+}
+
+function sentJson(connection: TestConnection, type?: string): Array<Record<string, unknown>> {
   return connection.sent
     .filter((message) => typeof message === 'string')
     .map((message) => JSON.parse(message) as unknown)
-    .filter((message): message is Record<string, unknown> =>
-      Boolean(message && typeof message === 'object' && 'type' in message && message.type === type),
-    );
+    .filter((message): message is Record<string, unknown> => {
+      if (!message || typeof message !== 'object') return false;
+      return !type || (message as Record<string, unknown>).type === type;
+    });
 }
 
-function drawingFeature(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+function encodeFileContentFrame(contentHash: string, content: Uint8Array): Uint8Array {
+  const hashBytes = textEncoder.encode(contentHash);
+  const buffer = new Uint8Array(2 + hashBytes.byteLength + content.byteLength);
+  buffer[0] = 1;
+  buffer[1] = hashBytes.byteLength;
+  buffer.set(hashBytes, 2);
+  buffer.set(content, 2 + hashBytes.byteLength);
+  return buffer;
+}
+
+function decodeFileContentFrame(message: unknown): { contentHash: string; content: Uint8Array } | null {
+  const bytes =
+    message instanceof ArrayBuffer
+      ? new Uint8Array(message)
+      : ArrayBuffer.isView(message)
+        ? new Uint8Array(message.buffer, message.byteOffset, message.byteLength)
+        : null;
+  if (!bytes || bytes[0] !== 1) return null;
+  const hashLength = bytes[1];
+  return {
+    contentHash: textDecoder.decode(bytes.slice(2, 2 + hashLength)),
+    content: bytes.slice(2 + hashLength),
+  };
+}
+
+function fileLayer(id: string, contentHash: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id,
+    kind: 'file',
+    name: id,
+    visible: true,
+    sortKey: '000020',
+    payload: {
+      version: 1,
+      fileType: 'geojson',
+      contentHash,
+      contentType: 'application/geo+json',
+      contentEncoding: 'identity',
+      contentByteLength: 3,
+      rawByteLength: 20,
+      bounds: [
+        [0, 0],
+        [1, 1],
+      ],
+      style: { color: '#3b82f6', opacity: 0.95, lineWidth: 5 },
+    },
+    revision: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...extra,
+  };
+}
+
+function annotationLayer(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    kind: 'annotation',
+    name: id,
+    visible: true,
+    sortKey: '000020',
+    payload: { version: 1 },
+    revision: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    ...extra,
+  };
+}
+
+function annotationFeature(id: string, layerId: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const now = Date.now();
+  const payload = {
+    id,
     type: 'path',
-    layerId: 'drawing-default',
+    layerId,
     points: [
       [121.5, 31.2],
       [121.6, 31.3],
@@ -136,75 +184,39 @@ function drawingFeature(id: string, extra: Record<string, unknown> = {}): Record
     directed: true,
     width: 4,
     label: id,
-    note: 'Plan note',
+    note: '',
     color: '#2563eb',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    createdAt: now,
+    updatedAt: now,
     updatedBy: 'user-a',
     ...extra,
   };
-}
-
-function drawingPolygonFeature(id: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return drawingFeature(id, {
-    type: 'polygon',
-    points: [
-      [121.5, 31.2],
-      [121.55, 31.2],
-      [121.55, 31.24],
-    ],
-    width: 3,
-    fillOpacity: 0.22,
-    label: id,
-    ...extra,
-  });
-}
-
-function drawingDoc(instance: TestMapCollaboration): Record<string, unknown> {
-  const row = instance.sql<{ doc_json: string }>`
-    SELECT doc_json FROM drawing_state WHERE state_key = ${'main'} LIMIT 1
-  `[0];
-  return row?.doc_json ? (JSON.parse(String(row.doc_json)) as Record<string, unknown>) : {};
-}
-
-function asRecordArray(value: unknown): Array<Record<string, unknown>> {
-  return Array.isArray(value)
-    ? value.filter((item): item is Record<string, unknown> => Boolean(item && typeof item === 'object'))
-    : [];
-}
-
-function comparableDrawingDoc(doc: Record<string, unknown>) {
-  return {
-    revision: doc.revision,
-    layerOrder: doc.layerOrder,
-    featureOrder: doc.featureOrder,
-    layers: doc.layers,
-    features: doc.features,
-  };
-}
-
-function manifest(id: string, contentHash: string, extra: Record<string, unknown> = {}): OverlayManifestFixture {
   return {
     id,
-    type: 'geojson',
-    name: id,
-    visible: true,
-    color: '#3b82f6',
-    opacity: 0.95,
-    lineWidth: 5,
-    bounds: [
-      [0, 0],
-      [1, 1],
-    ],
-    contentHash,
-    contentType: 'application/geo+json',
-    contentEncoding: 'identity',
-    contentByteLength: 3,
-    rawByteLength: 20,
-    syncVersion: 1,
-    persistence: 'ephemeral',
+    layerId,
+    featureType: payload.type,
+    payload,
+    sortKey: '000010',
+    revision: 0,
+    createdAt: payload.createdAt,
+    updatedAt: payload.updatedAt,
+    updatedBy: payload.updatedBy,
     ...extra,
   };
+}
+
+function contentHashes(instance: TestMapCollaboration): TestSqlValue[] {
+  return instance.sql<{ content_hash: string }>`
+    SELECT content_hash FROM file_contents ORDER BY content_hash ASC
+  `.map((row) => row.content_hash);
+}
+
+function contentCount(instance: TestMapCollaboration): number {
+  return Number(
+    instance.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM file_contents
+    `[0]?.count || 0,
+  );
 }
 
 async function storeContent(
@@ -213,924 +225,357 @@ async function storeContent(
   contentHash = HASH_A,
   content = CONTENT_A,
 ): Promise<void> {
-  await sendWorkerMessage(instance, connection, encodeOverlayBinaryMessage(contentHash, content));
+  await sendWorkerMessage(instance, connection, encodeFileContentFrame(contentHash, content));
 }
 
-async function upsertOverlay(
-  instance: TestMapCollaboration,
-  connection: TestConnection,
-  overlayManifest: OverlayManifestFixture,
-): Promise<void> {
-  await sendWorkerMessage(instance, connection, jsonMessage('overlay:upsert', { manifest: overlayManifest }));
-}
-
-function overlayList(instance: TestMapCollaboration): Array<Record<string, unknown>> {
-  return instance._listOverlayManifests();
-}
-
-function contentHashes(instance: TestMapCollaboration): TestSqlValue[] {
-  return instance.sql<{ content_hash: string }>`
-    SELECT content_hash FROM overlay_contents ORDER BY content_hash ASC
-  `.map((row) => row.content_hash);
-}
-
-function contentCount(instance: TestMapCollaboration): number {
-  return Number(
-    instance.sql<{ count: number }>`
-    SELECT COUNT(*) AS count FROM overlay_contents
-  `[0]?.count || 0,
-  );
-}
-
-function agentRows(instance: TestMapCollaboration): TestSqlRow[] {
-  return instance.sql`
-    SELECT agent_id, user_json, last_seen_at, expires_at, last_action
-    FROM agent_participants
-    ORDER BY agent_id ASC
-  `;
-}
-
-describe('MapCollaboration overlay state machine', () => {
-  it('stores binary overlay content and acknowledges the content hash', async () => {
-    const stub = roomStub('binary-store');
+describe('MapCollaboration layer storage', () => {
+  it('creates the clean-break layer tables', async () => {
+    const stub = roomStub('schema-clean-break');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
-      const connection = createConnection();
-      await storeContent(instance, connection);
       return {
-        hashes: contentHashes(instance),
-        acknowledgements: sentJson(connection, 'overlay:content:stored'),
+        tables: instance.sql<{ name: string }>`
+            SELECT name FROM sqlite_master
+            WHERE type = ${'table'}
+            ORDER BY name ASC
+          `.map((row) => row.name),
+        layers: instance._listLayers(),
       };
     });
 
-    expect(result.hashes).toEqual([HASH_A]);
-    expect(result.acknowledgements).toEqual([{ type: 'overlay:content:stored', contentHash: HASH_A }]);
+    expect(result.tables).toContain('layers');
+    expect(result.tables).toContain('annotation_features');
+    expect(result.tables).toContain('file_contents');
+    expect(result.layers[0]).toMatchObject({ id: 'annotation-default', kind: 'annotation' });
   });
 
-  it('stores sanitized overlay manifests only after content exists', async () => {
-    const stub = roomStub('upsert-sanitize');
+  it('sends layer and annotation-feature lists when a client connects', async () => {
+    const stub = roomStub('connect-snapshot');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = createConnection('alice');
+      await connectWorker(instance, connection, {
+        request: new Request('https://example.com/parties/map-collaboration/connect-snapshot?name=Alice'),
+      } as ConnectionContext);
+      return sentJson(connection).map((message) => message.type);
+    });
+
+    expect(result).toContain('presence:init');
+    expect(result).toContain('layer:list');
+    expect(result).toContain('annotation-feature:list');
+    expect(result).not.toContain('overlay:init');
+    expect(result).not.toContain('drawing:snapshot');
+  });
+
+  it('stores file content, creates file layers, serves content requests, and prunes unreferenced content', async () => {
+    const stub = roomStub('file-layer-flow');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      const needed = sentJson(connection, 'overlay:content:needed');
-      connection.sent = [];
-
-      await storeContent(instance, connection);
-      await upsertOverlay(
+      await sendWorkerMessage(
         instance,
         connection,
-        manifest('overlay-a', HASH_A, {
-          name: '  Imported   Route  ',
-          color: 'not-a-color',
-          opacity: 10,
-          lineWidth: 99,
-          contentEncoding: 'brotli',
-          pendingOrderIndex: 3,
+        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A) }),
+      );
+      const needed = sentJson(connection, 'file:content:needed');
+
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:update', {
+          layerId: 'route-a',
+          patch: { name: 'Route A', payload: { style: { color: '#ef4444', opacity: 0.5 } } },
         }),
       );
+      await sendWorkerMessage(instance, connection, jsonMessage('file:content:request', { contentHash: HASH_A }));
+      const binary = decodeFileContentFrame(connection.sent.at(-1));
+      await sendWorkerMessage(instance, connection, jsonMessage('layer:delete', { layerId: 'route-a' }));
 
       return {
         needed,
-        overlays: overlayList(instance),
+        stored: sentJson(connection, 'file:content:stored'),
+        created: sentJson(connection, 'layer:created').at(-1),
+        updated: sentJson(connection, 'layer:updated').at(-1),
+        binary,
+        layers: instance._listLayers(),
+        contentCount: contentCount(instance),
       };
     });
 
-    expect(result.needed).toEqual([{ type: 'overlay:content:needed', contentHash: HASH_A }]);
-    expect(result.overlays).toHaveLength(1);
-    expect(result.overlays[0]).toMatchObject({
-      id: 'overlay-a',
-      type: 'geojson',
-      name: 'Imported Route',
-      color: '#3b82f6',
-      opacity: 1,
-      lineWidth: 12,
-      contentEncoding: 'identity',
-      contentHash: HASH_A,
+    expect(result.needed).toEqual([{ type: 'file:content:needed', contentHash: HASH_A }]);
+    expect(result.stored).toEqual([{ type: 'file:content:stored', contentHash: HASH_A }]);
+    expect(result.created).toMatchObject({ type: 'layer:created', layer: { id: 'route-a', kind: 'file' } });
+    expect(result.updated).toMatchObject({
+      type: 'layer:updated',
+      layer: { id: 'route-a', name: 'Route A', payload: { style: { color: '#ef4444', opacity: 0.5 } } },
     });
-    expect(result.overlays[0]).not.toHaveProperty('pendingOrderIndex');
+    expect(result.binary).toEqual({ contentHash: HASH_A, content: CONTENT_A });
+    expect(result.layers.map((layer) => layer.id)).toEqual(['annotation-default']);
+    expect(result.contentCount).toBe(0);
   });
 
-  it('ignores malformed binary, JSON, and invalid overlay manifests', async () => {
-    const stub = roomStub('invalid-inputs');
+  it('stores annotation features as rows and rejects features for missing layers', async () => {
+    const stub = roomStub('annotation-feature-flow');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
 
-      await sendWorkerMessage(instance, connection, new Uint8Array([2, 0]));
-      await sendWorkerMessage(instance, connection, '{not-json');
-      await upsertOverlay(instance, connection, manifest('../bad', HASH_A));
-      await upsertOverlay(instance, connection, manifest('overlay-a', 'not-a-hash'));
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { type: 'kml' }));
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('missing-feature', 'missing-layer') }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('path-a', 'day-1') }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('annotation-feature:reorder', { updates: [{ featureId: 'path-a', sortKey: '000050' }] }),
+      );
+
+      const beforeDelete = instance._listAnnotationFeatures('day-1');
+      await sendWorkerMessage(instance, connection, jsonMessage('layer:delete', { layerId: 'day-1' }));
 
       return {
-        overlays: overlayList(instance),
-        hashes: contentHashes(instance),
-        sentCount: connection.sent.length,
+        rejected: sentJson(connection, 'annotation-feature:rejected')[0],
+        upserted: sentJson(connection, 'annotation-feature:upserted')[0],
+        reordered: sentJson(connection, 'annotation-feature:reordered')[0],
+        beforeDelete,
+        afterDelete: instance._listAnnotationFeatures('day-1'),
       };
     });
 
-    expect(result.overlays).toEqual([]);
-    expect(result.hashes).toEqual([]);
-    expect(result.sentCount).toBe(0);
-  });
-
-  it('returns stored content as a binary frame when requested', async () => {
-    const stub = roomStub('content-request');
-    const response = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-
-      await storeContent(instance, connection);
-      connection.sent = [];
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:content:request', { contentHash: HASH_A }));
-
-      const binary = connection.sent.find((message) => typeof message !== 'string');
-      return binary ? Array.from(new Uint8Array(binary)) : null;
+    expect(result.rejected).toEqual({
+      type: 'annotation-feature:rejected',
+      featureId: 'missing-feature',
+      reason: 'missing-layer',
     });
-
-    const decoded = decodeOverlayBinaryMessage(new Uint8Array(response));
-    expect(decoded.contentHash).toBe(HASH_A);
-    expect(decoded.content).toEqual(CONTENT_A);
+    expect(result.upserted).toMatchObject({
+      type: 'annotation-feature:upserted',
+      feature: { id: 'path-a', layerId: 'day-1', featureType: 'path' },
+    });
+    expect(result.reordered).toMatchObject({
+      type: 'annotation-feature:reordered',
+      features: [{ id: 'path-a', sortKey: '000050' }],
+    });
+    expect(result.beforeDelete).toHaveLength(1);
+    expect(result.afterDelete).toEqual([]);
   });
 
-  it('patches editable manifest fields while preserving identity and content', async () => {
-    const stub = roomStub('patch-overlay');
+  it('keeps concurrent annotation feature inserts as separate rows', async () => {
+    const stub = roomStub('annotation-feature-concurrent-inserts');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
-      const connection = createConnection();
+      const connectionA = createConnection('client-a');
+      const connectionB = createConnection('client-b');
 
-      await storeContent(instance, connection);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
       await sendWorkerMessage(
         instance,
-        connection,
-        jsonMessage('overlay:patch', {
-          overlayId: 'overlay-a',
-          patch: {
-            id: 'wrong-id',
-            type: 'gpx',
-            contentHash: HASH_B,
-            name: '  Patched   Name  ',
-            visible: false,
-            color: '#ef4444',
-            opacity: 0.1,
-            lineWidth: 99,
-          },
+        connectionA,
+        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connectionA,
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-a', 'day-1', { sortKey: '000010', label: 'A' }),
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connectionB,
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-b', 'day-1', { sortKey: '000020', label: 'B', updatedBy: 'user-b' }),
         }),
       );
 
-      return overlayList(instance)[0];
+      return {
+        features: instance._listAnnotationFeatures('day-1'),
+        connectionAUpserts: sentJson(connectionA, 'annotation-feature:upserted'),
+        connectionBUpserts: sentJson(connectionB, 'annotation-feature:upserted'),
+      };
     });
 
-    expect(result).toMatchObject({
-      id: 'overlay-a',
-      type: 'geojson',
-      contentHash: HASH_A,
-      name: 'Patched Name',
-      visible: false,
-      color: '#ef4444',
-      opacity: 0.2,
-      lineWidth: 12,
-    });
+    expect(result.features.map((feature) => feature.id)).toEqual(['path-a', 'path-b']);
+    expect(result.features.map((feature) => (feature.payload as Record<string, unknown>).label)).toEqual(['A', 'B']);
+    expect(result.connectionAUpserts).toHaveLength(1);
+    expect(result.connectionBUpserts).toHaveLength(1);
   });
 
-  it('reorders overlays by explicit ordered ids', async () => {
-    const stub = roomStub('reorder-overlays');
+  it('uses last-write-wins for same-feature annotation updates and increments revision', async () => {
+    const stub = roomStub('annotation-feature-last-write-wins');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connectionA = createConnection('client-a');
+      const connectionB = createConnection('client-b');
+
+      await sendWorkerMessage(
+        instance,
+        connectionA,
+        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connectionA,
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-a', 'day-1', { label: 'First label', updatedBy: 'user-a' }),
+        }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connectionB,
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-a', 'day-1', { label: 'Second label', updatedBy: 'user-b' }),
+        }),
+      );
+
+      return {
+        features: instance._listAnnotationFeatures('day-1'),
+        firstAck: sentJson(connectionA, 'annotation-feature:upserted')[0],
+        secondAck: sentJson(connectionB, 'annotation-feature:upserted')[0],
+      };
+    });
+
+    expect(result.features).toHaveLength(1);
+    expect(result.features[0]).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
+    expect((result.features[0].payload as Record<string, unknown>).label).toBe('Second label');
+    expect(result.firstAck.feature).toMatchObject({ id: 'path-a', revision: 1 });
+    expect(result.secondAck.feature).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
+  });
+
+  it('reorders mixed file and annotation layers with layer sort keys only', async () => {
+    const stub = roomStub('mixed-reorder');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
-
       await storeContent(instance, connection, HASH_A, CONTENT_A);
       await storeContent(instance, connection, HASH_B, CONTENT_B);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
-      await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
-
-      const before = overlayList(instance).map((overlay) => overlay.id);
       await sendWorkerMessage(
         instance,
         connection,
-        jsonMessage('overlay:reorder', {
-          orderedIds: ['overlay-b', 'bad/id', 'overlay-a'],
-        }),
+        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A, { sortKey: '000020' }) }),
       );
-      const after = overlayList(instance).map((overlay) => overlay.id);
-      return { before, after };
-    });
-
-    expect(result.before).toEqual(['overlay-a', 'overlay-b']);
-    expect(result.after).toEqual(['overlay-b', 'overlay-a']);
-  });
-
-  it('reorders the combined layers stack and annotation stack order in one state transition', async () => {
-    const stub = roomStub('combined-stack-reorder');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const alice = createConnection('alice');
-
-      await storeContent(instance, alice, HASH_A, CONTENT_A);
-      await storeContent(instance, alice, HASH_B, CONTENT_B);
-      await upsertOverlay(instance, alice, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
-      await upsertOverlay(instance, alice, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
       await sendWorkerMessage(
         instance,
-        alice,
-        jsonMessage('drawing:layer:upsert', {
-          layer: {
-            id: 'drawing-default',
-            name: 'Annotations',
-            visible: true,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        }),
+        connection,
+        jsonMessage('layer:create', { layer: annotationLayer('notes', { sortKey: '000030' }) }),
       );
-      alice.sent = [];
-
       await sendWorkerMessage(
         instance,
-        alice,
-        jsonMessage('overlay:stack:reorder', {
-          stackItems: [
-            { kind: 'overlay', id: 'overlay-b' },
-            { kind: 'drawing', layerId: 'drawing-default' },
-            { kind: 'overlay', id: 'overlay-a' },
+        connection,
+        jsonMessage('layer:create', { layer: fileLayer('area-b', HASH_B, { sortKey: '000040' }) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:reorder', {
+          updates: [
+            { layerId: 'area-b', sortKey: '000010' },
+            { layerId: 'notes', sortKey: '000020' },
+            { layerId: 'route-a', sortKey: '000030' },
+            { layerId: 'annotation-default', sortKey: '000040' },
           ],
         }),
       );
 
-      const doc = drawingDoc(instance);
-      const layers = doc.layers as Record<string, Record<string, unknown>>;
       return {
-        overlayIds: overlayList(instance).map((overlay) => overlay.id),
-        stackOrder: layers['drawing-default'].stackOrder,
-        ack: sentJson(alice, 'overlay:reordered').at(-1),
+        ack: sentJson(connection, 'layer:reordered').at(-1),
+        layers: instance._listLayers(),
       };
     });
 
-    expect(result.overlayIds).toEqual(['overlay-b', 'overlay-a']);
-    expect(result.stackOrder).toBe(1);
-    expect(result.ack).toMatchObject({
-      type: 'overlay:reordered',
-      orderedIds: ['overlay-b', 'overlay-a'],
-      stackItems: [
-        { kind: 'overlay', id: 'overlay-b' },
-        { kind: 'drawing', layerId: 'drawing-default' },
-        { kind: 'overlay', id: 'overlay-a' },
-      ],
-    });
+    const ackLayers = Array.isArray(result.ack?.layers) ? result.ack.layers : [];
+    expect(ackLayers.map((layer) => layer.id)).toEqual(['area-b', 'notes', 'route-a', 'annotation-default']);
+    expect(result.layers.map((layer) => layer.sortKey)).toEqual(['000010', '000020', '000030', '000040']);
   });
 
-  it('deletes overlays and prunes content only when it is unreferenced', async () => {
-    const stub = roomStub('delete-prune');
+  it('returns a protocol error for old overlay and drawing messages', async () => {
+    const stub = roomStub('legacy-protocol-error');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
-
-      await storeContent(instance, connection);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
-      await upsertOverlay(instance, connection, manifest('overlay-b', HASH_A, { pendingOrderIndex: 1 }));
-
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-a' }));
-      const afterFirstDelete = { overlays: overlayList(instance), contentCount: contentCount(instance) };
-
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-b' }));
-      const afterSecondDelete = { overlays: overlayList(instance), contentCount: contentCount(instance) };
-
-      return { afterFirstDelete, afterSecondDelete };
+      await sendWorkerMessage(instance, connection, jsonMessage('overlay:upsert', { manifest: {} }));
+      await sendWorkerMessage(instance, connection, jsonMessage('drawing:feature:upsert', { feature: {} }));
+      return sentJson(connection, 'protocol:error');
     });
 
-    expect(result.afterFirstDelete.overlays.map((overlay) => overlay.id)).toEqual(['overlay-b']);
-    expect(result.afterFirstDelete.contentCount).toBe(1);
-    expect(result.afterSecondDelete.overlays).toEqual([]);
-    expect(result.afterSecondDelete.contentCount).toBe(0);
+    expect(result).toEqual([
+      {
+        type: 'protocol:error',
+        reason: 'unsupported-protocol',
+        message: 'Use layer, annotation-feature, and file:content messages.',
+      },
+      {
+        type: 'protocol:error',
+        reason: 'unsupported-protocol',
+        message: 'Use layer, annotation-feature, and file:content messages.',
+      },
+    ]);
   });
 
-  it('acknowledges overlay CRUD messages for command-line clients', async () => {
-    const stub = roomStub('overlay-cli-acks');
+  it('clears layer tables on ephemeral room alarm', async () => {
+    const stub = roomStub('alarm-cleanup');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
       const connection = createConnection();
-
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A, { pendingOrderIndex: 0 }));
-      const upserted = sentJson(connection, 'overlay:upserted').at(-1);
-
-      connection.sent = [];
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('overlay:patch', {
-          overlayId: 'overlay-a',
-          patch: { name: 'CLI overlay', visible: false },
-        }),
-      );
-      const patched = sentJson(connection, 'overlay:patched').at(-1);
-
-      await storeContent(instance, connection, HASH_B, CONTENT_B);
-      await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B, { pendingOrderIndex: 1 }));
-      connection.sent = [];
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('overlay:reorder', {
-          orderedIds: ['overlay-b', 'overlay-a'],
-        }),
-      );
-      const reordered = sentJson(connection, 'overlay:reordered').at(-1);
-
-      connection.sent = [];
-      await sendWorkerMessage(instance, connection, jsonMessage('overlay:delete', { overlayId: 'overlay-a' }));
-      const deleted = sentJson(connection, 'overlay:deleted').at(-1);
-
-      return {
-        upserted,
-        patched,
-        reordered,
-        deleted,
-        overlays: overlayList(instance).map((overlay) => overlay.id),
-      };
-    });
-
-    expect(result.upserted).toMatchObject({ type: 'overlay:upserted', manifest: { id: 'overlay-a' } });
-    expect(result.patched).toMatchObject({
-      type: 'overlay:patched',
-      manifest: { id: 'overlay-a', name: 'CLI overlay', visible: false },
-    });
-    expect(result.reordered).toEqual({
-      type: 'overlay:reordered',
-      orderedIds: ['overlay-b', 'overlay-a'],
-    });
-    expect(result.deleted).toEqual({ type: 'overlay:deleted', overlayId: 'overlay-a' });
-    expect(result.overlays).toEqual(['overlay-b']);
-  });
-
-  it('replaces existing overlay content and removes the old unreferenced blob', async () => {
-    const stub = roomStub('replace-content');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      await storeContent(instance, connection, HASH_B, CONTENT_B);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_B));
-
-      return {
-        overlays: overlayList(instance),
-        hashes: contentHashes(instance),
-      };
-    });
-
-    expect(result.overlays).toHaveLength(1);
-    expect(result.overlays[0].contentHash).toBe(HASH_B);
-    expect(result.hashes).toEqual([HASH_B]);
-  });
-
-  it('prunes old orphaned content on the next overlay mutation', async () => {
-    const stub = roomStub('old-orphans');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-      instance.sql`
-        UPDATE overlay_contents
-        SET created_at = ${Date.now() - 2 * 60 * 60 * 1000}
-        WHERE content_hash = ${HASH_A}
-      `;
-      await storeContent(instance, connection, HASH_B, CONTENT_B);
-      await upsertOverlay(instance, connection, manifest('overlay-b', HASH_B));
-
-      return contentHashes(instance);
-    });
-
-    expect(result).toEqual([HASH_B]);
-  });
-
-  it('sends presence and overlay initialization on connect', async () => {
-    const stub = roomStub('connect-init');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const seedConnection = createConnection('seed-client');
-      await storeContent(instance, seedConnection);
-      await upsertOverlay(instance, seedConnection, manifest('overlay-a', HASH_A));
-
-      const connection = createConnection('joining-client');
       await connectWorker(instance, connection, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/connect-init?name=Alice&color=%23ef4444&userId=user-a',
-        ),
-      });
-
-      return {
-        state: connection.state,
-        presence: sentJson(connection, 'presence:init')[0],
-        overlay: sentJson(connection, 'overlay:init')[0],
-      };
-    });
-
-    expect(result.state.user).toEqual({ id: 'user-a', name: 'Alice', color: '#ef4444' });
-    expect(result.presence).toMatchObject({
-      type: 'presence:init',
-      id: 'joining-client',
-      room: 'connect-init',
-      peers: [],
-    });
-    expect(asRecordArray(result.overlay.overlays).map((overlay) => overlay.id)).toEqual(['overlay-a']);
-  });
-
-  it('tracks recent agent participants without adding them to live human peers', async () => {
-    const stub = roomStub('agent-presence');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-
-      const agent = createConnection('agent-connection');
-      await connectWorker(instance, agent, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/agent-presence?name=Planner&color=%234f46e5&userId=agent-a&clientType=agent',
-        ),
-      });
-      const agentInit = sentJson(agent, 'presence:init')[0];
-      const agentUpdate = sentJson(agent, 'agent:participant:update')[0];
-
-      const human = createConnection('human-connection');
-      await connectWorker(instance, human, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/agent-presence?name=Alice&color=%23ef4444&userId=user-a',
-        ),
-      });
-      const humanInit = sentJson(human, 'presence:init')[0];
-
-      return {
-        agentState: agent.state,
-        agentInit,
-        agentUpdate,
-        humanInit,
-        rows: agentRows(instance),
-      };
-    });
-
-    expect(result.agentState.clientType).toBe('agent');
-    expect(result.agentState.presenceVisible).toBe(false);
-    expect(result.agentInit).toMatchObject({
-      type: 'presence:init',
-      peers: [],
-      agents: [
-        {
-          id: 'agent-a',
-          user: { id: 'agent-a', name: 'Planner', color: '#4f46e5' },
-          clientType: 'agent',
-          active: true,
-          lastAction: 'connect',
-        },
-      ],
-    });
-    expect(result.agentUpdate).toMatchObject({
-      type: 'agent:participant:update',
-      agent: { id: 'agent-a', lastAction: 'connect' },
-    });
-    expect(result.humanInit).toMatchObject({
-      type: 'presence:init',
-      peers: [],
-      agents: [{ id: 'agent-a', active: true }],
-    });
-    expect(result.rows).toHaveLength(1);
-    expect(result.rows[0]).toMatchObject({ agent_id: 'agent-a', last_action: 'connect' });
-  });
-
-  it('does not write recent agent state for query clients', async () => {
-    const stub = roomStub('query-presence');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-
-      const query = createConnection('query-connection');
-      await connectWorker(instance, query, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/query-presence?name=Reader&userId=query-a&clientType=query',
-        ),
-      });
-
-      return {
-        state: query.state,
-        init: sentJson(query, 'presence:init')[0],
-        rows: agentRows(instance),
-      };
-    });
-
-    expect(result.state.clientType).toBe('query');
-    expect(result.state.presenceVisible).toBe(false);
-    expect(result.init).toMatchObject({ type: 'presence:init', peers: [], agents: [] });
-    expect(result.rows).toEqual([]);
-  });
-
-  it('throttles recent agent touches but refreshes them after the throttle window', async () => {
-    const stub = roomStub('agent-touch-throttle');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-
-      const first = createConnection('agent-first');
-      await connectWorker(instance, first, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
-        ),
-      });
-      const initial = agentRows(instance)[0];
-
-      const attemptedLastSeen = Number(initial.last_seen_at) + 1_000;
-      instance.sql`
-        UPDATE agent_participants
-        SET last_seen_at = ${attemptedLastSeen}, expires_at = ${attemptedLastSeen + 300_000}
-        WHERE agent_id = ${'agent-a'}
-      `;
-      const throttled = createConnection('agent-throttled');
-      await connectWorker(instance, throttled, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
-        ),
-      });
-      const afterThrottled = agentRows(instance)[0];
-
-      const staleLastSeen = Number(afterThrottled.last_seen_at) - 6_000;
-      instance.sql`
-        UPDATE agent_participants
-        SET last_seen_at = ${staleLastSeen}, expires_at = ${staleLastSeen + 300_000}
-        WHERE agent_id = ${'agent-a'}
-      `;
-      const refreshed = createConnection('agent-refreshed');
-      await connectWorker(instance, refreshed, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/agent-touch-throttle?name=Planner&userId=agent-a&clientType=agent',
-        ),
-      });
-      const afterRefresh = agentRows(instance)[0];
-
-      return {
-        attemptedLastSeen,
-        afterThrottled,
-        staleLastSeen,
-        afterRefresh,
-      };
-    });
-
-    expect(Number(result.afterThrottled.last_seen_at)).toBe(result.attemptedLastSeen);
-    expect(Number(result.afterRefresh.last_seen_at)).toBeGreaterThanOrEqual(result.staleLastSeen + 5_000);
-  });
-
-  it('stores drawing feature operations and sends snapshots on connect', async () => {
-    const stub = roomStub('drawing-sync');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection('drawing-client');
-
+        request: new Request('https://example.com/parties/map-collaboration/alarm-cleanup?name=Alice'),
+      } as ConnectionContext);
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
       await sendWorkerMessage(
         instance,
         connection,
-        jsonMessage('drawing:feature:upsert', { feature: drawingFeature('path-a') }),
+        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A) }),
       );
       await sendWorkerMessage(
         instance,
         connection,
-        jsonMessage('drawing:layer:upsert', {
-          layer: {
-            id: 'custom-layer',
-            name: 'Custom layer',
-            visible: true,
-            stackOrder: 0,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-a', 'annotation-default'),
         }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('drawing:layer:upsert', {
-          layer: {
-            id: 'drawing-default',
-            name: 'Shared Tokyo plan',
-            visible: false,
-            stackOrder: 1,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
-          },
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('drawing:layer:reorder', { orderedIds: ['custom-layer', 'drawing-default', 'bad/id'] }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('drawing:feature:upsert', { feature: drawingPolygonFeature('polygon-b') }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('drawing:feature:reorder', { orderedIds: ['polygon-b', 'bad/id', 'path-a'] }),
-      );
-      await sendWorkerMessage(instance, connection, jsonMessage('drawing:feature:delete', { featureId: 'path-a' }));
-
-      const joining = createConnection('joining-client');
-      await connectWorker(instance, joining, {
-        request: new Request('https://example.com/parties/map-collaboration/drawing-sync?name=Bob'),
-      });
-
-      return {
-        doc: drawingDoc(instance),
-        snapshot: sentJson(joining, 'drawing:snapshot')[0],
-      };
-    });
-
-    const layers = result.doc.layers as Record<string, unknown>;
-    expect(layers['drawing-default']).toMatchObject({
-      name: 'Shared Tokyo plan',
-      visible: false,
-      stackOrder: 1,
-    });
-    expect(result.doc.layerOrder).toEqual(['custom-layer', 'drawing-default']);
-    expect(result.doc.featureOrder).toEqual(['polygon-b']);
-    expect(Object.keys(result.doc.features as Record<string, unknown>)).toEqual(['polygon-b']);
-    expect((result.doc.features as Record<string, Record<string, unknown>>)['polygon-b']).toMatchObject({
-      type: 'polygon',
-      fillOpacity: 0.22,
-    });
-    expect(result.snapshot).toMatchObject({
-      type: 'drawing:snapshot',
-      doc: {
-        layers: {
-          'drawing-default': {
-            name: 'Shared Tokyo plan',
-            visible: false,
-            stackOrder: 1,
-          },
-        },
-        layerOrder: ['custom-layer', 'drawing-default'],
-        featureOrder: ['polygon-b'],
-      },
-    });
-  });
-
-  it('serializes collaborative drawing edits from multiple clients in room order', async () => {
-    const stub = roomStub('drawing-collaborators');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const alice = createConnection('alice-client');
-      const bob = createConnection('bob-client');
-
-      await sendWorkerMessage(
-        instance,
-        alice,
-        jsonMessage('drawing:feature:upsert', {
-          feature: drawingFeature('path-a', {
-            label: 'Morning walk',
-            note: 'Alice draft',
-            color: '#2563eb',
-            updatedBy: 'alice',
-          }),
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        bob,
-        jsonMessage('drawing:feature:upsert', {
-          feature: drawingFeature('path-a', {
-            label: 'Dinner route',
-            note: 'Bob changed the shared annotation',
-            color: '#dc2626',
-            updatedBy: 'bob',
-          }),
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        alice,
-        jsonMessage('drawing:feature:upsert', {
-          feature: drawingPolygonFeature('area-a', {
-            label: 'Backup area',
-            updatedBy: 'alice',
-          }),
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        bob,
-        jsonMessage('drawing:feature:reorder', {
-          orderedIds: ['area-a', 'path-a'],
-        }),
-      );
-      await sendWorkerMessage(instance, bob, jsonMessage('drawing:feature:delete', { featureId: 'path-a' }));
-
-      const joining = createConnection('joining-client');
-      await connectWorker(instance, joining, {
-        request: new Request('https://example.com/parties/map-collaboration/drawing-collaborators?name=Carol'),
-      });
-
-      return {
-        doc: drawingDoc(instance),
-        snapshot: sentJson(joining, 'drawing:snapshot')[0],
-      };
-    });
-
-    const features = result.doc.features as Record<string, Record<string, unknown>>;
-    expect(result.doc.revision).toBe(5);
-    expect(result.doc.featureOrder).toEqual(['area-a']);
-    expect(Object.keys(features)).toEqual(['area-a']);
-    expect(features['area-a']).toMatchObject({ label: 'Backup area', updatedBy: 'alice' });
-    expect(result.snapshot).toMatchObject({
-      type: 'drawing:snapshot',
-      revision: 5,
-      doc: {
-        featureOrder: ['area-a'],
-        features: {
-          'area-a': {
-            label: 'Backup area',
-            updatedBy: 'alice',
-          },
-        },
-      },
-    });
-  });
-
-  it('matches the protocol reducer after deterministic randomized drawing operations', async () => {
-    const seed = 0x71ab_2026;
-    const messages = generateDrawingClientMessages(seed, 320);
-    const expected = reduceDrawingClientMessages(messages);
-    const stub = roomStub('drawing-randomized-state');
-
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      instance.sql`
-        INSERT OR REPLACE INTO drawing_state (state_key, doc_json, updated_at)
-        VALUES (${'main'}, ${JSON.stringify(createEmptyDrawingDoc(DRAWING_RANDOM_TEST_NOW))}, ${DRAWING_RANDOM_TEST_NOW})
-      `;
-      const connections = [
-        createConnection('alice-client'),
-        createConnection('bob-client'),
-        createConnection('carol-client'),
-      ];
-
-      for (let index = 0; index < messages.length; index += 1) {
-        await sendWorkerMessage(instance, connections[index % connections.length], JSON.stringify(messages[index]));
-      }
-
-      const joining = createConnection('joining-client');
-      await connectWorker(instance, joining, {
-        request: new Request('https://example.com/parties/map-collaboration/drawing-randomized-state?name=Snapshot'),
-      });
-
-      return {
-        doc: drawingDoc(instance),
-        snapshot: sentJson(joining, 'drawing:snapshot')[0],
-      };
-    });
-
-    const features = result.doc.features as Record<string, unknown>;
-    const featureOrder = result.doc.featureOrder as string[];
-    expect(result.doc.revision).toBe(messages.length);
-    expect(new Set(featureOrder).size).toBe(featureOrder.length);
-    expect(featureOrder.slice().sort()).toEqual(Object.keys(features).sort());
-    expect(comparableDrawingDoc(result.doc)).toEqual(
-      comparableDrawingDoc(expected as unknown as Record<string, unknown>),
-    );
-    expect(comparableDrawingDoc((result.snapshot.doc || {}) as Record<string, unknown>)).toEqual(
-      comparableDrawingDoc(result.doc),
-    );
-  });
-});
-
-describe('MapCollaboration room lifecycle', () => {
-  it('clears expired ephemeral room storage when the alarm runs', async () => {
-    const stub = roomStub('expired-room');
-
-    await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-      await storeContent(instance, connection);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      instance.sql`
-        UPDATE room_meta
-        SET expires_at = ${Date.now() - 1}
-        WHERE room_id = ${'expired-room'}
-      `;
-    });
-
-    await expect(runAlarm(stub)).resolves.toBe(true);
-
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      return {
-        overlays: overlayList(instance),
-        hashes: contentHashes(instance),
-        rooms: instance.sql`SELECT room_id FROM room_meta`,
-      };
-    });
-
-    expect(result.overlays).toEqual([]);
-    expect(result.hashes).toEqual([]);
-    expect(result.rooms).toEqual([]);
-  });
-
-  it('clears expired drawing state with ephemeral room storage', async () => {
-    const stub = roomStub('expired-drawing-room');
-
-    await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('drawing:feature:upsert', { feature: drawingFeature('path-a') }),
       );
       instance.sql`
         UPDATE room_meta
         SET expires_at = ${Date.now() - 1}
-        WHERE room_id = ${'expired-drawing-room'}
+        WHERE room_id = ${'alarm-cleanup'}
       `;
-    });
-
-    await expect(runAlarm(stub)).resolves.toBe(true);
-
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
       return {
-        drawing: instance.sql`SELECT state_key FROM drawing_state`,
-        rooms: instance.sql`SELECT room_id FROM room_meta`,
+        before: {
+          layers: instance._listLayers(),
+          features: instance._listAnnotationFeatures(),
+          content: contentHashes(instance),
+        },
       };
     });
+    await runAlarm(stub);
+    const after = await runInDO(stub, (instance) => ({
+      layers: instance._listLayers(),
+      features: instance._listAnnotationFeatures(),
+      content: contentHashes(instance),
+      roomMeta: instance.sql`SELECT room_id FROM room_meta`,
+    }));
 
-    expect(result.drawing).toEqual([]);
-    expect(result.rooms).toEqual([]);
-  });
-
-  it('garbage-collects expired recent agent participants while room storage is still alive', async () => {
-    const stub = roomStub('expired-agent-participants');
-
-    await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const agent = createConnection('agent-connection');
-      await connectWorker(instance, agent, {
-        request: new Request(
-          'https://example.com/parties/map-collaboration/expired-agent-participants?name=Planner&userId=agent-a&clientType=agent',
-        ),
-      });
-      instance.sql`
-        UPDATE agent_participants
-        SET expires_at = ${Date.now() - 1}
-        WHERE agent_id = ${'agent-a'}
-      `;
-      instance.sql`
-        UPDATE room_meta
-        SET expires_at = ${Date.now() + 60_000}
-        WHERE room_id = ${'expired-agent-participants'}
-      `;
-    });
-
-    await expect(runAlarm(stub)).resolves.toBe(true);
-
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      return {
-        agents: agentRows(instance),
-        rooms: instance.sql`SELECT room_id FROM room_meta`,
-      };
-    });
-
-    expect(result.agents).toEqual([]);
-    expect(result.rooms).toEqual([{ room_id: 'expired-agent-participants' }]);
-  });
-
-  it('keeps persistent room storage when the alarm runs', async () => {
-    const stub = roomStub('persistent-room');
-
-    await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = createConnection();
-      await storeContent(instance, connection);
-      await upsertOverlay(instance, connection, manifest('overlay-a', HASH_A));
-      instance.sql`
-        UPDATE room_meta
-        SET persistence = ${'persistent'}, expires_at = ${Date.now() - 1}
-        WHERE room_id = ${'persistent-room'}
-      `;
-    });
-
-    await expect(runAlarm(stub)).resolves.toBe(true);
-
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      return {
-        overlays: overlayList(instance),
-        hashes: contentHashes(instance),
-        rooms: instance.sql`SELECT room_id, persistence FROM room_meta`,
-      };
-    });
-
-    expect(result.overlays.map((overlay) => overlay.id)).toEqual(['overlay-a']);
-    expect(result.hashes).toEqual([HASH_A]);
-    expect(result.rooms).toEqual([{ room_id: 'persistent-room', persistence: 'persistent' }]);
+    expect(result.before.layers.length).toBeGreaterThan(0);
+    expect(result.before.features.length).toBeGreaterThan(0);
+    expect(result.before.content).toEqual([HASH_A]);
+    expect(after.layers).toEqual([]);
+    expect(after.features).toEqual([]);
+    expect(after.content).toEqual([]);
+    expect(after.roomMeta).toEqual([]);
   });
 });

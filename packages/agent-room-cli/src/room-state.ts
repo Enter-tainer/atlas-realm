@@ -1,21 +1,53 @@
-import type { DrawingDoc, DrawingFeature, DrawingLayer } from './types.js';
+import type { AnnotationFeature, Layer } from './types.js';
 
-export function drawingFeatures(doc: DrawingDoc | null): DrawingFeature[] {
-  const features = doc?.features && typeof doc.features === 'object' ? doc.features : {};
-  const order = Array.isArray(doc?.featureOrder) ? doc.featureOrder : Object.keys(features);
-  return order.map((id: string) => features[id]).filter(Boolean);
+function compareRows(
+  a: { id: string; sortKey?: string; createdAt?: number },
+  b: { id: string; sortKey?: string; createdAt?: number },
+) {
+  return (
+    String(a.sortKey || '').localeCompare(String(b.sortKey || '')) ||
+    Number(a.createdAt || 0) - Number(b.createdAt || 0) ||
+    String(a.id || '').localeCompare(String(b.id || ''))
+  );
 }
 
-export function drawingLayers(doc: DrawingDoc | null): DrawingLayer[] {
-  const layers = doc?.layers && typeof doc.layers === 'object' ? doc.layers : {};
-  const order = Array.isArray(doc?.layerOrder) ? doc.layerOrder : Object.keys(layers);
-  return order.map((id: string) => layers[id]).filter(Boolean);
+export function sortedLayers(layers: Layer[]): Layer[] {
+  return layers.slice().sort(compareRows);
 }
 
-export function getDrawingFeature(doc: DrawingDoc | null, id: string): DrawingFeature | null {
-  return doc?.features && typeof doc.features === 'object' ? doc.features[id] || null : null;
+export function sortedAnnotationFeatures(features: AnnotationFeature[], layerId?: string): AnnotationFeature[] {
+  return features.filter((feature) => !layerId || feature.layerId === layerId).sort(compareRows);
 }
 
-export function getDrawingLayer(doc: DrawingDoc | null, id: string): DrawingLayer | null {
-  return doc?.layers && typeof doc.layers === 'object' ? doc.layers[id] || null : null;
+export function getLayer(layers: Layer[], id: string | undefined): Layer | null {
+  return id ? layers.find((layer) => layer.id === id) || null : null;
+}
+
+export function getAnnotationFeature(features: AnnotationFeature[], id: string | undefined): AnnotationFeature | null {
+  return id ? features.find((feature) => feature.id === id) || null : null;
+}
+
+export function nextSortKey(index: number): string {
+  return String(Math.max(0, Math.round(index)) * 10 + 10).padStart(6, '0');
+}
+
+export function reorderUpdates(
+  rows: Array<{ id: string; sortKey?: string; createdAt?: number }>,
+  orderedIds: string[],
+  keyName: 'layerId' | 'featureId',
+): Array<Record<typeof keyName, string> & { sortKey: string }> {
+  const requested = orderedIds.filter(Boolean);
+  const requestedSet = new Set(requested);
+  const fullOrder = [
+    ...requested,
+    ...rows
+      .slice()
+      .sort(compareRows)
+      .map((row) => row.id)
+      .filter((id) => !requestedSet.has(id)),
+  ];
+  return fullOrder.map(
+    (id, index) =>
+      ({ [keyName]: id, sortKey: nextSortKey(index) }) as Record<typeof keyName, string> & { sortKey: string },
+  );
 }

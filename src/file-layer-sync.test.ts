@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
-  OVERLAY_SYNC_MAX_COMPRESSED_BYTES,
-  buildOverlaySyncAsset,
-  decodeOverlayBinaryMessage,
-  encodeOverlayBinaryMessage,
-  materializeOverlayContent,
-  overlayManifestPatch,
-} from './overlay-sync.js';
+  FILE_LAYER_SYNC_MAX_COMPRESSED_BYTES,
+  buildFileLayerSyncAsset,
+  decodeFileContentMessage,
+  encodeFileContentMessage,
+  materializeFileLayerContent,
+  fileLayerManifestPatch,
+} from './file-layer-sync.js';
 
 const GEOJSON = {
   type: 'FeatureCollection',
@@ -19,11 +19,11 @@ const GEOJSON = {
   ],
 };
 
-describe('overlay sync protocol', () => {
-  it('builds and materializes a GeoJSON overlay asset', async () => {
-    const asset = await buildOverlaySyncAsset({
-      id: 'local-overlay',
-      syncOverlayId: 'shared-overlay',
+describe('file layer sync protocol', () => {
+  it('builds and materializes a GeoJSON file layer asset', async () => {
+    const asset = await buildFileLayerSyncAsset({
+      id: 'local-file-layer',
+      syncLayerId: 'shared-file-layer',
       type: 'geojson',
       name: '  Shared   GeoJSON  ',
       visible: true,
@@ -40,9 +40,9 @@ describe('overlay sync protocol', () => {
       data: GEOJSON,
     });
 
-    expect(asset.envelope.id).toBe('shared-overlay');
+    expect(asset.envelope.id).toBe('shared-file-layer');
     expect(asset.envelope.manifest).toMatchObject({
-      id: 'shared-overlay',
+      id: 'shared-file-layer',
       type: 'geojson',
       name: 'Shared GeoJSON',
       visible: true,
@@ -59,12 +59,12 @@ describe('overlay sync protocol', () => {
     expect(asset.envelope.manifest).not.toHaveProperty('data');
     expect(asset.envelope.manifest).not.toHaveProperty('rawText');
 
-    await expect(materializeOverlayContent(asset.envelope.manifest, asset.content)).resolves.toEqual(GEOJSON);
+    await expect(materializeFileLayerContent(asset.envelope.manifest, asset.content)).resolves.toEqual(GEOJSON);
   });
 
   it('uses the original GPX text as synchronized content', async () => {
     const rawText = '<gpx><wpt lat="31.2" lon="121.5"><name>A</name></wpt></gpx>';
-    const asset = await buildOverlaySyncAsset({
+    const asset = await buildFileLayerSyncAsset({
       id: 'gpx-1',
       type: 'gpx',
       name: 'Track',
@@ -77,41 +77,41 @@ describe('overlay sync protocol', () => {
       type: 'gpx',
       contentType: 'application/gpx+xml',
     });
-    await expect(materializeOverlayContent(asset.envelope.manifest, asset.content)).resolves.toBe(rawText);
+    await expect(materializeFileLayerContent(asset.envelope.manifest, asset.content)).resolves.toBe(rawText);
   });
 
-  it('round-trips overlay binary content frames', () => {
+  it('round-trips file layer binary content frames', () => {
     const contentHash = 'a'.repeat(64);
     const content = new Uint8Array([1, 2, 3, 255]);
-    const encoded = encodeOverlayBinaryMessage(contentHash, content);
+    const encoded = encodeFileContentMessage(contentHash, content);
 
-    expect(decodeOverlayBinaryMessage(encoded)).toEqual({ contentHash, content });
-    expect(decodeOverlayBinaryMessage(encoded.buffer)).toEqual({ contentHash, content });
-    expect(decodeOverlayBinaryMessage(new DataView(encoded.buffer))).toEqual({ contentHash, content });
+    expect(decodeFileContentMessage(encoded)).toEqual({ contentHash, content });
+    expect(decodeFileContentMessage(encoded.buffer)).toEqual({ contentHash, content });
+    expect(decodeFileContentMessage(new DataView(encoded.buffer))).toEqual({ contentHash, content });
   });
 
   it('rejects malformed binary frames', () => {
-    expect(decodeOverlayBinaryMessage('not-binary')).toBeNull();
-    expect(decodeOverlayBinaryMessage(new Uint8Array())).toBeNull();
-    expect(decodeOverlayBinaryMessage(new Uint8Array([2, 0]))).toBeNull();
-    expect(decodeOverlayBinaryMessage(new Uint8Array([1, 4, 97]))).toBeNull();
+    expect(decodeFileContentMessage('not-binary')).toBeNull();
+    expect(decodeFileContentMessage(new Uint8Array())).toBeNull();
+    expect(decodeFileContentMessage(new Uint8Array([2, 0]))).toBeNull();
+    expect(decodeFileContentMessage(new Uint8Array([1, 4, 97]))).toBeNull();
   });
 
   it('enforces the compressed sync size limit', async () => {
     vi.stubGlobal('CompressionStream', undefined);
     try {
       await expect(
-        buildOverlaySyncAsset({
+        buildFileLayerSyncAsset({
           id: 'too-large',
           type: 'geojson',
           name: 'Too large',
           data: {
             type: 'FeatureCollection',
             features: [],
-            payload: 'x'.repeat(OVERLAY_SYNC_MAX_COMPRESSED_BYTES + 1),
+            payload: 'x'.repeat(FILE_LAYER_SYNC_MAX_COMPRESSED_BYTES + 1),
           },
         }),
-      ).rejects.toThrow('Overlay is too large to sync');
+      ).rejects.toThrow('File layer is too large to sync');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -119,10 +119,10 @@ describe('overlay sync protocol', () => {
 
   it('strips runtime-only fields from manifest patches', () => {
     expect(
-      overlayManifestPatch({
+      fileLayerManifestPatch({
         id: 'local-id',
-        remoteOverlayId: 'remote-id',
-        syncOverlayId: 'sync-id',
+        remoteLayerId: 'remote-id',
+        syncLayerId: 'sync-id',
         type: 'geojson',
         name: '  ',
         visible: false,

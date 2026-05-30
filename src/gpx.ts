@@ -1,7 +1,7 @@
 type TrackPoint = { lat: number; lon: number; time: number | null; ele: number | null };
 type Waypoint = { lat: number; lon: number; name: string; ele: number | null };
-type PendingGpxItem = { xml: string; hash: string; options: OverlayOptions };
-type PendingGeoJsonItem = { geojson: GeoJsonFeatureCollection; options: OverlayOptions };
+type PendingGpxItem = { xml: string; hash: string; options: FileLayerOptions };
+type PendingGeoJsonItem = { geojson: GeoJsonFeatureCollection; options: FileLayerOptions };
 
 // Turbo colormap (polynomial approximation per channel)
 function turboColor(t: number) {
@@ -221,10 +221,10 @@ export function gpxToGeoJson(xmlString: string) {
 
 // ── SHA-256 dedup ─────────────────────────────────────────
 const loadedGpxHashes = new Set<string>();
-const DEFAULT_OVERLAY_COLOR = '#3b82f6';
+const DEFAULT_FILE_LAYER_COLOR = '#3b82f6';
 const OSRM_ROUTE_COLOR = '#0f766e';
 const OSRM_KIND_PREFIX = 'osrm_';
-const REMOTE_OVERLAY_EVENT_KEY = Symbol('remoteOverlayEvent');
+const REMOTE_LAYER_EVENT_KEY = Symbol('remoteLayerEvent');
 type JsonRecord = Record<string | symbol, unknown>;
 type Bounds = [[number, number], [number, number]];
 type BoundsLike = number[][];
@@ -242,16 +242,16 @@ type GeoJsonFeatureCollection = {
   type: 'FeatureCollection';
   features: GeoJsonFeature[];
 };
-type OverlayOptions = JsonRecord & {
+type FileLayerOptions = JsonRecord & {
   name?: string;
   remote?: boolean;
-  syncOverlayId?: string;
-  remoteOverlayId?: string;
+  syncLayerId?: string;
+  remoteLayerId?: string;
   contentHash?: string;
   color?: string;
 };
-type OverlayMap = {
-  _overlayStyleReady?: boolean;
+type FileLayerMap = {
+  _layerStyleReady?: boolean;
   loaded?: () => boolean;
   getContainer(): HTMLElement;
   addSource(id: string, source: unknown): void;
@@ -261,21 +261,21 @@ type OverlayMap = {
   fitBounds(bounds: Bounds, options?: Record<string, unknown>): void;
 };
 
-function normalizeOverlayName(name: unknown, fallback: string) {
+function normalizeLayerName(name: unknown, fallback: string) {
   const normalized = String(name || '')
     .replace(/\s+/g, ' ')
     .trim();
   return normalized || fallback;
 }
 
-function dispatchOverlayAdded(map: OverlayMap, overlay: JsonRecord, options: OverlayOptions = {}) {
-  const detail: JsonRecord = { ...overlay };
-  if (options.remote) detail[REMOTE_OVERLAY_EVENT_KEY] = true;
-  map.getContainer()?.dispatchEvent(new CustomEvent('overlay:add', { detail }));
+function dispatchLayerAdded(map: FileLayerMap, layer: JsonRecord, options: FileLayerOptions = {}) {
+  const detail: JsonRecord = { ...layer };
+  if (options.remote) detail[REMOTE_LAYER_EVENT_KEY] = true;
+  map.getContainer()?.dispatchEvent(new CustomEvent('layer:add', { detail }));
 }
 
-export function isRemoteOverlayEvent(overlay: unknown) {
-  return Boolean(overlay && typeof overlay === 'object' && (overlay as JsonRecord)[REMOTE_OVERLAY_EVENT_KEY]);
+export function isRemoteFileLayerEvent(layer: unknown) {
+  return Boolean(layer && typeof layer === 'object' && (layer as JsonRecord)[REMOTE_LAYER_EVENT_KEY]);
 }
 
 function visitGeometryCoordinates(
@@ -374,15 +374,15 @@ function osrmKindFilter(kind: string) {
   return ['==', ['get', 'kind'], kind];
 }
 
-function isDrawingTextOrLabelFilter() {
-  return ['in', ['get', 'kind'], ['literal', ['drawing_text', 'drawing_label']]];
+function isAnnotationTextOrLabelFilter() {
+  return ['in', ['get', 'kind'], ['literal', ['annotation_text', 'annotation_label']]];
 }
 
 function isVisibleGeoJsonPointFilter() {
   return [
     'all',
     ['any', ['==', ['geometry-type'], 'Point'], ['==', ['geometry-type'], 'MultiPoint']],
-    ['!', isDrawingTextOrLabelFilter()],
+    ['!', isAnnotationTextOrLabelFilter()],
   ];
 }
 
@@ -431,8 +431,8 @@ async function sha256(text: string) {
     .join('');
 }
 
-function isMapReadyForOverlay(map: OverlayMap) {
-  return Boolean(map._overlayStyleReady || map.loaded?.());
+function isMapReadyForLayer(map: FileLayerMap) {
+  return Boolean(map._layerStyleReady || map.loaded?.());
 }
 
 /** Merge two [[sw],[ne]] bounds into one, returns first if second is null */
@@ -450,12 +450,12 @@ export function mergeBounds(
 
 let gpxLayerCount = 0;
 
-export function addGpxToMap(map: OverlayMap, xmlString: string, options: OverlayOptions = {}) {
+export function addGpxToMap(map: FileLayerMap, xmlString: string, options: FileLayerOptions = {}) {
   const result = gpxToGeoJson(xmlString);
   if (!result) return;
 
   const id = `gpx-track-${gpxLayerCount++}`;
-  const color = DEFAULT_OVERLAY_COLOR;
+  const color = DEFAULT_FILE_LAYER_COLOR;
   const layerIds = [];
 
   map.addSource(id, {
@@ -580,12 +580,12 @@ export function addGpxToMap(map: OverlayMap, xmlString: string, options: Overlay
     layerIds.push(waypointLayerId);
   }
 
-  const overlay = {
+  const layer = {
     type: 'gpx',
     id,
     sourceId: id,
     layerIds,
-    name: normalizeOverlayName(options.name, `GPX ${gpxLayerCount}`),
+    name: normalizeLayerName(options.name, `GPX ${gpxLayerCount}`),
     color,
     opacity: 0.95,
     lineWidth: 5,
@@ -593,13 +593,13 @@ export function addGpxToMap(map: OverlayMap, xmlString: string, options: Overlay
     bounds: result.bounds,
     data: result.geojson,
     rawText: xmlString,
-    syncOverlayId: options.syncOverlayId,
-    remoteOverlayId: options.remoteOverlayId,
+    syncLayerId: options.syncLayerId,
+    remoteLayerId: options.remoteLayerId,
     contentHash: options.contentHash,
     ...result.stats,
   };
-  dispatchOverlayAdded(map, overlay, { remote: options.remote });
-  return overlay;
+  dispatchLayerAdded(map, layer, { remote: options.remote });
+  return layer;
 }
 
 let geojsonLayerCount = 0;
@@ -611,12 +611,12 @@ let geojsonLayerCount = 0;
  *   - Point / MultiPoint → circle markers with name labels
  *   - Polygon / MultiPolygon → fill + outline + centroid labels
  */
-export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: OverlayOptions = {}) {
+export function addGeoJsonToMap(map: FileLayerMap, geojson: unknown, options: FileLayerOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
   if (!normalized || !normalized.features || normalized.features.length === 0) return;
 
   const summary = summarizeGeoJson(normalized);
-  const color = options.color || DEFAULT_OVERLAY_COLOR;
+  const color = options.color || DEFAULT_FILE_LAYER_COLOR;
   const containsOsrm = hasOsrmFeatures(normalized);
   const routeFeature = containsOsrm
     ? normalized.features.find((feature) => getFeatureKind(feature) === 'osrm_route')
@@ -880,7 +880,7 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
       id: textLayerId,
       type: 'symbol',
       source: id,
-      filter: isDrawingTextOrLabelFilter(),
+      filter: isAnnotationTextOrLabelFilter(),
       layout: {
         'text-field': ['coalesce', ['get', 'name'], ['get', 'title'], ['get', 'description'], ''],
         'text-font': ['Noto Sans Regular'],
@@ -898,20 +898,20 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
     layerIds.push(textLayerId);
   }
 
-  const overlay = {
+  const layer = {
     type: 'geojson',
     subType: containsOsrm ? 'osrm' : 'geojson',
     id,
     sourceId: id,
     layerIds,
-    name: normalizeOverlayName(options.name, `GeoJSON ${geojsonLayerCount}`),
+    name: normalizeLayerName(options.name, `GeoJSON ${geojsonLayerCount}`),
     color,
     opacity: 0.95,
     lineWidth: 5,
     visible: true,
     data: normalized,
-    syncOverlayId: options.syncOverlayId,
-    remoteOverlayId: options.remoteOverlayId,
+    syncLayerId: options.syncLayerId,
+    remoteLayerId: options.remoteLayerId,
     contentHash: options.contentHash,
     distanceText: routeFeature?.properties?.distance_text,
     durationText: routeFeature?.properties?.duration_text,
@@ -919,8 +919,8 @@ export function addGeoJsonToMap(map: OverlayMap, geojson: unknown, options: Over
     annotationSegmentCount: routeFeature?.properties?.annotation_segment_count,
     ...summary,
   };
-  dispatchOverlayAdded(map, overlay, { remote: options.remote });
-  return overlay;
+  dispatchLayerAdded(map, layer, { remote: options.remote });
+  return layer;
 }
 
 let pendingGpxQueue: PendingGpxItem[] = [];
@@ -931,7 +931,7 @@ let pendingGeoJsonQueue: PendingGeoJsonItem[] = [];
  * process immediately; otherwise queue for later.
  * Returns the stats or null if skipped (duplicate).
  */
-export async function processOrQueueGpx(map: OverlayMap, xmlString: string, options: OverlayOptions = {}) {
+export async function processOrQueueGpx(map: FileLayerMap, xmlString: string, options: FileLayerOptions = {}) {
   // SHA-256 dedup — skip if we've seen identical content before
   const hash = await sha256(xmlString);
   if (!options.remote && loadedGpxHashes.has(hash)) {
@@ -940,7 +940,7 @@ export async function processOrQueueGpx(map: OverlayMap, xmlString: string, opti
   }
   loadedGpxHashes.add(hash);
 
-  if (isMapReadyForOverlay(map)) {
+  if (isMapReadyForLayer(map)) {
     const stats = addGpxToMap(map, xmlString, options);
     if (stats) {
       console.log(`GPX loaded: ${stats.points} points, max ${stats.maxSpeed} km/h, p99 ${stats.p99Speed} km/h`);
@@ -968,12 +968,12 @@ export async function processOrQueueGpx(map: OverlayMap, xmlString: string, opti
  * Defer GeoJSON processing until map is loaded.
  * Also returns bounds immediately so the caller can zoom before map tiles load.
  */
-export function processOrQueueGeoJson(map: OverlayMap, geojson: unknown, options: OverlayOptions = {}) {
+export function processOrQueueGeoJson(map: FileLayerMap, geojson: unknown, options: FileLayerOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
   const summary = normalized ? summarizeGeoJson(normalized) : { bounds: null as Bounds | null };
   if (!normalized || normalized.features.length === 0) return null;
 
-  if (isMapReadyForOverlay(map)) {
+  if (isMapReadyForLayer(map)) {
     const result = addGeoJsonToMap(map, normalized, options);
     if (result) {
       console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`);
@@ -986,8 +986,8 @@ export function processOrQueueGeoJson(map: OverlayMap, geojson: unknown, options
   }
 }
 
-export function drainGpxQueue(map: OverlayMap) {
-  map._overlayStyleReady = true;
+export function drainGpxQueue(map: FileLayerMap) {
+  map._layerStyleReady = true;
   let bounds: Bounds | null = null;
   for (const item of pendingGpxQueue) {
     const stats = addGpxToMap(map, item.xml, item.options);
@@ -1016,7 +1016,7 @@ export function drainGpxQueue(map: OverlayMap) {
  * Generate a colored circle marker image and register it on the map.
  * The image is cached by color — subsequent calls with the same color are no-ops.
  */
-function ensureMarkerIcon(map: OverlayMap, color = '#3b82f6') {
+function ensureMarkerIcon(map: FileLayerMap, color = '#3b82f6') {
   const imageName = `marker-dot-${color}`;
   if (map.hasImage(imageName)) return;
 
@@ -1046,7 +1046,7 @@ function ensureMarkerIcon(map: OverlayMap, color = '#3b82f6') {
  * Generate a small triangular arrow icon pointing upward (north).
  * Used as a direction indicator on lost-signal gap arcs.
  */
-function ensureGapArrowIcon(map: OverlayMap) {
+function ensureGapArrowIcon(map: FileLayerMap) {
   if (map.hasImage('gap-arrow')) return;
 
   const size = 14;
@@ -1136,7 +1136,7 @@ function bearing(lon1: number, lat1: number, lon2: number, lat2: number) {
   return (toDeg(Math.atan2(y, x)) + 360) % 360;
 }
 
-export function installGpxDragDrop(map: OverlayMap) {
+export function installGpxDragDrop(map: FileLayerMap) {
   const container = map.getContainer();
 
   container.addEventListener('dragover', (e) => {
@@ -1181,10 +1181,10 @@ export function installGpxDragDrop(map: OverlayMap) {
           }
         }
       } catch (error) {
-        console.error(`Failed to load overlay file: ${file.name}`, error);
+        console.error(`Failed to load layer file: ${file.name}`, error);
       }
     }
     if (bounds) map.fitBounds(bounds, { padding: 60, maxZoom: 15 });
-    if (loaded === 0) console.log('No overlay files loaded');
+    if (loaded === 0) console.log('No layer files loaded');
   });
 }

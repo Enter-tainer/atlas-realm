@@ -1,5 +1,5 @@
 export * from './room-client.js';
-export * from './overlay-asset.js';
-export * from './drawing-feature.js';
+export * from './file-layer-asset.js';
+export * from './annotation-feature.js';
 export * from './commands.js';
 export * from './config.js';

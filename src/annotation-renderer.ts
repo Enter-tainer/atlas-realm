@@ -1,40 +1,45 @@
 import maplibregl from 'maplibre-gl';
 import {
-  DRAWING_SOURCE_ID,
-  DRAWING_TEXT_MAX_HEIGHT,
-  DRAWING_TEXT_MAX_WIDTH,
-  DRAWING_TEXT_MIN_HEIGHT,
-  DRAWING_TEXT_MIN_WIDTH,
-  sanitizeDrawingTextHeight,
-  sanitizeDrawingTextWidth,
+  ANNOTATION_DEFAULT_LAYER_ID,
+  ANNOTATION_SOURCE_ID,
+  ANNOTATION_TEXT_MAX_HEIGHT,
+  ANNOTATION_TEXT_MAX_WIDTH,
+  ANNOTATION_TEXT_MIN_HEIGHT,
+  ANNOTATION_TEXT_MIN_WIDTH,
+  sanitizeAnnotationTextHeight,
+  sanitizeAnnotationTextWidth,
   sanitizeLngLat,
-} from './drawing-model.js';
+} from './annotation-model.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
-import type { DrawingFeature, DrawingTextFeature } from './drawing-model.js';
-import type { DrawingStore } from './drawing-store.js';
+import type { AnnotationFeaturePayload, AnnotationTextPayload } from './annotation-model.js';
+import type { AnnotationLayer } from './layer-model.js';
+import type { LayerStore } from './layer-store.js';
 
-export const DRAWING_LAYER_IDS = {
-  polygonFill: 'drawing-plan-polygon-fill',
-  polygonOutline: 'drawing-plan-polygon-outline',
-  lineStroke: 'drawing-plan-line-stroke',
-  line: 'drawing-plan-line',
-  lineLabels: 'drawing-plan-line-labels',
-  polygonLabels: 'drawing-plan-polygon-labels',
-  points: 'drawing-plan-points',
-  text: 'drawing-plan-text',
-  textLabels: 'drawing-plan-text-labels',
-  labels: 'drawing-plan-labels',
-  arrows: 'drawing-plan-arrows',
+export const ANNOTATION_RENDER_LAYER_IDS = {
+  polygonFill: 'annotation-polygon-fill',
+  polygonOutline: 'annotation-polygon-outline',
+  lineStroke: 'annotation-line-stroke',
+  line: 'annotation-line',
+  lineLabels: 'annotation-line-labels',
+  polygonLabels: 'annotation-polygon-labels',
+  points: 'annotation-points',
+  text: 'annotation-text',
+  textLabels: 'annotation-text-labels',
+  labels: 'annotation-labels',
+  arrows: 'annotation-arrows',
 } as const;
-const DRAWING_ARROW_ICON = 'drawing-direction-arrow-v2';
+export const ANNOTATION_RENDER_LAYER_ROLE_ORDER = Object.keys(ANNOTATION_RENDER_LAYER_IDS) as Array<
+  keyof typeof ANNOTATION_RENDER_LAYER_IDS
+>;
+const ANNOTATION_ARROW_ICON = 'annotation-direction-arrow-v1';
 const TEXT_NOTE_COMPACT_LABEL_MIN_ZOOM = 7;
 const TEXT_NOTE_FULL_MIN_ZOOM = 11;
-const DRAWING_ACTIVE_FEATURE_EVENT = 'drawing:activefeaturechange';
+const ANNOTATION_ACTIVE_FEATURE_EVENT = 'annotation:activefeaturechange';
 
-type DrawingSource = {
+type AnnotationSource = {
   setData(data: object): void;
 };
-type DrawingMap = {
+type AnnotationMap = {
   _styleInitialized?: boolean;
   _styleInfrastructureInitialized?: boolean;
   style?: { _loaded?: boolean };
@@ -56,8 +61,13 @@ type DrawingMap = {
   removeSource(id: string): void;
   getContainer(): HTMLElement;
 };
+type AnnotationRenderLayerSet = {
+  layerId: string;
+  sourceId: string;
+  layerIds: Record<keyof typeof ANNOTATION_RENDER_LAYER_IDS, string>;
+};
 
-type DrawingTextMarker = {
+type AnnotationTextMarker = {
   marker: maplibregl.Marker;
   element: HTMLElement;
 };
@@ -73,12 +83,12 @@ type TextResizeState = {
   startPointer: ScreenPoint;
   startDragged: ScreenPoint;
   opposite: ScreenPoint;
-  nextCoordinate: DrawingTextFeature['coordinate'];
+  nextCoordinate: AnnotationTextPayload['coordinate'];
   nextWidth: number;
   nextHeight: number;
   wasDraggable: boolean;
 };
-type DrawingActiveFeatureDetail = {
+type AnnotationActiveFeatureDetail = {
   activeId?: unknown;
   selectedId?: unknown;
   editingId?: unknown;
@@ -88,12 +98,12 @@ function kindFilter(kinds: string[]) {
   return ['in', ['get', 'kind'], ['literal', kinds]];
 }
 
-function asDrawingSource(source: unknown): DrawingSource | null {
-  return source && typeof (source as DrawingSource).setData === 'function' ? (source as DrawingSource) : null;
+function asAnnotationSource(source: unknown): AnnotationSource | null {
+  return source && typeof (source as AnnotationSource).setData === 'function' ? (source as AnnotationSource) : null;
 }
 
-function ensureArrowIcon(map: DrawingMap) {
-  if (map.hasImage(DRAWING_ARROW_ICON)) return;
+function ensureArrowIcon(map: AnnotationMap) {
+  if (map.hasImage(ANNOTATION_ARROW_ICON)) return;
   const size = 64;
   const canvas = document.createElement('canvas');
   canvas.width = size;
@@ -116,25 +126,58 @@ function ensureArrowIcon(map: DrawingMap) {
   ctx.closePath();
   ctx.stroke();
   ctx.fill();
-  map.addImage(DRAWING_ARROW_ICON, ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
+  map.addImage(ANNOTATION_ARROW_ICON, ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
 }
 
-function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
-  if (!map.getSource(DRAWING_SOURCE_ID)) {
-    map.addSource(DRAWING_SOURCE_ID, {
+function renderSafeLayerId(layerId: string) {
+  return layerId.replace(/[^0-9a-zA-Z_-]/g, '-');
+}
+
+export function annotationRenderSourceId(layerId: string) {
+  return layerId === ANNOTATION_DEFAULT_LAYER_ID
+    ? ANNOTATION_SOURCE_ID
+    : `${ANNOTATION_SOURCE_ID}-${renderSafeLayerId(layerId)}`;
+}
+
+export function annotationRenderLayerIds(layerId: string): Record<keyof typeof ANNOTATION_RENDER_LAYER_IDS, string> {
+  if (layerId === ANNOTATION_DEFAULT_LAYER_ID) return { ...ANNOTATION_RENDER_LAYER_IDS };
+  const suffix = renderSafeLayerId(layerId);
+  return Object.fromEntries(
+    ANNOTATION_RENDER_LAYER_ROLE_ORDER.map((role) => [role, `${ANNOTATION_RENDER_LAYER_IDS[role]}-${suffix}`]),
+  ) as Record<keyof typeof ANNOTATION_RENDER_LAYER_IDS, string>;
+}
+
+export function annotationRenderLayerSet(layerId: string): AnnotationRenderLayerSet {
+  return {
+    layerId,
+    sourceId: annotationRenderSourceId(layerId),
+    layerIds: annotationRenderLayerIds(layerId),
+  };
+}
+
+export function annotationRenderLayerIdList(layerId: string) {
+  const ids = annotationRenderLayerIds(layerId);
+  return ANNOTATION_RENDER_LAYER_ROLE_ORDER.map((role) => ids[role]);
+}
+
+function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: AnnotationLayer) {
+  const renderLayer = annotationRenderLayerSet(layer.id);
+  const { sourceId, layerIds } = renderLayer;
+  if (!map.getSource(sourceId)) {
+    map.addSource(sourceId, {
       type: 'geojson',
-      data: store.getGeoJson(),
+      data: store.getLayerGeoJson(layer.id, { includeHidden: false }),
       tolerance: 0,
     });
   }
   ensureArrowIcon(map);
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.polygonFill)) {
+  if (!map.getLayer(layerIds.polygonFill)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.polygonFill,
+      id: layerIds.polygonFill,
       type: 'fill',
-      source: DRAWING_SOURCE_ID,
-      filter: ['==', ['get', 'kind'], 'drawing_polygon'],
+      source: sourceId,
+      filter: ['==', ['get', 'kind'], 'annotation_polygon'],
       paint: {
         'fill-color': ['coalesce', ['get', 'color'], '#2563eb'],
         'fill-opacity': ['coalesce', ['get', 'fill_opacity'], 0.22],
@@ -142,12 +185,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.polygonOutline)) {
+  if (!map.getLayer(layerIds.polygonOutline)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.polygonOutline,
+      id: layerIds.polygonOutline,
       type: 'line',
-      source: DRAWING_SOURCE_ID,
-      filter: ['==', ['get', 'kind'], 'drawing_polygon_outline'],
+      source: sourceId,
+      filter: ['==', ['get', 'kind'], 'annotation_polygon_outline'],
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
         'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
@@ -157,12 +200,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.lineStroke)) {
+  if (!map.getLayer(layerIds.lineStroke)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.lineStroke,
+      id: layerIds.lineStroke,
       type: 'line',
-      source: DRAWING_SOURCE_ID,
-      filter: kindFilter(['drawing_path', 'drawing_route']),
+      source: sourceId,
+      filter: kindFilter(['annotation_path', 'annotation_route']),
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
         'line-color': '#111827',
@@ -172,12 +215,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.line)) {
+  if (!map.getLayer(layerIds.line)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.line,
+      id: layerIds.line,
       type: 'line',
-      source: DRAWING_SOURCE_ID,
-      filter: kindFilter(['drawing_path', 'drawing_route']),
+      source: sourceId,
+      filter: kindFilter(['annotation_path', 'annotation_route']),
       layout: { 'line-join': 'round', 'line-cap': 'round' },
       paint: {
         'line-color': ['coalesce', ['get', 'color'], '#2563eb'],
@@ -187,12 +230,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.points)) {
+  if (!map.getLayer(layerIds.points)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.points,
+      id: layerIds.points,
       type: 'circle',
-      source: DRAWING_SOURCE_ID,
-      filter: ['==', ['get', 'kind'], 'drawing_point'],
+      source: sourceId,
+      filter: ['==', ['get', 'kind'], 'annotation_point'],
       paint: {
         'circle-radius': 6,
         'circle-color': ['coalesce', ['get', 'color'], '#2563eb'],
@@ -203,12 +246,16 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.lineLabels)) {
+  if (!map.getLayer(layerIds.lineLabels)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.lineLabels,
+      id: layerIds.lineLabels,
       type: 'symbol',
-      source: DRAWING_SOURCE_ID,
-      filter: ['all', kindFilter(['drawing_path', 'drawing_route']), ['any', ['has', 'name'], ['has', 'description']]],
+      source: sourceId,
+      filter: [
+        'all',
+        kindFilter(['annotation_path', 'annotation_route']),
+        ['any', ['has', 'name'], ['has', 'description']],
+      ],
       layout: {
         'symbol-placement': 'line',
         'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
@@ -224,12 +271,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.polygonLabels)) {
+  if (!map.getLayer(layerIds.polygonLabels)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.polygonLabels,
+      id: layerIds.polygonLabels,
       type: 'symbol',
-      source: DRAWING_SOURCE_ID,
-      filter: ['all', ['==', ['get', 'kind'], 'drawing_polygon'], ['any', ['has', 'name'], ['has', 'description']]],
+      source: sourceId,
+      filter: ['all', ['==', ['get', 'kind'], 'annotation_polygon'], ['any', ['has', 'name'], ['has', 'description']]],
       layout: {
         'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
         'text-font': ['Noto Sans Regular'],
@@ -246,13 +293,13 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.text)) {
+  if (!map.getLayer(layerIds.text)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.text,
+      id: layerIds.text,
       type: 'circle',
-      source: DRAWING_SOURCE_ID,
+      source: sourceId,
       maxzoom: TEXT_NOTE_FULL_MIN_ZOOM,
-      filter: ['==', ['get', 'kind'], 'drawing_text'],
+      filter: ['==', ['get', 'kind'], 'annotation_text'],
       paint: {
         'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, 3.5, 7, 4.75, 10.9, 6],
         'circle-color': ['coalesce', ['get', 'color'], '#2563eb'],
@@ -263,14 +310,14 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.textLabels)) {
+  if (!map.getLayer(layerIds.textLabels)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.textLabels,
+      id: layerIds.textLabels,
       type: 'symbol',
-      source: DRAWING_SOURCE_ID,
+      source: sourceId,
       minzoom: TEXT_NOTE_COMPACT_LABEL_MIN_ZOOM,
       maxzoom: TEXT_NOTE_FULL_MIN_ZOOM,
-      filter: ['==', ['get', 'kind'], 'drawing_text'],
+      filter: ['==', ['get', 'kind'], 'annotation_text'],
       layout: {
         'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], 'Note'],
         'text-font': ['Noto Sans Regular'],
@@ -289,12 +336,12 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.labels)) {
+  if (!map.getLayer(layerIds.labels)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.labels,
+      id: layerIds.labels,
       type: 'symbol',
-      source: DRAWING_SOURCE_ID,
-      filter: ['==', ['get', 'kind'], 'drawing_point'],
+      source: sourceId,
+      filter: ['==', ['get', 'kind'], 'annotation_point'],
       layout: {
         'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
         'text-font': ['Noto Sans Regular'],
@@ -311,14 +358,14 @@ function ensureDrawingLayers(map: DrawingMap, store: DrawingStore) {
     });
   }
 
-  if (!map.getLayer(DRAWING_LAYER_IDS.arrows)) {
+  if (!map.getLayer(layerIds.arrows)) {
     map.addLayer({
-      id: DRAWING_LAYER_IDS.arrows,
+      id: layerIds.arrows,
       type: 'symbol',
-      source: DRAWING_SOURCE_ID,
-      filter: ['==', ['get', 'kind'], 'drawing_arrow'],
+      source: sourceId,
+      filter: ['==', ['get', 'kind'], 'annotation_arrow'],
       layout: {
-        'icon-image': DRAWING_ARROW_ICON,
+        'icon-image': ANNOTATION_ARROW_ICON,
         'icon-size': ['interpolate', ['linear'], ['coalesce', ['get', 'width'], 4], 1, 0.5, 6, 0.76, 12, 1],
         'icon-rotate': ['get', 'bearing'],
         'icon-rotation-alignment': 'map',
@@ -344,39 +391,39 @@ function stopTextResizeHandleEvent(event: Event) {
   event.stopPropagation();
 }
 
-function visibleTextFeatures(
-  store: DrawingStore,
-  { zoom, activeFeatureId }: { zoom: number; activeFeatureId: string },
-) {
-  const doc = store.getDoc();
+function visibleTextFeatures(store: LayerStore, { zoom, activeFeatureId }: { zoom: number; activeFeatureId: string }) {
   const showAllFullNotes = zoom >= TEXT_NOTE_FULL_MIN_ZOOM;
-  return doc.featureOrder
-    .map((id) => doc.features[id])
-    .filter((feature): feature is DrawingTextFeature => {
+  return store
+    .getAnnotationFeatures()
+    .map((feature) => feature.payload)
+    .filter((feature): feature is AnnotationTextPayload => {
       return Boolean(
         feature?.type === 'text' &&
-        doc.layers[feature.layerId]?.visible !== false &&
+        store.getAnnotationLayer(feature.layerId)?.visible !== false &&
         (showAllFullNotes || feature.id === activeFeatureId),
       );
     });
 }
 
-function textMarkerBody(feature: DrawingTextFeature) {
+function textMarkerBody(feature: AnnotationTextPayload) {
   return feature.note || feature.label || 'Note';
 }
 
-function markerFeatureEvent(type: 'drawing:featureclick' | 'drawing:featuredblclick', feature: DrawingFeature) {
+function markerFeatureEvent(
+  type: 'annotation:featureclick' | 'annotation:featuredblclick',
+  feature: AnnotationFeaturePayload,
+) {
   return new CustomEvent(type, { detail: { id: feature.id } });
 }
 
-function textFeatureSize(feature: DrawingTextFeature) {
+function textFeatureSize(feature: AnnotationTextPayload) {
   return {
-    width: sanitizeDrawingTextWidth(feature.width),
-    height: sanitizeDrawingTextHeight(feature.height),
+    width: sanitizeAnnotationTextWidth(feature.width),
+    height: sanitizeAnnotationTextHeight(feature.height),
   };
 }
 
-function pointerPoint(map: DrawingMap, event: PointerEvent): ScreenPoint {
+function pointerPoint(map: AnnotationMap, event: PointerEvent): ScreenPoint {
   const rect = map.getContainer().getBoundingClientRect();
   return {
     x: event.clientX - rect.left,
@@ -409,30 +456,30 @@ function applyTextMarkerSize(element: HTMLElement, width: number, height: number
   element.style.height = `${height}px`;
 }
 
-function createTextMarkerElement(map: DrawingMap, feature: DrawingTextFeature, activeFeatureId: string) {
+function createTextMarkerElement(map: AnnotationMap, feature: AnnotationTextPayload, activeFeatureId: string) {
   const element = document.createElement('button');
   element.type = 'button';
-  element.className = 'drawing-text-note';
-  element.dataset.drawingId = feature.id;
-  element.style.setProperty('--drawing-note-color', feature.color || '#2563eb');
+  element.className = 'annotation-text-note';
+  element.dataset.annotationId = feature.id;
+  element.style.setProperty('--annotation-note-color', feature.color || '#2563eb');
   element.title = feature.label || 'Note';
   element.setAttribute('aria-label', feature.label || 'Note');
   stopTextMarkerPropagation(element);
   element.addEventListener('click', () => {
-    map.getContainer().dispatchEvent(markerFeatureEvent('drawing:featureclick', feature));
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featureclick', feature));
   });
   element.addEventListener('dblclick', () => {
-    map.getContainer().dispatchEvent(markerFeatureEvent('drawing:featuredblclick', feature));
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featuredblclick', feature));
   });
   const title = document.createElement('div');
-  title.className = 'drawing-text-note-title';
+  title.className = 'annotation-text-note-title';
   element.appendChild(title);
   const body = document.createElement('div');
-  body.className = 'drawing-text-note-body';
+  body.className = 'annotation-text-note-body';
   element.appendChild(body);
   for (const corner of ['nw', 'ne', 'se', 'sw'] as const) {
     const handle = document.createElement('span');
-    handle.className = `drawing-text-note-resize-handle drawing-text-note-resize-${corner}`;
+    handle.className = `annotation-text-note-resize-handle annotation-text-note-resize-${corner}`;
     handle.dataset.corner = corner;
     handle.setAttribute('aria-hidden', 'true');
     handle.addEventListener('mousedown', stopTextResizeHandleEvent);
@@ -445,22 +492,22 @@ function createTextMarkerElement(map: DrawingMap, feature: DrawingTextFeature, a
   return element;
 }
 
-function updateTextMarkerElement(element: HTMLElement, feature: DrawingTextFeature, activeFeatureId: string) {
+function updateTextMarkerElement(element: HTMLElement, feature: AnnotationTextPayload, activeFeatureId: string) {
   const { width, height } = textFeatureSize(feature);
-  element.dataset.drawingId = feature.id;
-  element.style.setProperty('--drawing-note-color', feature.color || '#2563eb');
+  element.dataset.annotationId = feature.id;
+  element.style.setProperty('--annotation-note-color', feature.color || '#2563eb');
   applyTextMarkerSize(element, width, height);
-  element.classList.toggle('drawing-text-note-active', feature.id === activeFeatureId);
+  element.classList.toggle('annotation-text-note-active', feature.id === activeFeatureId);
   element.title = feature.label || 'Note';
   element.setAttribute('aria-label', feature.label || 'Note');
-  const title = element.querySelector<HTMLElement>('.drawing-text-note-title');
-  const body = element.querySelector<HTMLElement>('.drawing-text-note-body');
+  const title = element.querySelector<HTMLElement>('.annotation-text-note-title');
+  const body = element.querySelector<HTMLElement>('.annotation-text-note-body');
   if (title) title.textContent = feature.label || 'Note';
   if (body) body.textContent = textMarkerBody(feature);
 }
 
-function updateTextFeatureCoordinate(store: DrawingStore, featureId: string, marker: maplibregl.Marker) {
-  const feature = store.getDoc().features[featureId];
+function updateTextFeatureCoordinate(store: LayerStore, featureId: string, marker: maplibregl.Marker) {
+  const feature = store.getAnnotationFeaturePayload(featureId);
   if (feature?.type !== 'text') return;
   const lngLat = marker.getLngLat();
   const coordinate = sanitizeLngLat([lngLat.lng, lngLat.lat]);
@@ -475,10 +522,10 @@ function updateTextFeatureCoordinate(store: DrawingStore, featureId: string, mar
 }
 
 function updateTextMarkerResize(
-  map: DrawingMap,
+  map: AnnotationMap,
   state: TextResizeState,
   event: PointerEvent,
-): { coordinate: DrawingTextFeature['coordinate']; width: number; height: number } | null {
+): { coordinate: AnnotationTextPayload['coordinate']; width: number; height: number } | null {
   const pointer = pointerPoint(map, event);
   const directionX = state.corner.includes('e') ? 1 : -1;
   const directionY = state.corner.includes('s') ? 1 : -1;
@@ -490,15 +537,15 @@ function updateTextMarkerResize(
     dragged.x,
     state.opposite.x,
     directionX,
-    DRAWING_TEXT_MIN_WIDTH,
-    DRAWING_TEXT_MAX_WIDTH,
+    ANNOTATION_TEXT_MIN_WIDTH,
+    ANNOTATION_TEXT_MAX_WIDTH,
   );
   const edgeY = clampResizeEdge(
     dragged.y,
     state.opposite.y,
     directionY,
-    DRAWING_TEXT_MIN_HEIGHT,
-    DRAWING_TEXT_MAX_HEIGHT,
+    ANNOTATION_TEXT_MIN_HEIGHT,
+    ANNOTATION_TEXT_MAX_HEIGHT,
   );
   const width = Math.round(Math.abs(edgeX - state.opposite.x));
   const height = Math.round(Math.abs(edgeY - state.opposite.y));
@@ -518,8 +565,8 @@ function updateTextMarkerResize(
 }
 
 function installTextMarkerResize(
-  map: DrawingMap,
-  store: DrawingStore,
+  map: AnnotationMap,
+  store: LayerStore,
   marker: maplibregl.Marker,
   element: HTMLElement,
   featureId: string,
@@ -530,7 +577,7 @@ function installTextMarkerResize(
     const handle = event.currentTarget as HTMLElement;
     const corner = handle.dataset.corner as TextResizeCorner | undefined;
     if (corner !== 'nw' && corner !== 'ne' && corner !== 'se' && corner !== 'sw') return;
-    const feature = store.getDoc().features[featureId];
+    const feature = store.getAnnotationFeaturePayload(featureId);
     if (feature?.type !== 'text') return;
 
     event.preventDefault();
@@ -555,7 +602,7 @@ function installTextMarkerResize(
       wasDraggable: marker.isDraggable(),
     };
     marker.setDraggable(false);
-    element.classList.add('drawing-text-note-resizing');
+    element.classList.add('annotation-text-note-resizing');
     handle.setPointerCapture?.(event.pointerId);
   };
   const moveResize = (event: PointerEvent) => {
@@ -571,11 +618,11 @@ function installTextMarkerResize(
     event.preventDefault();
     event.stopPropagation();
     if (state.handle.hasPointerCapture?.(state.pointerId)) state.handle.releasePointerCapture(state.pointerId);
-    state.element.classList.remove('drawing-text-note-resizing');
+    state.element.classList.remove('annotation-text-note-resizing');
     state.marker.setDraggable(state.wasDraggable);
     resizeState = null;
 
-    const feature = store.getDoc().features[state.featureId];
+    const feature = store.getAnnotationFeaturePayload(state.featureId);
     if (feature?.type !== 'text') return;
     if (
       feature.width === state.nextWidth &&
@@ -594,7 +641,7 @@ function installTextMarkerResize(
     });
   };
 
-  for (const handle of element.querySelectorAll<HTMLElement>('.drawing-text-note-resize-handle')) {
+  for (const handle of element.querySelectorAll<HTMLElement>('.annotation-text-note-resize-handle')) {
     handle.addEventListener('pointerdown', beginResize);
     handle.addEventListener('pointermove', moveResize);
     handle.addEventListener('pointerup', finishResize);
@@ -603,9 +650,9 @@ function installTextMarkerResize(
 }
 
 function syncTextMarkers(
-  map: DrawingMap,
-  store: DrawingStore,
-  markers: Map<string, DrawingTextMarker>,
+  map: AnnotationMap,
+  store: LayerStore,
+  markers: Map<string, AnnotationTextMarker>,
   viewState: { zoom: number; activeFeatureId: string },
 ) {
   const features = visibleTextFeatures(store, viewState);
@@ -633,11 +680,12 @@ function syncTextMarkers(
   }
 }
 
-export function installDrawingRenderer(map: DrawingMap, store: DrawingStore) {
+export function installAnnotationRenderer(map: AnnotationMap, store: LayerStore) {
   let disposed = false;
   let currentZoom = map.getZoom();
   let activeFeatureId = '';
-  const textMarkers = new Map<string, DrawingTextMarker>();
+  const renderSets = new Map<string, AnnotationRenderLayerSet>();
+  const textMarkers = new Map<string, AnnotationTextMarker>();
   const syncTextMarkerView = () => {
     if (disposed) return;
     currentZoom = map.getZoom();
@@ -647,14 +695,31 @@ export function installDrawingRenderer(map: DrawingMap, store: DrawingStore) {
     if (disposed) return;
     runWhenStyleInfrastructureReady(map, () => {
       if (disposed) return;
-      ensureDrawingLayers(map, store);
-      asDrawingSource(map.getSource(DRAWING_SOURCE_ID))?.setData(store.getGeoJson());
+      const layers = store.getAnnotationLayers();
+      const liveLayerIds = new Set(layers.map((layer) => layer.id));
+      for (const [layerId, set] of renderSets) {
+        if (liveLayerIds.has(layerId)) continue;
+        for (const mapLayerId of Object.values(set.layerIds).reverse()) {
+          if (map.getLayer(mapLayerId)) map.removeLayer(mapLayerId);
+        }
+        if (map.getSource(set.sourceId)) map.removeSource(set.sourceId);
+        renderSets.delete(layerId);
+      }
+      for (const layer of layers) {
+        const layerId = layer.id;
+        ensureAnnotationLayers(map, store, layer);
+        const set = annotationRenderLayerSet(layerId);
+        renderSets.set(layerId, set);
+        asAnnotationSource(map.getSource(set.sourceId))?.setData(
+          store.getLayerGeoJson(layerId, { includeHidden: false }),
+        );
+      }
       syncTextMarkerView();
     });
   };
   const handleZoom = () => syncTextMarkerView();
   const handleActiveFeatureChange = (event: Event) => {
-    const detail = (event as CustomEvent<DrawingActiveFeatureDetail>).detail;
+    const detail = (event as CustomEvent<AnnotationActiveFeatureDetail>).detail;
     const nextId = typeof detail?.activeId === 'string' ? detail.activeId : '';
     if (activeFeatureId === nextId) return;
     activeFeatureId = nextId;
@@ -662,20 +727,23 @@ export function installDrawingRenderer(map: DrawingMap, store: DrawingStore) {
   };
   const unsubscribe = store.subscribe(render);
   map.on?.('zoom', handleZoom);
-  map.getContainer().addEventListener(DRAWING_ACTIVE_FEATURE_EVENT, handleActiveFeatureChange);
+  map.getContainer().addEventListener(ANNOTATION_ACTIVE_FEATURE_EVENT, handleActiveFeatureChange);
   render();
   return {
     destroy() {
       disposed = true;
       unsubscribe();
       map.off?.('zoom', handleZoom);
-      map.getContainer().removeEventListener(DRAWING_ACTIVE_FEATURE_EVENT, handleActiveFeatureChange);
-      for (const layerId of Object.values(DRAWING_LAYER_IDS).reverse()) {
-        if (map.getLayer(layerId)) map.removeLayer(layerId);
+      map.getContainer().removeEventListener(ANNOTATION_ACTIVE_FEATURE_EVENT, handleActiveFeatureChange);
+      for (const set of renderSets.values()) {
+        for (const layerId of Object.values(set.layerIds).reverse()) {
+          if (map.getLayer(layerId)) map.removeLayer(layerId);
+        }
+        if (map.getSource(set.sourceId)) map.removeSource(set.sourceId);
       }
+      renderSets.clear();
       for (const entry of textMarkers.values()) entry.marker.remove();
       textMarkers.clear();
-      if (map.getSource(DRAWING_SOURCE_ID)) map.removeSource(DRAWING_SOURCE_ID);
     },
   };
 }

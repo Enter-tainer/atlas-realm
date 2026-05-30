@@ -646,7 +646,7 @@ class OsrmRoutingControl {
     this._status.setAttribute('aria-live', 'polite');
 
     map.on('click', this._boundMapClick);
-    map.getContainer().addEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
+    map.getContainer().addEventListener('layer-manager:panelopen', this._boundOverlayPanelOpen);
     map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
@@ -659,7 +659,7 @@ class OsrmRoutingControl {
   onRemove() {
     this._abortController?.abort();
     this._map.off('click', this._boundMapClick);
-    this._map.getContainer().removeEventListener('overlay-manager:panelopen', this._boundOverlayPanelOpen);
+    this._map.getContainer().removeEventListener('layer-manager:panelopen', this._boundOverlayPanelOpen);
     this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
@@ -866,11 +866,11 @@ class OsrmRoutingControl {
       if (!route?.geometry || route.geometry.type !== 'LineString') throw new Error('No route geometry');
 
       const result = routeToGeoJson(route, data.waypoints, this._from, this._to);
-      const overlay = processOrQueueGeoJson(this._map, result.geojson, {
+      const layer = processOrQueueGeoJson(this._map, result.geojson, {
         name: result.name,
         color: ROUTE_COLOR,
       });
-      const bounds = asOverlayBounds(overlay?.bounds);
+      const bounds = asOverlayBounds(layer?.bounds);
       if (bounds) this._map.fitBounds(bounds, { padding: 70, maxZoom: 16 });
       this._removeMarkers();
       this._setPicking(null);

@@ -65,7 +65,7 @@ Layer style options:
 
 ## Annotations
 
-Annotations are editable planning objects in the shared drawing model.
+Annotations are editable planning objects in the shared annotation model.
 
 Point:
 

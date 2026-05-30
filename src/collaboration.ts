@@ -1,13 +1,14 @@
 import PartySocket from 'partysocket';
 import {
-  buildOverlaySyncAsset,
-  decodeOverlayBinaryMessage,
-  encodeOverlayBinaryMessage,
-  materializeOverlayContent,
-} from './overlay-sync.js';
-import type { OverlayContent, OverlayManifest, OverlaySyncAsset } from './overlay-sync.js';
-import type { DrawingStore } from './drawing-store.js';
-import type { DrawingServerMessage } from './drawing-sync.js';
+  buildFileLayerSyncAsset,
+  decodeFileContentMessage,
+  encodeFileContentMessage,
+  materializeFileLayerContent,
+} from './file-layer-sync.js';
+import type { FileLayerContent, FileLayerManifest, FileLayerSyncAsset } from './file-layer-sync.js';
+import type { LayerStore } from './layer-store.js';
+import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
+import { initialSortKey } from './layer-model.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const PARTY_NAME = 'map-collaboration';
@@ -69,11 +70,11 @@ type Peer = {
   viewState?: CollaborationViewState;
   updatedAt?: number;
 };
-type LocalOverlay = JsonRecord & {
+type LocalFileLayer = JsonRecord & {
   id: string;
-  data?: OverlayContent;
-  syncOverlayId?: string;
-  remoteOverlayId?: string | null;
+  data?: FileLayerContent;
+  syncLayerId?: string;
+  remoteLayerId?: string | null;
 };
 type CollaborationMessage = JsonRecord & {
   type?: string;
@@ -82,15 +83,16 @@ type CollaborationMessage = JsonRecord & {
   peers?: Peer[];
   agent?: AgentParticipant;
   agents?: AgentParticipant[];
-  overlays?: OverlayManifest[];
+  manifests?: FileLayerManifest[];
+  layers?: unknown[];
+  features?: unknown[];
   persistence?: 'ephemeral' | 'persistent';
   contentHash?: string;
-  overlayId?: string;
   patch?: JsonRecord;
   doc?: unknown;
   feature?: unknown;
   featureId?: string;
-  orderedIds?: string[];
+  layerId?: string;
   stackItems?: unknown[];
   revision?: number;
 };
@@ -244,6 +246,65 @@ function safeColor(color: unknown) {
   return typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : PROFILE_COLORS[0];
 }
 
+function fileLayerManifestToLayerMessage(manifest: FileLayerManifest) {
+  return {
+    id: manifest.id,
+    kind: 'file',
+    name: manifest.name,
+    visible: manifest.visible !== false,
+    sortKey: typeof manifest.sortKey === 'string' ? manifest.sortKey : '000010',
+    payload: {
+      version: 1,
+      fileType: manifest.type === 'gpx' ? 'gpx' : 'geojson',
+      contentHash: manifest.contentHash,
+      contentType: manifest.contentType || (manifest.type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json'),
+      contentEncoding: manifest.contentEncoding === 'gzip' ? 'gzip' : 'identity',
+      contentByteLength: manifest.contentByteLength || 0,
+      rawByteLength: manifest.rawByteLength || 0,
+      bounds: manifest.bounds || null,
+      style: {
+        color: manifest.color || '#3b82f6',
+        opacity: manifest.opacity || 0.95,
+        lineWidth: manifest.lineWidth || 5,
+      },
+    },
+    revision: 0,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+function fileLayerMessageToFileLayerManifest(layer: unknown): FileLayerManifest | null {
+  if (!isRecord(layer) || layer.kind !== 'file' || !isRecord(layer.payload)) return null;
+  const payload = layer.payload;
+  const fileType = payload.fileType === 'gpx' ? 'gpx' : payload.fileType === 'geojson' ? 'geojson' : null;
+  const id = typeof layer.id === 'string' ? layer.id : '';
+  if (!id || !fileType || typeof payload.contentHash !== 'string') return null;
+  const style = isRecord(payload.style) ? payload.style : {};
+  return {
+    id,
+    type: fileType,
+    name: String(layer.name || (fileType === 'gpx' ? 'GPX file layer' : 'GeoJSON file layer')),
+    visible: layer.visible !== false,
+    color: typeof style.color === 'string' ? style.color : '#3b82f6',
+    opacity: Number.isFinite(Number(style.opacity)) ? Number(style.opacity) : 0.95,
+    lineWidth: Number.isFinite(Number(style.lineWidth)) ? Number(style.lineWidth) : 5,
+    bounds: Array.isArray(payload.bounds) ? (payload.bounds as FileLayerManifest['bounds']) : null,
+    contentHash: payload.contentHash,
+    contentType:
+      typeof payload.contentType === 'string'
+        ? payload.contentType
+        : fileType === 'gpx'
+          ? 'application/gpx+xml'
+          : 'application/geo+json',
+    contentEncoding: payload.contentEncoding === 'gzip' ? 'gzip' : 'identity',
+    contentByteLength: Number(payload.contentByteLength) || 0,
+    rawByteLength: Number(payload.rawByteLength) || 0,
+    syncVersion: 1,
+    persistence: 'ephemeral',
+  };
+}
+
 function initials(name: unknown) {
   const parts = String(name || '?')
     .trim()
@@ -365,19 +426,19 @@ function applyViewState(map: CollaborationMap, viewState: CollaborationViewState
   );
 }
 
-export function installMapCollaboration(map: CollaborationMap, drawingStore?: DrawingStore) {
+export function installMapCollaboration(map: CollaborationMap, layerStore?: LayerStore) {
   const mapContainer = map.getContainer();
   const clientId = getSessionId();
   const profile = getProfile();
   const peers = new Map<string, Peer>();
   const agents = new Map<string, AgentParticipant>();
-  const overlayManifests = new Map<string, OverlayManifest>();
-  const overlayContentBytes = new Map<string, Uint8Array>();
-  const pendingOverlayAssets = new Map<string, Map<string, OverlaySyncAsset>>();
-  const requestedOverlayContent = new Set<string>();
-  const localOverlayIds = new Set<string>();
-  const knownLocalOverlays = new Map<string, LocalOverlay>();
-  const uploadedLocalOverlayHashes = new Map<string, string>();
+  const fileLayerManifests = new Map<string, FileLayerManifest>();
+  const fileLayerContentBytes = new Map<string, Uint8Array>();
+  const pendingFileLayerAssets = new Map<string, Map<string, FileLayerSyncAsset>>();
+  const requestedFileLayerContent = new Set<string>();
+  const localFileLayerIds = new Set<string>();
+  const knownLocalFileLayers = new Map<string, LocalFileLayer>();
+  const uploadedLocalFileLayerHashes = new Map<string, string>();
 
   let socket: PartySocket | null = null;
   let currentRoom = getInitialRoom();
@@ -822,185 +883,163 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     );
   }
 
-  function sendOverlayMessage(message: JsonRecord) {
+  function sendFileLayerMessage(message: JsonRecord) {
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
     socket.send(JSON.stringify(message));
     return true;
   }
 
-  function sendDrawingMessage(message: JsonRecord) {
+  function sendLayerMessage(message: JsonRecord) {
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
     socket.send(JSON.stringify(message));
     return true;
   }
 
-  function dispatchRemoteOverlayList(
-    manifests: OverlayManifest[],
+  function dispatchRemoteFileLayerList(
+    manifests: FileLayerManifest[],
     persistence: 'ephemeral' | 'persistent' = 'ephemeral',
   ) {
     mapContainer.dispatchEvent(
-      new CustomEvent('overlay-sync:remote-list', {
-        detail: { overlays: manifests, persistence },
+      new CustomEvent('layer-sync:remote-list', {
+        detail: { fileLayers: manifests, persistence },
       }),
     );
   }
 
-  function dispatchRemoteOverlayDelete(overlayId: string) {
+  function dispatchRemoteFileLayerDelete(fileLayerId: string) {
     mapContainer.dispatchEvent(
-      new CustomEvent('overlay-sync:remote-delete', {
-        detail: { overlayId },
+      new CustomEvent('layer-sync:remote-delete', {
+        detail: { layerId: fileLayerId },
       }),
     );
   }
 
-  function rememberOverlayManifests(manifests: OverlayManifest[]) {
-    overlayManifests.clear();
+  function rememberFileLayerManifests(manifests: FileLayerManifest[]) {
+    fileLayerManifests.clear();
     for (const manifest of manifests || []) {
-      if (manifest?.id && manifest?.contentHash) overlayManifests.set(manifest.id, manifest);
+      if (manifest?.id && manifest?.contentHash) fileLayerManifests.set(manifest.id, manifest);
     }
   }
 
-  function requestMissingOverlayContent(manifests: OverlayManifest[]) {
+  function requestMissingFileLayerContent(manifests: FileLayerManifest[]) {
     if (!socket || socket.readyState !== WebSocket.OPEN) return;
     for (const manifest of manifests || []) {
       const hash = manifest?.contentHash;
-      if (!hash || overlayContentBytes.has(hash) || requestedOverlayContent.has(hash)) continue;
-      requestedOverlayContent.add(hash);
-      sendOverlayMessage({
-        type: 'overlay:content:request',
+      if (!hash || fileLayerContentBytes.has(hash) || requestedFileLayerContent.has(hash)) continue;
+      requestedFileLayerContent.add(hash);
+      sendFileLayerMessage({
+        type: 'file:content:request',
         contentHash: hash,
       });
     }
   }
 
-  async function dispatchRemoteOverlayAdd(manifest: OverlayManifest, contentBytes: Uint8Array) {
-    if (!manifest || !contentBytes || localOverlayIds.has(manifest.id)) return;
+  async function dispatchRemoteFileLayerAdd(manifest: FileLayerManifest, contentBytes: Uint8Array) {
+    if (!manifest || !contentBytes || localFileLayerIds.has(manifest.id)) return;
     try {
-      const content = await materializeOverlayContent(manifest, contentBytes);
+      const content = await materializeFileLayerContent(manifest, contentBytes);
       mapContainer.dispatchEvent(
-        new CustomEvent('overlay-sync:remote-add', {
+        new CustomEvent('layer-sync:remote-add', {
           detail: { manifest, content },
         }),
       );
     } catch (error) {
-      console.error('Failed to materialize shared overlay:', error);
+      console.error('Failed to materialize shared file layer:', error);
     }
   }
 
-  function applyOverlayManifestList(message: CollaborationMessage) {
-    const manifests = Array.isArray(message.overlays) ? message.overlays : [];
-    rememberOverlayManifests(manifests);
-    dispatchRemoteOverlayList(manifests, message.persistence || 'ephemeral');
+  function applyFileLayerManifestList(
+    manifests: FileLayerManifest[],
+    persistence: 'ephemeral' | 'persistent' = 'ephemeral',
+  ) {
+    rememberFileLayerManifests(manifests);
+    dispatchRemoteFileLayerList(manifests, persistence);
     for (const manifest of manifests) {
-      if (manifest?.contentHash && overlayContentBytes.has(manifest.contentHash)) {
-        dispatchRemoteOverlayAdd(manifest, overlayContentBytes.get(manifest.contentHash));
+      if (manifest?.contentHash && fileLayerContentBytes.has(manifest.contentHash)) {
+        dispatchRemoteFileLayerAdd(manifest, fileLayerContentBytes.get(manifest.contentHash));
       }
     }
-    requestMissingOverlayContent(manifests);
+    requestMissingFileLayerContent(manifests);
   }
 
-  async function handleOverlayBinaryMessage(data: unknown) {
-    const frame = decodeOverlayBinaryMessage(data);
+  async function handleFileContentMessage(data: unknown) {
+    const frame = decodeFileContentMessage(data);
     if (!frame) return;
-    overlayContentBytes.set(frame.contentHash, frame.content);
-    requestedOverlayContent.delete(frame.contentHash);
-    for (const manifest of overlayManifests.values()) {
+    fileLayerContentBytes.set(frame.contentHash, frame.content);
+    requestedFileLayerContent.delete(frame.contentHash);
+    for (const manifest of fileLayerManifests.values()) {
       if (manifest.contentHash === frame.contentHash) {
-        await dispatchRemoteOverlayAdd(manifest, frame.content);
+        await dispatchRemoteFileLayerAdd(manifest, frame.content);
       }
     }
   }
 
-  async function syncLocalOverlay(overlay: LocalOverlay | undefined) {
-    if (!overlay?.id || !overlay?.data) return;
-    knownLocalOverlays.set(overlay.syncOverlayId || overlay.remoteOverlayId || overlay.id, overlay);
+  async function syncLocalFileLayer(fileLayer: LocalFileLayer | undefined) {
+    if (!fileLayer?.id || !fileLayer?.data) return;
+    knownLocalFileLayers.set(fileLayer.syncLayerId || fileLayer.remoteLayerId || fileLayer.id, fileLayer);
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
     try {
-      const asset = await buildOverlaySyncAsset(overlay);
+      const asset = await buildFileLayerSyncAsset(fileLayer);
       if (!asset || !socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
-      const overlayId = asset.envelope.manifest.id;
-      const previousHash = uploadedLocalOverlayHashes.get(overlayId);
+      const fileLayerId = asset.envelope.manifest.id;
+      const previousHash = uploadedLocalFileLayerHashes.get(fileLayerId);
       if (previousHash === asset.envelope.manifest.contentHash) {
-        sendOverlayMessage({
-          type: 'overlay:upsert',
-          manifest: asset.envelope.manifest,
+        sendFileLayerMessage({
+          type: 'layer:create',
+          layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
         });
         return;
       }
-      localOverlayIds.add(overlayId);
-      overlayManifests.set(overlayId, asset.envelope.manifest);
-      const pendingForHash = pendingOverlayAssets.get(asset.envelope.manifest.contentHash) || new Map();
-      pendingForHash.set(overlayId, asset);
-      pendingOverlayAssets.set(asset.envelope.manifest.contentHash, pendingForHash);
-      overlayContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
-      uploadedLocalOverlayHashes.set(overlayId, asset.envelope.manifest.contentHash);
-      socket.send(encodeOverlayBinaryMessage(asset.envelope.manifest.contentHash, asset.content));
+      localFileLayerIds.add(fileLayerId);
+      fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
+      const pendingForHash = pendingFileLayerAssets.get(asset.envelope.manifest.contentHash) || new Map();
+      pendingForHash.set(fileLayerId, asset);
+      pendingFileLayerAssets.set(asset.envelope.manifest.contentHash, pendingForHash);
+      fileLayerContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
+      uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
+      socket.send(encodeFileContentMessage(asset.envelope.manifest.contentHash, asset.content));
     } catch (error) {
-      console.error('Failed to sync overlay:', error);
+      console.error('Failed to sync file layer:', error);
     }
   }
 
-  async function syncKnownLocalOverlays() {
-    for (const overlay of knownLocalOverlays.values()) {
-      if (!overlay.remoteOverlayId) await syncLocalOverlay(overlay);
+  async function syncKnownLocalFileLayers() {
+    for (const fileLayer of knownLocalFileLayers.values()) {
+      if (!fileLayer.remoteLayerId) await syncLocalFileLayer(fileLayer);
     }
   }
 
-  function syncKnownLocalDrawing() {
-    if (!drawingStore) return;
-    sendDrawingMessage({ type: 'drawing:snapshot:request' });
-    const doc = drawingStore.getDoc();
-    for (const id of doc.layerOrder) {
-      const layer = doc.layers[id];
-      if (layer) {
-        sendDrawingMessage({
-          type: 'drawing:layer:upsert',
-          layer,
-        });
-      }
+  function syncKnownLocalLayers() {
+    if (!layerStore) return;
+    sendLayerMessage({ type: 'layer:list:request' });
+    sendLayerMessage({ type: 'annotation-feature:list:request' });
+    for (const layer of layerStore.getLayers?.() || []) {
+      sendLayerMessage({ type: 'layer:create', layer });
     }
-    for (const id of doc.featureOrder) {
-      const feature = doc.features[id];
-      if (feature) {
-        sendDrawingMessage({
-          type: 'drawing:feature:upsert',
-          feature,
-        });
-      }
-    }
-    if (doc.featureOrder.length > 0) {
-      sendDrawingMessage({
-        type: 'drawing:feature:reorder',
-        orderedIds: doc.featureOrder,
-      });
-    }
-    if (doc.layerOrder.length > 1) {
-      sendDrawingMessage({
-        type: 'drawing:layer:reorder',
-        orderedIds: doc.layerOrder,
-      });
+    for (const feature of layerStore.getAnnotationFeatures?.() || []) {
+      sendLayerMessage({ type: 'annotation-feature:upsert', feature });
     }
   }
 
-  function completePendingOverlayUpload(contentHash: string | undefined) {
-    const assets = pendingOverlayAssets.get(contentHash);
+  function completePendingFileLayerUpload(contentHash: string | undefined) {
+    const assets = pendingFileLayerAssets.get(contentHash);
     if (!assets) return;
-    pendingOverlayAssets.delete(contentHash);
+    pendingFileLayerAssets.delete(contentHash);
     for (const asset of assets.values()) {
-      sendOverlayMessage({
-        type: 'overlay:upsert',
-        manifest: asset.envelope.manifest,
+      sendFileLayerMessage({
+        type: 'layer:create',
+        layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
       });
     }
   }
 
-  function patchPendingOverlayAsset(overlayId: string, patch: JsonRecord) {
-    const localOverlay = knownLocalOverlays.get(overlayId);
-    if (localOverlay) Object.assign(localOverlay, patch);
-    for (const assets of pendingOverlayAssets.values()) {
-      const asset = assets.get(overlayId);
+  function patchPendingFileLayerAsset(fileLayerId: string, patch: JsonRecord) {
+    const localFileLayer = knownLocalFileLayers.get(fileLayerId);
+    if (localFileLayer) Object.assign(localFileLayer, patch);
+    for (const assets of pendingFileLayerAssets.values()) {
+      const asset = assets.get(fileLayerId);
       if (!asset) continue;
-      if (asset.envelope.manifest.id !== overlayId) continue;
+      if (asset.envelope.manifest.id !== fileLayerId) continue;
       asset.envelope.manifest = {
         ...asset.envelope.manifest,
         ...patch,
@@ -1009,14 +1048,14 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
         contentHash: asset.envelope.manifest.contentHash,
         updatedAt: Date.now(),
       };
-      overlayManifests.set(overlayId, asset.envelope.manifest);
+      fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
     }
   }
 
-  function resendPendingOverlayContent(contentHash: string | undefined) {
-    const asset = pendingOverlayAssets.get(contentHash)?.values().next().value;
+  function resendPendingFileLayerContent(contentHash: string | undefined) {
+    const asset = pendingFileLayerAssets.get(contentHash)?.values().next().value;
     if (!asset || !socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(encodeOverlayBinaryMessage(contentHash, asset.content));
+    socket.send(encodeFileContentMessage(contentHash, asset.content));
   }
 
   function scheduleSend(immediate = false) {
@@ -1113,7 +1152,7 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
 
   async function handleMessage(event: MessageEvent) {
     if (typeof event.data !== 'string') {
-      await handleOverlayBinaryMessage(event.data);
+      await handleFileContentMessage(event.data);
       return;
     }
 
@@ -1136,38 +1175,51 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       return;
     }
 
-    if (message.type === 'overlay:init' || message.type === 'overlay:list') {
-      applyOverlayManifestList(message);
+    if (message.type === 'file:content:stored') {
+      completePendingFileLayerUpload(message.contentHash);
       return;
     }
 
-    if (message.type === 'overlay:content:stored') {
-      completePendingOverlayUpload(message.contentHash);
+    if (message.type === 'file:content:needed') {
+      resendPendingFileLayerContent(message.contentHash);
       return;
     }
 
-    if (message.type === 'overlay:content:needed') {
-      resendPendingOverlayContent(message.contentHash);
-      return;
-    }
-
-    if (message.type === 'overlay:delete') {
-      if (message.overlayId) {
-        overlayManifests.delete(message.overlayId);
-        dispatchRemoteOverlayDelete(message.overlayId);
+    if (
+      message.type === 'layer:list' ||
+      message.type === 'layer:created' ||
+      message.type === 'layer:updated' ||
+      message.type === 'layer:deleted' ||
+      message.type === 'layer:reordered'
+    ) {
+      layerStore?.applyLayerServerMessage(message as LayerServerMessage);
+      if (message.type === 'layer:list') {
+        applyFileLayerManifestList((message.layers || []).map(fileLayerMessageToFileLayerManifest).filter(Boolean));
+      } else if (message.type === 'layer:created' || message.type === 'layer:updated') {
+        const manifest = fileLayerMessageToFileLayerManifest(message.layer);
+        if (manifest) {
+          fileLayerManifests.set(manifest.id, manifest);
+          applyFileLayerManifestList(Array.from(fileLayerManifests.values()));
+          const content = fileLayerContentBytes.get(manifest.contentHash || '');
+          if (content) await dispatchRemoteFileLayerAdd(manifest, content);
+        }
+      } else if (message.type === 'layer:deleted' && message.layerId) {
+        fileLayerManifests.delete(message.layerId);
+        dispatchRemoteFileLayerDelete(message.layerId);
+      } else if (message.type === 'layer:reordered') {
+        applyFileLayerManifestList((message.layers || []).map(fileLayerMessageToFileLayerManifest).filter(Boolean));
       }
       return;
     }
 
     if (
-      message.type === 'drawing:snapshot' ||
-      message.type === 'drawing:layer:upserted' ||
-      message.type === 'drawing:layer:reordered' ||
-      message.type === 'drawing:feature:upserted' ||
-      message.type === 'drawing:feature:deleted' ||
-      message.type === 'drawing:feature:reordered'
+      message.type === 'annotation-feature:list' ||
+      message.type === 'annotation-feature:upserted' ||
+      message.type === 'annotation-feature:deleted' ||
+      message.type === 'annotation-feature:reordered' ||
+      message.type === 'annotation-feature:rejected'
     ) {
-      drawingStore?.applyServerMessage(message as DrawingServerMessage);
+      layerStore?.applyAnnotationFeatureServerMessage(message as AnnotationFeatureServerMessage);
       return;
     }
 
@@ -1198,8 +1250,8 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     roomInput.value = room;
     updateRoomUrl(room);
     peers.clear();
-    overlayManifests.clear();
-    requestedOverlayContent.clear();
+    fileLayerManifests.clear();
+    requestedFileLayerContent.clear();
     followedPeerId = null;
     renderPeople();
     scheduleOverlayRender();
@@ -1231,8 +1283,8 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
-      syncKnownLocalOverlays();
-      syncKnownLocalDrawing();
+      syncKnownLocalFileLayers();
+      syncKnownLocalLayers();
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -1262,12 +1314,12 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
     sendTimer = 0;
     followTimer = 0;
     peers.clear();
-    overlayManifests.clear();
-    overlayContentBytes.clear();
-    pendingOverlayAssets.clear();
-    requestedOverlayContent.clear();
-    localOverlayIds.clear();
-    uploadedLocalOverlayHashes.clear();
+    fileLayerManifests.clear();
+    fileLayerContentBytes.clear();
+    pendingFileLayerAssets.clear();
+    requestedFileLayerContent.clear();
+    localFileLayerIds.clear();
+    uploadedLocalFileLayerHashes.clear();
     followedPeerId = null;
     localCursor = { visible: false, lngLat: null };
     ownConnectionId = clientId;
@@ -1344,81 +1396,129 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
   const handleUiPanelOpen = (event: Event) => {
     if (isOtherUiPanelOpen(event, 'collaboration')) setPanelExpanded(false);
   };
-  const handleLocalOverlayUpsert = (event: Event) => {
+  const handleLocalFileLayerUpsert = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    syncLocalOverlay(detail?.overlay);
+    syncLocalFileLayer(detail?.layer);
   };
-  const handleLocalOverlayPatch = (event: Event) => {
+  const handleLocalFileLayerPatch = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    const overlayId = typeof detail?.overlayId === 'string' ? detail.overlayId : '';
+    const fileLayerId = typeof detail?.layerId === 'string' ? detail.layerId : '';
     const patch = isRecord(detail?.patch) ? detail.patch : null;
-    if (!overlayId || !patch) return;
-    patchPendingOverlayAsset(overlayId, patch);
-    sendOverlayMessage({
-      type: 'overlay:patch',
-      overlayId,
-      patch,
+    if (!fileLayerId || !patch) return;
+    patchPendingFileLayerAsset(fileLayerId, patch);
+    const stylePatch: JsonRecord = {};
+    if (typeof patch.color === 'string') stylePatch.color = patch.color;
+    if (typeof patch.opacity === 'number') stylePatch.opacity = patch.opacity;
+    if (typeof patch.lineWidth === 'number') stylePatch.lineWidth = patch.lineWidth;
+    sendFileLayerMessage({
+      type: 'layer:update',
+      layerId: fileLayerId,
+      patch: {
+        name: typeof patch.name === 'string' ? patch.name : undefined,
+        visible: typeof patch.visible === 'boolean' ? patch.visible : undefined,
+        payload: Object.keys(stylePatch).length > 0 ? { style: stylePatch } : undefined,
+      },
     });
   };
-  const handleLocalOverlayReorder = (event: Event) => {
+  const handleLocalFileLayerReorder = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    const orderedIds = Array.isArray(detail?.orderedIds) ? detail.orderedIds.filter(Boolean).map(String) : [];
     const stackItems = Array.isArray(detail?.stackItems) ? detail.stackItems : [];
-    if (pendingOverlayAssets.size > 0) {
-      const order = new Map(orderedIds.map((id: string, index: number) => [id, index]));
-      for (const assets of pendingOverlayAssets.values()) {
+    if (pendingFileLayerAssets.size > 0) {
+      const order = new Map(
+        stackItems
+          .map((item: JsonRecord, index: number) => {
+            const layerId = typeof item?.layerId === 'string' ? item.layerId : '';
+            return layerId ? [layerId, index] : null;
+          })
+          .filter(Boolean) as Array<[string, number]>,
+      );
+      for (const assets of pendingFileLayerAssets.values()) {
         for (const asset of assets.values()) {
           const id = asset.envelope.manifest.id;
           if (!order.has(id)) continue;
+          const orderIndex = order.get(id);
           asset.envelope.manifest = {
             ...asset.envelope.manifest,
-            pendingOrderIndex: order.get(id),
+            pendingOrderIndex: orderIndex,
+            sortKey: typeof orderIndex === 'number' ? initialSortKey(orderIndex) : asset.envelope.manifest.sortKey,
             updatedAt: Date.now(),
           };
-          overlayManifests.set(id, asset.envelope.manifest);
+          fileLayerManifests.set(id, asset.envelope.manifest);
         }
       }
     }
-    sendOverlayMessage({
-      type: stackItems.length > 0 ? 'overlay:stack:reorder' : 'overlay:reorder',
-      orderedIds,
-      stackItems,
-    });
+    const updates =
+      stackItems.length > 0
+        ? stackItems
+            .map((item: JsonRecord, index: number) => {
+              const layerId =
+                item?.kind === 'file'
+                  ? typeof item.layerId === 'string'
+                    ? item.layerId
+                    : ''
+                  : item?.kind === 'annotation' && typeof item.layerId === 'string'
+                    ? item.layerId
+                    : '';
+              return layerId ? { layerId, sortKey: initialSortKey(index) } : null;
+            })
+            .filter(Boolean)
+        : [];
+    if (updates.length === 0) return;
+    sendFileLayerMessage({ type: 'layer:reorder', updates });
   };
-  const handleLocalOverlayDelete = (event: Event) => {
+  const handleLocalFileLayerDelete = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    const overlayId = typeof detail?.overlayId === 'string' ? detail.overlayId : '';
-    if (!overlayId) return;
-    localOverlayIds.delete(overlayId);
-    knownLocalOverlays.delete(overlayId);
-    uploadedLocalOverlayHashes.delete(overlayId);
-    for (const [id, manifest] of overlayManifests) {
-      if (manifest.id === overlayId) overlayManifests.delete(id);
+    const fileLayerId = typeof detail?.layerId === 'string' ? detail.layerId : '';
+    if (!fileLayerId) return;
+    localFileLayerIds.delete(fileLayerId);
+    knownLocalFileLayers.delete(fileLayerId);
+    uploadedLocalFileLayerHashes.delete(fileLayerId);
+    for (const [id, manifest] of fileLayerManifests) {
+      if (manifest.id === fileLayerId) fileLayerManifests.delete(id);
     }
-    sendOverlayMessage({
-      type: 'overlay:delete',
-      overlayId,
+    sendFileLayerMessage({
+      type: 'layer:delete',
+      layerId: fileLayerId,
     });
   };
   mapContainer.addEventListener('collaboration:locationchange', handleLocationChange);
   mapContainer.addEventListener(UI_PANEL_OPEN_EVENT, handleUiPanelOpen);
-  mapContainer.addEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
-  mapContainer.addEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
-  mapContainer.addEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
-  mapContainer.addEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
+  mapContainer.addEventListener('layer-sync:local-upsert', handleLocalFileLayerUpsert);
+  mapContainer.addEventListener('layer-sync:local-patch', handleLocalFileLayerPatch);
+  mapContainer.addEventListener('layer-sync:local-reorder', handleLocalFileLayerReorder);
+  mapContainer.addEventListener('layer-sync:local-delete', handleLocalFileLayerDelete);
 
-  const unsubscribeDrawingStore = drawingStore?.subscribe((event) => {
+  const unsubscribeLayerStore = layerStore?.subscribe((event) => {
     if (event.remote) return;
     if (event.type === 'layer:upsert') {
-      sendDrawingMessage({ type: 'drawing:layer:upsert', layer: event.layer });
+      sendLayerMessage({ type: 'layer:create', layer: event.layer });
+    } else if (event.type === 'layer:update') {
+      sendLayerMessage({
+        type: 'layer:update',
+        layerId: event.layer.id,
+        patch: {
+          name: event.layer.name,
+          visible: event.layer.visible,
+          sortKey: event.layer.sortKey,
+          payload: event.layer.kind === 'file' ? event.layer.payload : undefined,
+        },
+      });
+    } else if (event.type === 'layer:delete') {
+      sendLayerMessage({ type: 'layer:delete', layerId: event.layerId });
     } else if (event.type === 'layer:reorder') {
-      sendDrawingMessage({ type: 'drawing:layer:reorder', orderedIds: event.orderedIds });
+      sendLayerMessage({
+        type: 'layer:reorder',
+        updates: event.layers.map((layer) => ({ layerId: layer.id, sortKey: layer.sortKey })),
+      });
     } else if (event.type === 'feature:upsert') {
-      sendDrawingMessage({ type: 'drawing:feature:upsert', feature: event.feature });
+      sendLayerMessage({ type: 'annotation-feature:upsert', feature: event.feature });
     } else if (event.type === 'feature:delete') {
-      sendDrawingMessage({ type: 'drawing:feature:delete', featureId: event.featureId });
+      sendLayerMessage({ type: 'annotation-feature:delete', featureId: event.featureId });
     } else if (event.type === 'feature:reorder') {
-      sendDrawingMessage({ type: 'drawing:feature:reorder', orderedIds: event.orderedIds });
+      sendLayerMessage({
+        type: 'annotation-feature:reorder',
+        updates: event.features.map((feature) => ({ featureId: feature.id, sortKey: feature.sortKey })),
+      });
     }
   });
 
@@ -1467,11 +1567,11 @@ export function installMapCollaboration(map: CollaborationMap, drawingStore?: Dr
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);
       mapContainer.removeEventListener(UI_PANEL_OPEN_EVENT, handleUiPanelOpen);
-      mapContainer.removeEventListener('overlay-sync:local-upsert', handleLocalOverlayUpsert);
-      mapContainer.removeEventListener('overlay-sync:local-patch', handleLocalOverlayPatch);
-      mapContainer.removeEventListener('overlay-sync:local-reorder', handleLocalOverlayReorder);
-      mapContainer.removeEventListener('overlay-sync:local-delete', handleLocalOverlayDelete);
-      unsubscribeDrawingStore?.();
+      mapContainer.removeEventListener('layer-sync:local-upsert', handleLocalFileLayerUpsert);
+      mapContainer.removeEventListener('layer-sync:local-patch', handleLocalFileLayerPatch);
+      mapContainer.removeEventListener('layer-sync:local-reorder', handleLocalFileLayerReorder);
+      mapContainer.removeEventListener('layer-sync:local-delete', handleLocalFileLayerDelete);
+      unsubscribeLayerStore?.();
       socket?.close(1000, 'destroy');
       overlay.remove();
       panel.remove();

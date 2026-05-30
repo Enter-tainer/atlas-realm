@@ -59,21 +59,16 @@ export function buildParser(argv: readonly string[] = []) {
       type: 'boolean',
       describe: 'Pretty-print JSON',
     })
-    .command(['snapshot', 'status'], 'Print room layers and drawing state', () => {}, runSnapshot)
+    .command(['snapshot', 'status'], 'Print room layers and annotations', () => {}, runSnapshot)
     .command(['presence', 'users', 'participants'], 'Print live users and recent agents', () => {}, runPresence)
     .command(
-      [
-        'layers <action> [items..]',
-        'layer <action> [items..]',
-        'overlays <action> [items..]',
-        'overlay <action> [items..]',
-      ],
+      ['layers <action> [items..]', 'layer <action> [items..]'],
       'Manage shared GeoJSON/GPX layers',
       layerBuilder,
       runLayer,
     )
     .command(
-      ['annotations <action> [items..]', 'annotation <action> [items..]', 'drawing <action> [items..]'],
+      ['annotations <action> [items..]', 'annotation <action> [items..]'],
       'Manage shared annotations',
       annotationBuilder,
       runAnnotation,
@@ -123,6 +118,7 @@ function layerBuilder(y: any): any {
     .option('opacity', { type: 'number', describe: 'Layer opacity, 0.2-1' })
     .option('line-width', { type: 'number', describe: 'Layer line width, 1-12' })
     .option('visible', { type: 'boolean', describe: 'Layer visibility' })
+    .option('sort-key', { type: 'string', describe: 'Layer sort key' })
     .option('persistence', { choices: ['ephemeral', 'persistent'], describe: 'Room persistence hint' });
 }
 
@@ -137,8 +133,8 @@ function annotationBuilder(y: any): any {
       type: 'string',
       array: true,
     })
-    .option('feature-file', { type: 'string', describe: 'Full DrawingFeature JSON file' })
-    .option('feature-json', { type: 'string', describe: 'Full DrawingFeature JSON string' })
+    .option('feature-file', { type: 'string', describe: 'Full annotation payload JSON file' })
+    .option('feature-json', { type: 'string', describe: 'Full annotation payload JSON string' })
     .option('patch-file', { type: 'string', describe: 'Patch JSON file merged into an existing feature' })
     .option('patch-json', { type: 'string', describe: 'Patch JSON string merged into an existing feature' })
     .option('id', { type: 'string', describe: 'Annotation or annotation-layer id' })
@@ -162,7 +158,7 @@ function annotationBuilder(y: any): any {
     .option('distance-text', { type: 'string', describe: 'Route distance label' })
     .option('duration-text', { type: 'string', describe: 'Route duration label' })
     .option('updated-by', { type: 'string', describe: 'Annotation editor id/name' })
-    .option('stack-order', { type: 'number', describe: 'Annotation layer stack order' })
+    .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
     .option('visible', { type: 'boolean', describe: 'Annotation layer visibility' });
 }
@@ -192,6 +188,7 @@ async function runLayer(args: JsonRecord): Promise<void> {
     opacity: args.opacity,
     lineWidth: args.lineWidth,
     visible: args.visible,
+    sortKey: args.sortKey,
     persistence: args.persistence,
   };
 
@@ -219,7 +216,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
       ids: items.slice(1),
       name: args.name,
       visible: args.visible,
-      stackOrder: args.stackOrder,
+      sortKey: args.sortKey,
     };
   }
 

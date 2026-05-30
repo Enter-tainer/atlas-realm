@@ -1,7 +1,7 @@
 export type JsonRecord = Record<string, any>;
 export type LngLatTuple = [number, number];
-export type OverlayType = 'geojson' | 'gpx';
-export type OverlayPersistence = 'ephemeral' | 'persistent';
+export type FileLayerType = 'geojson' | 'gpx';
+export type ContentEncoding = 'gzip' | 'identity';
 
 export interface AgentRoomConfig {
   host: string;
@@ -14,7 +14,7 @@ export interface AgentRoomConfig {
   timeoutMs: number;
 }
 
-export interface OverlaySummary extends JsonRecord {
+export interface FileLayerSummary extends JsonRecord {
   bounds?: [LngLatTuple, LngLatTuple] | null;
   lines?: number;
   points?: number;
@@ -22,9 +22,9 @@ export interface OverlaySummary extends JsonRecord {
   features?: number;
 }
 
-export interface OverlayManifest extends JsonRecord {
+export interface FileLayerManifest extends JsonRecord {
   id: string;
-  type: OverlayType;
+  type: FileLayerType;
   name: string;
   visible: boolean;
   color: string;
@@ -37,33 +37,64 @@ export interface OverlayManifest extends JsonRecord {
   contentByteLength: number;
   rawByteLength: number;
   syncVersion: number;
-  persistence: OverlayPersistence;
   createdAt: number;
   updatedAt: number;
 }
 
-export interface OverlayAsset {
-  manifest: OverlayManifest;
+export interface FileLayerAsset {
+  manifest: FileLayerManifest;
   content: Uint8Array;
 }
 
-export interface DrawingFeature extends JsonRecord {
+export interface AnnotationFeaturePayload extends JsonRecord {
   id: string;
   type: string;
   layerId: string;
 }
 
-export interface DrawingLayer extends JsonRecord {
-  id: string;
-  name: string;
-  visible?: boolean;
+export interface AnnotationLayerPayload extends JsonRecord {
+  version: 1;
 }
 
-export interface DrawingDoc extends JsonRecord {
-  layers?: Record<string, DrawingLayer>;
-  layerOrder?: string[];
-  features?: Record<string, DrawingFeature>;
-  featureOrder?: string[];
+export interface FileLayerPayload extends JsonRecord {
+  version: 1;
+  fileType: FileLayerType;
+  contentHash: string;
+  contentType: string;
+  contentEncoding: ContentEncoding;
+  contentByteLength: number;
+  rawByteLength: number;
+  bounds: [LngLatTuple, LngLatTuple] | null;
+  style: {
+    color: string;
+    opacity: number;
+    lineWidth: number;
+  };
+}
+
+export interface Layer extends JsonRecord {
+  id: string;
+  kind: 'annotation' | 'file';
+  name: string;
+  visible: boolean;
+  sortKey: string;
+  payload: AnnotationLayerPayload | FileLayerPayload;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  updatedBy?: string;
+}
+
+export interface AnnotationFeature extends JsonRecord {
+  id: string;
+  layerId: string;
+  featureType: AnnotationFeaturePayload['type'];
+  payload: AnnotationFeaturePayload;
+  sortKey: string;
+  revision: number;
+  createdAt: number;
+  updatedAt: number;
+  updatedBy: string;
 }
 
 export interface AgentParticipant extends JsonRecord {
@@ -80,14 +111,14 @@ export interface AgentParticipant extends JsonRecord {
   lastAction: string;
 }
 
-export interface OverlayBinaryFrame {
+export interface FileContentFrame {
   contentHash: string;
   content: Uint8Array;
 }
 
 export interface RoomEvent {
   json?: JsonRecord;
-  binary?: OverlayBinaryFrame;
+  binary?: FileContentFrame;
 }
 
 export interface RoomWaiter {
@@ -96,8 +127,8 @@ export interface RoomWaiter {
 
 export interface RoomClientLike {
   config: AgentRoomConfig;
-  overlays: OverlayManifest[];
-  drawingDoc: DrawingDoc | null;
+  layers: Layer[];
+  annotationFeatures: AnnotationFeature[];
   peers: JsonRecord[];
   agents: AgentParticipant[];
   sendJson(message: JsonRecord): void;

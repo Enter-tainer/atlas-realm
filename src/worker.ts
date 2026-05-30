@@ -1,8 +1,20 @@
 import { PMTiles, ResolvedValueCache, type RangeResponse, type Source, TileType } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
-import { createEmptyDrawingDoc, DRAWING_DEFAULT_LAYER_ID, normalizeDrawingDoc } from './drawing-model.js';
-import { buildDrawingSnapshotMessage, parseDrawingClientMessage, reduceDrawingClientMessage } from './drawing-sync.js';
-import type { DrawingDoc } from './drawing-model.js';
+import {
+  createDefaultAnnotationLayer,
+  sanitizeAnnotationFeature,
+  sanitizeLayer,
+  type AnnotationFeature,
+  type FileLayerPayload,
+  type FileLayer,
+  type Layer,
+} from './layer-model.js';
+import {
+  parseAnnotationFeatureClientMessage,
+  parseLayerClientMessage,
+  sortAnnotationFeatures,
+  sortLayers,
+} from './layer-sync.js';
 
 const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
 const TILEJSON_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\.json$/;
@@ -41,34 +53,9 @@ async function nativeDecompress(buf: ArrayBuffer, compression: number): Promise<
 const CACHE = new ResolvedValueCache(25, undefined, nativeDecompress);
 type JsonRecord = Record<string, unknown>;
 type LngLatTuple = readonly [number, number];
-type OverlayType = 'gpx' | 'geojson';
-type OverlayContentEncoding = 'gzip' | 'identity';
 type RoomPersistence = 'ephemeral' | 'persistent';
-type OverlaySubType = 'geojson' | 'osrm' | string;
-type OverlayBounds = [[number, number], [number, number]];
 
-interface OverlayManifest extends JsonRecord {
-  id: string;
-  type: OverlayType;
-  subType?: OverlaySubType;
-  name: string;
-  visible: boolean;
-  color: string;
-  opacity: number;
-  lineWidth: number;
-  bounds: OverlayBounds | null;
-  contentHash: string;
-  contentType: string;
-  contentEncoding: OverlayContentEncoding;
-  contentByteLength: number;
-  rawByteLength: number;
-  syncVersion: 1;
-  persistence: RoomPersistence;
-  updatedAt: number;
-  pendingOrderIndex?: number;
-}
-
-interface OverlayContentFrame {
+interface FileContentFrame {
   contentHash: string;
   content: Uint8Array;
 }
@@ -90,8 +77,6 @@ interface AgentParticipant {
   expiresAt: number;
   lastAction: string;
 }
-
-type OverlayStackItem = { kind: 'overlay'; id: string } | { kind: 'drawing'; layerId: string };
 
 interface CursorState {
   visible: boolean;
@@ -181,14 +166,13 @@ const CONTENT_TYPES: Partial<Record<TileType, string>> = {
 const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5'];
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
-const OVERLAY_CONTENT_BINARY_VERSION = 1;
-const MAX_OVERLAY_CONTENT_BYTES = 2 * 1024 * 1024;
+const FILE_CONTENT_BINARY_VERSION = 1;
+const MAX_FILE_CONTENT_BYTES = 2 * 1024 * 1024;
 const EPHEMERAL_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
-const UNREFERENCED_OVERLAY_CONTENT_TTL_MS = 60 * 60 * 1000;
+const UNREFERENCED_FILE_CONTENT_TTL_MS = 60 * 60 * 1000;
 const AGENT_RECENT_TTL_MS = 5 * 60 * 1000;
 const AGENT_TOUCH_THROTTLE_MS = 5 * 1000;
-const SQL_READY_KEY = '__overlay_sql_ready_v3';
-const DRAWING_STATE_KEY = 'main';
+const SQL_READY_KEY = '__layer_sql_ready_v2_clean_break';
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
 
@@ -216,93 +200,10 @@ function sanitizeText(value: unknown, fallback: string, maxLength: number): stri
   return trimmed.slice(0, maxLength);
 }
 
-function sanitizeOverlayId(value: unknown): string | null {
-  if (typeof value !== 'string') return null;
-  const id = value.trim();
-  return /^[0-9a-zA-Z_-]{1,96}$/.test(id) ? id : null;
-}
-
-function sanitizeDrawingLayerId(value: unknown): string | null {
-  return sanitizeOverlayId(value);
-}
-
-function sanitizeOverlayStackItems(value: unknown): OverlayStackItem[] {
-  if (!Array.isArray(value)) return [];
-  const items: OverlayStackItem[] = [];
-  const seen = new Set<string>();
-  for (const item of value) {
-    if (!isRecord(item)) continue;
-    if (item.kind === 'overlay') {
-      const id = sanitizeOverlayId(item.id);
-      const key = id ? `overlay:${id}` : '';
-      if (!id || seen.has(key)) continue;
-      seen.add(key);
-      items.push({ kind: 'overlay', id });
-    } else if (item.kind === 'drawing') {
-      const layerId = sanitizeDrawingLayerId(item.layerId) || DRAWING_DEFAULT_LAYER_ID;
-      const key = `drawing:${layerId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      items.push({ kind: 'drawing', layerId });
-    }
-  }
-  return items.slice(0, 256);
-}
-
 function sanitizeContentHash(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const hash = value.trim().toLowerCase();
   return /^[0-9a-f]{64}$/.test(hash) ? hash : null;
-}
-
-function sanitizeOverlayType(value: unknown): OverlayType | null {
-  return value === 'gpx' || value === 'geojson' ? value : null;
-}
-
-function sanitizeOverlayBounds(value: unknown): OverlayBounds | null {
-  if (!Array.isArray(value) || value.length < 2) return null;
-  const sw = value[0];
-  const ne = value[1];
-  if (!Array.isArray(sw) || !Array.isArray(ne)) return null;
-  const minLng = Number(sw[0]);
-  const minLat = Number(sw[1]);
-  const maxLng = Number(ne[0]);
-  const maxLat = Number(ne[1]);
-  if (![minLng, minLat, maxLng, maxLat].every(Number.isFinite)) return null;
-  return [
-    [minLng, minLat],
-    [maxLng, maxLat],
-  ];
-}
-
-function sanitizeOverlayManifest(value: unknown, fallback: JsonRecord = {}): OverlayManifest | null {
-  if (!isRecord(value)) return null;
-  const id = sanitizeOverlayId(value.id) || sanitizeOverlayId(fallback.id);
-  const type = sanitizeOverlayType(value.type || fallback.type);
-  const contentHash = sanitizeContentHash(value.contentHash || fallback.contentHash);
-  if (!id || !type || !contentHash) return null;
-  const bounds = sanitizeOverlayBounds(value.bounds);
-  const subType = typeof value.subType === 'string' ? value.subType : undefined;
-  return {
-    ...value,
-    id,
-    type,
-    subType: subType === 'osrm' ? 'osrm' : subType === 'geojson' ? 'geojson' : subType,
-    name: sanitizeText(value.name, type === 'gpx' ? 'GPX overlay' : 'GeoJSON overlay', 96),
-    visible: value.visible !== false,
-    color: sanitizeColor(value.color, '#3b82f6'),
-    opacity: sanitizeOptionalNumber(value.opacity, 0.2, 1) ?? 0.95,
-    lineWidth: sanitizeOptionalNumber(value.lineWidth, 1, 12) ?? 5,
-    bounds,
-    contentHash,
-    contentType: sanitizeText(value.contentType, type === 'gpx' ? 'application/gpx+xml' : 'application/geo+json', 80),
-    contentEncoding: value.contentEncoding === 'gzip' ? 'gzip' : 'identity',
-    contentByteLength: clampNumber(value.contentByteLength, 0, MAX_OVERLAY_CONTENT_BYTES, 0),
-    rawByteLength: clampNumber(value.rawByteLength, 0, Number.MAX_SAFE_INTEGER, 0),
-    syncVersion: 1,
-    persistence: value.persistence === 'persistent' ? 'persistent' : 'ephemeral',
-    updatedAt: Date.now(),
-  };
 }
 
 function normalizeBinaryMessage(message: unknown): Uint8Array | null {
@@ -311,15 +212,15 @@ function normalizeBinaryMessage(message: unknown): Uint8Array | null {
   return null;
 }
 
-function decodeOverlayContentFrame(message: unknown): OverlayContentFrame | null {
+function decodeFileContentFrame(message: unknown): FileContentFrame | null {
   const bytes = normalizeBinaryMessage(message);
-  if (!bytes || bytes.byteLength < 2 || bytes[0] !== OVERLAY_CONTENT_BINARY_VERSION) return null;
+  if (!bytes || bytes.byteLength < 2 || bytes[0] !== FILE_CONTENT_BINARY_VERSION) return null;
   const hashLength = bytes[1];
   if (bytes.byteLength < 2 + hashLength) return null;
   const contentHash = sanitizeContentHash(textDecoder.decode(bytes.slice(2, 2 + hashLength)));
   if (!contentHash) return null;
   const content = bytes.slice(2 + hashLength);
-  if (content.byteLength > MAX_OVERLAY_CONTENT_BYTES) return null;
+  if (content.byteLength > MAX_FILE_CONTENT_BYTES) return null;
   return { contentHash, content };
 }
 
@@ -327,11 +228,11 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
 
-function encodeOverlayContentFrame(contentHash: string, content: Uint8Array | ArrayBuffer): Uint8Array {
+function encodeFileContentFrame(contentHash: string, content: Uint8Array | ArrayBuffer): Uint8Array {
   const hashBytes = textEncoder.encode(contentHash);
   const payload = content instanceof Uint8Array ? content : new Uint8Array(content);
   const buffer = new Uint8Array(2 + hashBytes.byteLength + payload.byteLength);
-  buffer[0] = OVERLAY_CONTENT_BINARY_VERSION;
+  buffer[0] = FILE_CONTENT_BINARY_VERSION;
   buffer[1] = hashBytes.byteLength;
   buffer.set(hashBytes, 2);
   buffer.set(payload, 2 + hashBytes.byteLength);
@@ -458,7 +359,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     hibernate: true,
   };
 
-  async _ensureOverlayStorage(): Promise<void> {
+  async _ensureLayerStorage(): Promise<void> {
     if (await this.ctx.storage.get(SQL_READY_KEY)) return;
     this.sql`
       CREATE TABLE IF NOT EXISTS room_meta (
@@ -470,7 +371,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       )
     `;
     this.sql`
-      CREATE TABLE IF NOT EXISTS overlay_contents (
+      CREATE TABLE IF NOT EXISTS file_contents (
         content_hash TEXT PRIMARY KEY,
         bytes BLOB NOT NULL,
         byte_length INTEGER NOT NULL,
@@ -478,21 +379,37 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       )
     `;
     this.sql`
-      CREATE TABLE IF NOT EXISTS overlays (
-        overlay_id TEXT PRIMARY KEY,
-        manifest_json TEXT NOT NULL,
-        content_hash TEXT NOT NULL,
-        order_index INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS layers (
+        layer_id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        name TEXT NOT NULL,
+        visible INTEGER NOT NULL,
+        sort_key TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_by TEXT
       )
     `;
+    this.sql`CREATE INDEX IF NOT EXISTS layers_sort_idx ON layers(sort_key, created_at, layer_id)`;
+    this.sql`CREATE INDEX IF NOT EXISTS layers_kind_idx ON layers(kind)`;
     this.sql`
-      CREATE TABLE IF NOT EXISTS drawing_state (
-        state_key TEXT PRIMARY KEY,
-        doc_json TEXT NOT NULL,
-        updated_at INTEGER NOT NULL
+      CREATE TABLE IF NOT EXISTS annotation_features (
+        feature_id TEXT PRIMARY KEY,
+        layer_id TEXT NOT NULL,
+        feature_type TEXT NOT NULL,
+        feature_json TEXT NOT NULL,
+        sort_key TEXT NOT NULL,
+        revision INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        updated_by TEXT NOT NULL
       )
     `;
+    this
+      .sql`CREATE INDEX IF NOT EXISTS annotation_features_layer_idx ON annotation_features(layer_id, sort_key, created_at, feature_id)`;
+    this.sql`CREATE INDEX IF NOT EXISTS annotation_features_updated_idx ON annotation_features(updated_at)`;
     this.sql`
       CREATE TABLE IF NOT EXISTS agent_participants (
         agent_id TEXT PRIMARY KEY,
@@ -502,11 +419,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         last_action TEXT NOT NULL
       )
     `;
+    this._ensureDefaultAnnotationLayer();
     await this.ctx.storage.put(SQL_READY_KEY, true);
   }
 
   async _touchRoom(): Promise<void> {
-    await this._ensureOverlayStorage();
+    await this._ensureLayerStorage();
     const now = Date.now();
     const expiresAt = now + EPHEMERAL_ROOM_TTL_MS;
     const existing = this.sql<{ room_id: string; persistence: RoomPersistence }>`
@@ -620,84 +538,193 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     };
   }
 
-  _listOverlayManifests(): OverlayManifest[] {
-    return this.sql<{ manifest_json: string }>`
-      SELECT manifest_json FROM overlays ORDER BY order_index ASC, updated_at ASC
-    `
-      .map((row) => {
-        try {
-          return sanitizeOverlayManifest(JSON.parse(String(row.manifest_json)));
-        } catch {
-          return null;
-        }
-      })
-      .filter(Boolean);
+  _ensureDefaultAnnotationLayer(): void {
+    const defaultLayer = createDefaultAnnotationLayer();
+    const exists = this.sql<{ layer_id: string }>`
+      SELECT layer_id FROM layers WHERE layer_id = ${defaultLayer.id} LIMIT 1
+    `;
+    if (exists.length > 0) return;
+    this._upsertLayerRow(defaultLayer);
   }
 
-  _getOverlayContent(contentHash: string): ArrayBuffer | null {
+  _upsertLayerRow(layer: Layer): void {
+    this.sql`
+      INSERT OR REPLACE INTO layers
+        (layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by)
+      VALUES
+        (${layer.id}, ${layer.kind}, ${layer.name}, ${layer.visible ? 1 : 0}, ${layer.sortKey},
+         ${JSON.stringify(layer.payload)}, ${layer.revision}, ${layer.createdAt}, ${layer.updatedAt}, ${layer.updatedBy || null})
+    `;
+  }
+
+  _layerFromRow(row: {
+    layer_id: string;
+    kind: string;
+    name: string;
+    visible: number;
+    sort_key: string;
+    payload_json: string;
+    revision: number;
+    created_at: number;
+    updated_at: number;
+    updated_by: string | null;
+  }): Layer | null {
+    try {
+      return sanitizeLayer({
+        id: row.layer_id,
+        kind: row.kind,
+        name: row.name,
+        visible: Number(row.visible) !== 0,
+        sortKey: row.sort_key,
+        payload: JSON.parse(String(row.payload_json)),
+        revision: Number(row.revision),
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+        updatedBy: row.updated_by || undefined,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  _listLayers(): Layer[] {
+    return sortLayers(
+      this.sql<{
+        layer_id: string;
+        kind: string;
+        name: string;
+        visible: number;
+        sort_key: string;
+        payload_json: string;
+        revision: number;
+        created_at: number;
+        updated_at: number;
+        updated_by: string | null;
+      }>`
+        SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by
+        FROM layers
+        ORDER BY sort_key ASC, created_at ASC, layer_id ASC
+      `
+        .map((row) => this._layerFromRow(row))
+        .filter(Boolean),
+    );
+  }
+
+  _getLayer(layerId: string): Layer | null {
+    const row = this.sql<{
+      layer_id: string;
+      kind: string;
+      name: string;
+      visible: number;
+      sort_key: string;
+      payload_json: string;
+      revision: number;
+      created_at: number;
+      updated_at: number;
+      updated_by: string | null;
+    }>`
+      SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by
+      FROM layers
+      WHERE layer_id = ${layerId}
+      LIMIT 1
+    `[0];
+    return row ? this._layerFromRow(row) : null;
+  }
+
+  _annotationFeatureFromRow(row: {
+    feature_id: string;
+    layer_id: string;
+    feature_type: string;
+    feature_json: string;
+    sort_key: string;
+    revision: number;
+    created_at: number;
+    updated_at: number;
+    updated_by: string;
+  }): AnnotationFeature | null {
+    try {
+      return sanitizeAnnotationFeature({
+        id: row.feature_id,
+        layerId: row.layer_id,
+        featureType: row.feature_type,
+        payload: JSON.parse(String(row.feature_json)),
+        sortKey: row.sort_key,
+        revision: Number(row.revision),
+        createdAt: Number(row.created_at),
+        updatedAt: Number(row.updated_at),
+        updatedBy: row.updated_by,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  _listAnnotationFeatures(layerId?: string): AnnotationFeature[] {
+    const rows = layerId
+      ? this.sql<{
+          feature_id: string;
+          layer_id: string;
+          feature_type: string;
+          feature_json: string;
+          sort_key: string;
+          revision: number;
+          created_at: number;
+          updated_at: number;
+          updated_by: string;
+        }>`
+          SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+          FROM annotation_features
+          WHERE layer_id = ${layerId}
+          ORDER BY sort_key ASC, created_at ASC, feature_id ASC
+        `
+      : this.sql<{
+          feature_id: string;
+          layer_id: string;
+          feature_type: string;
+          feature_json: string;
+          sort_key: string;
+          revision: number;
+          created_at: number;
+          updated_at: number;
+          updated_by: string;
+        }>`
+          SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+          FROM annotation_features
+          ORDER BY layer_id ASC, sort_key ASC, created_at ASC, feature_id ASC
+        `;
+    return sortAnnotationFeatures(rows.map((row) => this._annotationFeatureFromRow(row)).filter(Boolean));
+  }
+
+  _upsertAnnotationFeatureRow(feature: AnnotationFeature): void {
+    this.sql`
+      INSERT OR REPLACE INTO annotation_features
+        (feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by)
+      VALUES
+        (${feature.id}, ${feature.layerId}, ${feature.featureType}, ${JSON.stringify(feature.payload)}, ${feature.sortKey},
+         ${feature.revision}, ${feature.createdAt}, ${feature.updatedAt}, ${feature.updatedBy})
+    `;
+  }
+
+  _getFileContent(contentHash: string): ArrayBuffer | null {
     const rows = this.sql<{ bytes: ArrayBuffer }>`
-      SELECT bytes FROM overlay_contents WHERE content_hash = ${contentHash} LIMIT 1
+      SELECT bytes FROM file_contents WHERE content_hash = ${contentHash} LIMIT 1
     `;
     return rows[0]?.bytes || null;
   }
 
-  _pruneUnreferencedOverlayContent({ immediate = false }: { immediate?: boolean } = {}): void {
-    const cutoff = immediate ? Date.now() + 1 : Date.now() - UNREFERENCED_OVERLAY_CONTENT_TTL_MS;
+  _pruneUnreferencedFileContent({ immediate = false }: { immediate?: boolean } = {}): void {
+    const cutoff = immediate ? Date.now() + 1 : Date.now() - UNREFERENCED_FILE_CONTENT_TTL_MS;
     this.sql`
-      DELETE FROM overlay_contents
+      DELETE FROM file_contents
       WHERE content_hash NOT IN (
-        SELECT DISTINCT content_hash FROM overlays
+        SELECT json_extract(payload_json, '$.contentHash') FROM layers WHERE kind = 'file'
       )
       AND created_at < ${cutoff}
     `;
   }
 
-  _broadcastOverlayList(excludeId?: string) {
-    this.broadcast(
-      encodeMessage({
-        type: 'overlay:list',
-        persistence: 'ephemeral',
-        overlays: this._listOverlayManifests(),
-      }),
-      excludeId ? [excludeId] : undefined,
-    );
-  }
-
-  _broadcastDrawingLayerUpsert(layerId: string) {
-    const doc = this._getDrawingDoc();
-    const layer = doc.layers[layerId];
-    if (!layer) return;
-    this.broadcast(
-      encodeMessage({
-        type: 'drawing:layer:upserted',
-        revision: doc.revision,
-        layer,
-      }),
-    );
-  }
-
-  _getDrawingDoc(): DrawingDoc {
-    const row = this.sql<{ doc_json: string }>`
-      SELECT doc_json FROM drawing_state WHERE state_key = ${DRAWING_STATE_KEY} LIMIT 1
-    `[0];
-    if (!row?.doc_json) return createEmptyDrawingDoc();
-    try {
-      return normalizeDrawingDoc(JSON.parse(String(row.doc_json)));
-    } catch {
-      return createEmptyDrawingDoc();
-    }
-  }
-
-  _saveDrawingDoc(doc: DrawingDoc): void {
-    const normalized = normalizeDrawingDoc(doc);
-    this.sql`
-      INSERT OR REPLACE INTO drawing_state (state_key, doc_json, updated_at)
-      VALUES (${DRAWING_STATE_KEY}, ${JSON.stringify(normalized)}, ${Date.now()})
-    `;
-  }
-
   async onStart(): Promise<void> {
-    await this._ensureOverlayStorage();
+    await this._ensureLayerStorage();
   }
 
   async onConnect(connection: Connection<PeerState>, { request }: ConnectionContext): Promise<void> {
@@ -747,13 +774,16 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
     connection.send(
       encodeMessage({
-        type: 'overlay:init',
-        persistence: 'ephemeral',
-        overlays: this._listOverlayManifests(),
+        type: 'layer:list',
+        layers: this._listLayers(),
       }),
     );
-
-    connection.send(encodeMessage(buildDrawingSnapshotMessage(this._getDrawingDoc())));
+    connection.send(
+      encodeMessage({
+        type: 'annotation-feature:list',
+        features: this._listAnnotationFeatures(),
+      }),
+    );
 
     if (presenceVisible) {
       this.broadcast(
@@ -777,12 +807,12 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     await this._touchRoom();
 
     if (typeof message !== 'string') {
-      const frame = decodeOverlayContentFrame(message);
+      const frame = decodeFileContentFrame(message);
       if (!frame) return;
       const contentBuffer = toArrayBuffer(frame.content);
       this.ctx.storage.sql.exec(
         `
-        INSERT OR REPLACE INTO overlay_contents (content_hash, bytes, byte_length, created_at)
+        INSERT OR REPLACE INTO file_contents (content_hash, bytes, byte_length, created_at)
         VALUES (?, ?, ?, ?)
       `,
         frame.contentHash,
@@ -792,7 +822,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       );
       connection.send(
         encodeMessage({
-          type: 'overlay:content:stored',
+          type: 'file:content:stored',
           contentHash: frame.contentHash,
         }),
       );
@@ -807,180 +837,195 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     }
     if (!isRecord(payload)) return;
 
-    if (payload.type === 'overlay:upsert') {
-      const manifest = sanitizeOverlayManifest(payload.manifest);
-      if (!manifest) return;
-      const hasContent =
-        this.sql<{ content_hash: string }>`
-        SELECT content_hash FROM overlay_contents WHERE content_hash = ${manifest.contentHash} LIMIT 1
-      `.length > 0;
-      if (!hasContent) {
+    const layerMessage = parseLayerClientMessage(payload);
+    if (layerMessage) {
+      if (layerMessage.type === 'layer:list:request') {
+        connection.send(encodeMessage({ type: 'layer:list', layers: this._listLayers() }));
+        return;
+      }
+      if (layerMessage.type === 'layer:create') {
+        const existing = this._getLayer(layerMessage.layer.id);
+        const layer = sanitizeLayer(
+          {
+            ...layerMessage.layer,
+            revision: (existing?.revision || 0) + 1,
+            createdAt: existing?.createdAt || layerMessage.layer.createdAt || Date.now(),
+            updatedAt: Date.now(),
+          },
+          Date.now(),
+          existing || undefined,
+        );
+        if (!layer) return;
+        if (layer.kind === 'file') {
+          const fileLayer = layer as FileLayer;
+          const hasContent =
+            this.sql<{ content_hash: string }>`
+              SELECT content_hash FROM file_contents WHERE content_hash = ${fileLayer.payload.contentHash} LIMIT 1
+            `.length > 0;
+          if (!hasContent) {
+            connection.send(encodeMessage({ type: 'file:content:needed', contentHash: fileLayer.payload.contentHash }));
+            return;
+          }
+        }
+        this._upsertLayerRow(layer);
+        if (existing?.kind === 'file') this._pruneUnreferencedFileContent({ immediate: true });
+        connection.send(encodeMessage({ type: 'layer:created', layer }));
+        this.broadcast(encodeMessage({ type: 'layer:created', layer }), [connection.id]);
+        return;
+      }
+      if (layerMessage.type === 'layer:update') {
+        const existing = this._getLayer(layerMessage.layerId);
+        if (!existing) return;
+        const patchPayload = isRecord(layerMessage.patch.payload) ? layerMessage.patch.payload : {};
+        const nextPayload =
+          layerMessage.patch.payload && existing.kind === 'file'
+            ? {
+                ...(existing as FileLayer).payload,
+                style: {
+                  ...(existing.payload as FileLayerPayload).style,
+                  ...(isRecord(patchPayload.style) ? patchPayload.style : {}),
+                },
+                bounds: patchPayload.bounds ?? (existing.payload as FileLayerPayload).bounds,
+              }
+            : existing.payload;
+        const next = sanitizeLayer(
+          {
+            ...existing,
+            ...layerMessage.patch,
+            payload: existing.kind === 'annotation' ? { version: 1 } : nextPayload,
+            revision: existing.revision + 1,
+            updatedAt: Date.now(),
+          },
+          Date.now(),
+          existing,
+        );
+        if (!next) return;
+        this._upsertLayerRow(next);
+        connection.send(encodeMessage({ type: 'layer:updated', layer: next }));
+        this.broadcast(encodeMessage({ type: 'layer:updated', layer: next }), [connection.id]);
+        return;
+      }
+      if (layerMessage.type === 'layer:delete') {
+        const existing = this._getLayer(layerMessage.layerId);
+        if (!existing) return;
+        this.sql`DELETE FROM annotation_features WHERE layer_id = ${layerMessage.layerId}`;
+        this.sql`DELETE FROM layers WHERE layer_id = ${layerMessage.layerId}`;
+        if (existing.kind === 'file') this._pruneUnreferencedFileContent({ immediate: true });
+        connection.send(encodeMessage({ type: 'layer:deleted', layerId: layerMessage.layerId }));
+        this.broadcast(encodeMessage({ type: 'layer:deleted', layerId: layerMessage.layerId }), [connection.id]);
+        return;
+      }
+      if (layerMessage.type === 'layer:reorder') {
+        for (const update of layerMessage.updates) {
+          const existing = this._getLayer(update.layerId);
+          if (!existing) continue;
+          this.sql`
+            UPDATE layers
+            SET sort_key = ${update.sortKey}, revision = ${existing.revision + 1}, updated_at = ${Date.now()}
+            WHERE layer_id = ${update.layerId}
+          `;
+        }
+        const layers = this._listLayers();
+        connection.send(encodeMessage({ type: 'layer:reordered', layers }));
+        this.broadcast(encodeMessage({ type: 'layer:reordered', layers }), [connection.id]);
+        return;
+      }
+    }
+
+    const annotationMessage = parseAnnotationFeatureClientMessage(payload);
+    if (annotationMessage) {
+      if (annotationMessage.type === 'annotation-feature:list:request') {
         connection.send(
           encodeMessage({
-            type: 'overlay:content:needed',
-            contentHash: manifest.contentHash,
+            type: 'annotation-feature:list',
+            layerId: annotationMessage.layerId,
+            features: this._listAnnotationFeatures(annotationMessage.layerId),
           }),
         );
         return;
       }
-      const existing = this.sql<{ order_index: number }>`
-        SELECT order_index FROM overlays WHERE overlay_id = ${manifest.id} LIMIT 1
-      `;
-      const requestedOrder = Number(manifest.pendingOrderIndex);
-      delete manifest.pendingOrderIndex;
-      const orderIndex =
-        existing.length > 0
-          ? Number(existing[0].order_index)
-          : Number.isInteger(requestedOrder)
-            ? requestedOrder
-            : -Date.now();
-      this.sql`
-        INSERT OR REPLACE INTO overlays (overlay_id, manifest_json, content_hash, order_index, updated_at)
-        VALUES (${manifest.id}, ${JSON.stringify(manifest)}, ${manifest.contentHash}, ${orderIndex}, ${Date.now()})
-      `;
-      this._pruneUnreferencedOverlayContent({ immediate: existing.length > 0 });
-      connection.send(
-        encodeMessage({
-          type: 'overlay:upserted',
-          manifest,
-        }),
-      );
-      this._broadcastOverlayList(undefined);
-      return;
-    }
-
-    if (payload.type === 'overlay:content:request') {
-      const contentHash = sanitizeContentHash(payload.contentHash);
-      if (!contentHash) return;
-      const content = this._getOverlayContent(contentHash);
-      if (!content) return;
-      connection.send(encodeOverlayContentFrame(contentHash, content));
-      return;
-    }
-
-    if (payload.type === 'overlay:patch') {
-      const overlayId = sanitizeOverlayId(payload.overlayId);
-      if (!overlayId || !isRecord(payload.patch)) return;
-      const existing = this.sql<{ manifest_json: string }>`
-        SELECT manifest_json FROM overlays WHERE overlay_id = ${overlayId} LIMIT 1
-      `;
-      if (!existing.length) return;
-      let manifest: OverlayManifest | null;
-      try {
-        manifest = sanitizeOverlayManifest(JSON.parse(String(existing[0].manifest_json)));
-      } catch {
+      if (annotationMessage.type === 'annotation-feature:upsert') {
+        const parent = this._getLayer(annotationMessage.feature.layerId);
+        if (!parent || parent.kind !== 'annotation') {
+          connection.send(
+            encodeMessage({
+              type: 'annotation-feature:rejected',
+              featureId: annotationMessage.feature.id,
+              reason: 'missing-layer',
+            }),
+          );
+          return;
+        }
+        const existing = this.sql<{ revision: number; created_at: number }>`
+          SELECT revision, created_at FROM annotation_features WHERE feature_id = ${annotationMessage.feature.id} LIMIT 1
+        `[0];
+        const feature = sanitizeAnnotationFeature(
+          {
+            ...annotationMessage.feature,
+            revision: Number(existing?.revision || 0) + 1,
+            createdAt: Number(existing?.created_at || annotationMessage.feature.createdAt),
+            updatedAt: Date.now(),
+          },
+          Date.now(),
+        );
+        if (!feature) {
+          connection.send(
+            encodeMessage({
+              type: 'annotation-feature:rejected',
+              featureId: annotationMessage.feature.id,
+              reason: 'invalid-feature',
+            }),
+          );
+          return;
+        }
+        this._upsertAnnotationFeatureRow(feature);
+        connection.send(encodeMessage({ type: 'annotation-feature:upserted', feature }));
+        this.broadcast(encodeMessage({ type: 'annotation-feature:upserted', feature }), [connection.id]);
         return;
       }
-      if (!manifest) return;
-      const nextManifest = sanitizeOverlayManifest({
-        ...manifest,
-        ...payload.patch,
-        id: overlayId,
-        contentHash: manifest.contentHash,
-        type: manifest.type,
-      });
-      if (!nextManifest) return;
-      this.sql`
-        UPDATE overlays
-        SET manifest_json = ${JSON.stringify(nextManifest)}, updated_at = ${Date.now()}
-        WHERE overlay_id = ${overlayId}
-      `;
-      connection.send(
-        encodeMessage({
-          type: 'overlay:patched',
-          manifest: nextManifest,
-        }),
-      );
-      this._broadcastOverlayList(connection.id);
-      return;
-    }
-
-    if (payload.type === 'overlay:reorder') {
-      const orderedIds = Array.isArray(payload.orderedIds)
-        ? payload.orderedIds.map(sanitizeOverlayId).filter(Boolean)
-        : [];
-      orderedIds.forEach((overlayId, index) => {
-        this
-          .sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
-      });
-      connection.send(
-        encodeMessage({
-          type: 'overlay:reordered',
-          orderedIds: this._listOverlayManifests().map((manifest) => manifest.id),
-        }),
-      );
-      this._broadcastOverlayList(connection.id);
-      return;
-    }
-
-    if (payload.type === 'overlay:stack:reorder') {
-      const stackItems = sanitizeOverlayStackItems(payload.stackItems);
-      const orderedOverlayIds = stackItems.filter((item) => item.kind === 'overlay').map((item) => item.id);
-      orderedOverlayIds.forEach((overlayId, index) => {
-        this
-          .sql`UPDATE overlays SET order_index = ${index}, updated_at = ${Date.now()} WHERE overlay_id = ${overlayId}`;
-      });
-
-      const drawingItems = stackItems
-        .map((item, index) => (item.kind === 'drawing' ? { layerId: item.layerId, stackOrder: index } : null))
-        .filter(Boolean) as Array<{ layerId: string; stackOrder: number }>;
-      const drawingLayerIds: string[] = [];
-      if (drawingItems.length > 0) {
-        const doc = this._getDrawingDoc();
-        let changed = false;
-        let nextRevision = doc.revision;
-        for (const item of drawingItems) {
-          const layer = doc.layers[item.layerId];
-          if (!layer || layer.stackOrder === item.stackOrder) continue;
-          doc.layers[item.layerId] = {
-            ...layer,
-            stackOrder: item.stackOrder,
-            updatedAt: Date.now(),
-          };
-          nextRevision += 1;
-          changed = true;
-          drawingLayerIds.push(item.layerId);
-        }
-        if (changed) {
-          doc.revision = nextRevision;
-          doc.updatedAt = Date.now();
-          this._saveDrawingDoc(doc);
-        }
+      if (annotationMessage.type === 'annotation-feature:delete') {
+        this.sql`DELETE FROM annotation_features WHERE feature_id = ${annotationMessage.featureId}`;
+        connection.send(encodeMessage({ type: 'annotation-feature:deleted', featureId: annotationMessage.featureId }));
+        this.broadcast(encodeMessage({ type: 'annotation-feature:deleted', featureId: annotationMessage.featureId }), [
+          connection.id,
+        ]);
+        return;
       }
+      if (annotationMessage.type === 'annotation-feature:reorder') {
+        for (const update of annotationMessage.updates) {
+          this.sql`
+            UPDATE annotation_features
+            SET sort_key = ${update.sortKey}, revision = revision + 1, updated_at = ${Date.now()}
+            WHERE feature_id = ${update.featureId}
+          `;
+        }
+        const features = this._listAnnotationFeatures();
+        connection.send(encodeMessage({ type: 'annotation-feature:reordered', features }));
+        this.broadcast(encodeMessage({ type: 'annotation-feature:reordered', features }), [connection.id]);
+        return;
+      }
+    }
 
+    if (payload.type === 'file:content:request') {
+      const contentHash = sanitizeContentHash(payload.contentHash);
+      if (!contentHash) return;
+      const content = this._getFileContent(contentHash);
+      if (!content) return;
+      connection.send(encodeFileContentFrame(contentHash, content));
+      return;
+    }
+
+    if (
+      typeof payload.type === 'string' &&
+      (payload.type.startsWith('overlay:') || payload.type.startsWith('drawing:'))
+    ) {
       connection.send(
         encodeMessage({
-          type: 'overlay:reordered',
-          orderedIds: this._listOverlayManifests().map((manifest) => manifest.id),
-          stackItems,
+          type: 'protocol:error',
+          reason: 'unsupported-protocol',
+          message: 'Use layer, annotation-feature, and file:content messages.',
         }),
       );
-      this._broadcastOverlayList(connection.id);
-      for (const layerId of drawingLayerIds) this._broadcastDrawingLayerUpsert(layerId);
-      return;
-    }
-
-    if (payload.type === 'overlay:delete') {
-      const overlayId = sanitizeOverlayId(payload.overlayId);
-      if (!overlayId) return;
-      this.sql`DELETE FROM overlays WHERE overlay_id = ${overlayId}`;
-      this._pruneUnreferencedOverlayContent({ immediate: true });
-      connection.send(encodeMessage({ type: 'overlay:deleted', overlayId }));
-      this.broadcast(encodeMessage({ type: 'overlay:delete', overlayId }), [connection.id]);
-      return;
-    }
-
-    if (typeof payload.type === 'string' && payload.type.startsWith('drawing:')) {
-      const clientMessage = parseDrawingClientMessage(payload);
-      if (!clientMessage) return;
-      const result = reduceDrawingClientMessage(this._getDrawingDoc(), clientMessage);
-      this._saveDrawingDoc(result.doc);
-      if (!result.outbound) return;
-      if (clientMessage.type === 'drawing:snapshot:request') {
-        connection.send(encodeMessage(result.outbound));
-      } else {
-        this.broadcast(encodeMessage(result.outbound));
-      }
       return;
     }
 
@@ -1038,7 +1083,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 
   async onAlarm(): Promise<void> {
-    await this._ensureOverlayStorage();
+    await this._ensureLayerStorage();
     const room = this.sql<{ persistence: RoomPersistence; expires_at: number | null }>`
       SELECT persistence, expires_at FROM room_meta WHERE room_id = ${this.name} LIMIT 1
     `[0];
@@ -1048,9 +1093,9 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       await this.ctx.storage.setAlarm(Number(room.expires_at) + 60_000);
       return;
     }
-    this.sql`DELETE FROM overlays`;
-    this.sql`DELETE FROM overlay_contents`;
-    this.sql`DELETE FROM drawing_state`;
+    this.sql`DELETE FROM layers`;
+    this.sql`DELETE FROM annotation_features`;
+    this.sql`DELETE FROM file_contents`;
     this.sql`DELETE FROM agent_participants`;
     this.sql`DELETE FROM room_meta WHERE room_id = ${this.name}`;
   }

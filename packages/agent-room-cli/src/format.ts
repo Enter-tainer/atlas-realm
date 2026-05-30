@@ -10,16 +10,24 @@ export function formatOutput(
   return JSON.stringify(result, null, 2);
 }
 
-export function overlayListText(data: JsonRecord): string {
-  return data.overlays.length
-    ? data.overlays.map((overlay: JsonRecord) => `${overlay.id}\t${overlay.type}\t${overlay.name}`).join('\n')
+export function layerListText(data: JsonRecord): string {
+  return data.layers.length
+    ? data.layers
+        .map(
+          (layer: JsonRecord) =>
+            `${layer.id}\t${layer.kind === 'file' ? layer.payload?.fileType : 'annotation'}\t${layer.name}`,
+        )
+        .join('\n')
     : 'No layers';
 }
 
 export function annotationListText(data: JsonRecord): string {
   return data.annotations.length
     ? data.annotations
-        .map((feature: JsonRecord) => `${feature.id}\t${feature.type}\t${feature.layerId}\t${feature.label || ''}`)
+        .map(
+          (feature: JsonRecord) =>
+            `${feature.id}\t${feature.featureType}\t${feature.layerId}\t${feature.payload?.label || ''}`,
+        )
         .join('\n')
     : 'No annotations';
 }
