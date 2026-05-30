@@ -170,7 +170,7 @@ export class LayerStore extends EventTarget {
       const normalized = sanitizeLayer(layer, layer.createdAt, layer);
       if (normalized) this._layers.set(normalized.id, normalized);
     }
-    if (!hasAnnotationLayer(this._layers.values())) {
+    if (!remote && !hasAnnotationLayer(this._layers.values())) {
       const defaultLayer = createDefaultAnnotationLayer();
       this._layers.set(defaultLayer.id, defaultLayer);
     }

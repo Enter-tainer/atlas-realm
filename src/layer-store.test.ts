@@ -41,6 +41,18 @@ describe('layer store', () => {
     store.setLayerList([annotationLayer('day-2', 'Day 2')]);
 
     expect(store.getAnnotationLayers().map((layer) => layer.id)).toEqual(['day-2']);
+
+    store.setLayerList([]);
+
+    expect(store.getAnnotationLayers().map((layer) => layer.id)).toEqual([ANNOTATION_DEFAULT_LAYER_ID]);
+  });
+
+  it('does not create a local default layer for remote snapshots without annotation layers', () => {
+    const store = new LayerStore();
+
+    store.setLayerList([], { remote: true });
+
+    expect(store.getAnnotationLayers()).toEqual([]);
   });
 
   it('does not reorder an existing annotation feature when it is edited', () => {

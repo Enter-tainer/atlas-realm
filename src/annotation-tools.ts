@@ -630,7 +630,8 @@ class AnnotationToolsControl {
   }
 
   _isActiveLayerVisible() {
-    return this._store.getAnnotationLayer(this._activeLayerId)?.visible !== false;
+    const layer = this._store.getAnnotationLayer(this._activeLayerId);
+    return Boolean(layer && layer.visible !== false);
   }
 
   _emitActiveLayerChange(layerId: string) {
