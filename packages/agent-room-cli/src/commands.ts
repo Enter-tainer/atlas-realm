@@ -1,3 +1,4 @@
+import { writeFile } from 'node:fs/promises';
 import { buildFeatureFromOptions } from './annotation-feature.js';
 import { buildFileLayerAsset, materializeFileLayerContent, sha256Hex } from './file-layer-asset.js';
 import { encodeFileContentMessage } from './protocol.js';
@@ -20,6 +21,7 @@ import type {
   Layer,
   FileLayerPayload,
   FileLayerManifest,
+  RoomPersistence,
   RoomClientLike,
   RoomEvent,
 } from './types.js';
@@ -29,19 +31,9 @@ const FEATURE_TYPES = new Set(['point', 'text', 'path', 'polygon', 'route']);
 
 export async function executeCommand(client: RoomClientLike, command: Command): Promise<CommandResponse> {
   if (command.subject === 'snapshot' || command.subject === 'status') {
-    return {
-      result: {
-        ok: true,
-        room: client.config.room,
-        layers: client.layers,
-        annotations: client.annotationFeatures,
-        presence: {
-          peers: client.peers,
-          agents: client.agents,
-        },
-      },
-    };
+    return { result: await snapshotResult(client, command.content === true) };
   }
+  if (['room', 'rooms'].includes(command.subject)) return handleRoomCommand(client, command.action, command);
   if (['presence', 'users', 'participants'].includes(command.subject)) {
     return {
       result: {
@@ -61,6 +53,31 @@ export async function executeCommand(client: RoomClientLike, command: Command): 
   throw new Error(`Unknown command: ${command.subject}`);
 }
 
+export async function handleRoomCommand(
+  client: RoomClientLike,
+  action: string | undefined,
+  command: Command,
+): Promise<CommandResponse> {
+  if (action === 'status' || action === 'get' || action === 'list' || !action) {
+    const roomStatus = await requestRoomStatus(client);
+    return {
+      result: { ok: true, room: client.config.room, roomStatus },
+      human: (data: JsonRecord) =>
+        `${data.roomStatus.room}\t${data.roomStatus.persistence}\t${data.roomStatus.expiresAt || ''}`,
+    };
+  }
+
+  if (action === 'update' || action === 'set' || action === 'persistence') {
+    const roomStatus = await applyRoomPersistence(client, command.persistence);
+    return {
+      result: { ok: true, room: client.config.room, roomStatus },
+      human: (data: JsonRecord) => `Updated room ${data.roomStatus.room} persistence to ${data.roomStatus.persistence}`,
+    };
+  }
+
+  throw new Error(`Unknown room command: ${action}`);
+}
+
 export async function handleLayerCommand(
   client: RoomClientLike,
   action: string | undefined,
@@ -73,10 +90,22 @@ export async function handleLayerCommand(
     };
   }
 
+  if (action === 'metadata' || action === 'info') {
+    const layer = getLayer(client.layers, command.id);
+    if (!layer) throw new Error(`Layer not found: ${command.id}`);
+    return { result: { ok: true, room: client.config.room, layer } };
+  }
+
   if (action === 'get' || action === 'content') {
     const layer = getLayer(client.layers, command.id);
     if (!layer) throw new Error(`Layer not found: ${command.id}`);
     return { result: await layerContentResult(client, layer) };
+  }
+
+  if (action === 'export') {
+    const layer = getLayer(client.layers, command.id);
+    if (!layer) throw new Error(`Layer not found: ${command.id}`);
+    return exportLayerContent(client, layer, command.out);
   }
 
   if (action === 'add' || action === 'upsert') {
@@ -99,13 +128,15 @@ export async function handleLayerCommand(
       (event: RoomEvent) => event.json?.type === 'layer:created' && event.json.layer?.id === layer.id,
       `layer create ${layer.id}`,
     );
+    const roomStatus = await applyRoomPersistence(client, command.persistence, { optional: true });
     return {
-      result: { ok: true, room: client.config.room, layer: ack.json.layer },
+      result: { ok: true, room: client.config.room, layer: ack.json.layer, roomStatus },
       human: (data: JsonRecord) => `Upserted layer ${data.layer.id}`,
     };
   }
 
-  if (action === 'update' || action === 'patch') {
+  if (action === 'show' || action === 'hide') command.visible = action === 'show';
+  if (action === 'update' || action === 'patch' || action === 'show' || action === 'hide') {
     const id = command.id;
     if (!id) throw new Error('layers update requires a layer id');
     const existing = getLayer(client.layers, id);
@@ -177,6 +208,13 @@ export async function handleAnnotationCommand(
     const feature = getAnnotationFeature(client.annotationFeatures, command.id);
     if (!feature) throw new Error(`Annotation not found: ${command.id}`);
     return { result: { ok: true, room: client.config.room, annotation: feature } };
+  }
+
+  if (action === 'clear') {
+    return {
+      result: await clearAnnotationLayer(client, command.layerId || command.id || DEFAULT_ANNOTATION_LAYER_ID, command),
+      human: (data: JsonRecord) => `Deleted ${data.deletedIds.length} annotations from ${data.layerId}`,
+    };
   }
 
   if (action === 'add' || action === 'upsert') {
@@ -266,6 +304,26 @@ export async function handleAnnotationLayerCommand(
     const layer = getLayer(client.layers, command.id);
     if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${command.id}`);
     return { result: await layerContentResult(client, layer) };
+  }
+
+  if (action === 'clear') {
+    const id = command.id || command.layerId || DEFAULT_ANNOTATION_LAYER_ID;
+    return {
+      result: await clearAnnotationLayer(client, id, command),
+      human: (data: JsonRecord) => `Deleted ${data.deletedIds.length} annotations from ${data.layerId}`,
+    };
+  }
+
+  if (action === 'show' || action === 'hide') {
+    const id = command.id;
+    if (!id) throw new Error('annotation layers show/hide requires a layer id');
+    const existing = getLayer(client.layers, id);
+    if (!existing || existing.kind !== 'annotation') throw new Error(`Annotation layer not found: ${id}`);
+    const layer = await patchLayerVisibility(client, id, action === 'show', 'annotation layer');
+    return {
+      result: { ok: true, room: client.config.room, layer },
+      human: (data: JsonRecord) => `Updated annotation layer ${data.layer.id}`,
+    };
   }
 
   if (action === 'add' || action === 'create' || action === 'upsert' || action === 'update') {
@@ -409,6 +467,47 @@ async function waitForFeatureMutation(client: RoomClientLike, featureId: string,
   return ack;
 }
 
+async function snapshotResult(client: RoomClientLike, includeContent: boolean): Promise<JsonRecord> {
+  const layers = sortedLayers(client.layers);
+  const result: JsonRecord = {
+    ok: true,
+    room: client.config.room,
+    roomStatus: client.roomStatus || null,
+    layers,
+    annotations: sortedAnnotationFeatures(client.annotationFeatures),
+    presence: {
+      peers: client.peers,
+      agents: client.agents,
+    },
+  };
+  if (includeContent)
+    result.layerContents = await Promise.all(layers.map((layer) => layerContentResult(client, layer)));
+  return result;
+}
+
+async function requestRoomStatus(client: RoomClientLike): Promise<JsonRecord> {
+  client.sendJson({ type: 'room:status:request' });
+  const ack = await client.waitFor((event: RoomEvent) => event.json?.type === 'room:status', 'room status');
+  return ack.json;
+}
+
+async function applyRoomPersistence(
+  client: RoomClientLike,
+  persistence: RoomPersistence | undefined,
+  { optional = false }: { optional?: boolean } = {},
+): Promise<JsonRecord | null> {
+  if (!persistence && optional) return null;
+  if (persistence !== 'ephemeral' && persistence !== 'persistent') {
+    throw new Error('room persistence must be "ephemeral" or "persistent"');
+  }
+  client.sendJson({ type: 'room:update', persistence });
+  const ack = await client.waitFor(
+    (event: RoomEvent) => event.json?.type === 'room:updated' && event.json.persistence === persistence,
+    `room persistence ${persistence}`,
+  );
+  return ack.json;
+}
+
 async function layerContentResult(client: RoomClientLike, layer: Layer): Promise<JsonRecord> {
   if (layer.kind === 'annotation') {
     return {
@@ -442,6 +541,67 @@ async function fetchFileLayerContent(client: RoomClientLike, layer: Layer): Prom
     throw new Error(`File content hash mismatch: expected ${payload.contentHash}, got ${actualHash}`);
   }
   return materializeFileLayerContent(payload.fileType, content, payload.contentEncoding);
+}
+
+async function exportLayerContent(
+  client: RoomClientLike,
+  layer: Layer,
+  out: string | undefined,
+): Promise<CommandResponse> {
+  const result = await layerContentResult(client, layer);
+  if (!out) return { result };
+  const exportValue = layer.kind === 'file' ? result.content : result.annotations;
+  const text = typeof exportValue === 'string' ? exportValue : `${JSON.stringify(exportValue, null, 2)}\n`;
+  await writeFile(out, text, 'utf8');
+  return {
+    result: {
+      ok: true,
+      room: client.config.room,
+      layer,
+      out,
+      bytes: Buffer.byteLength(text, 'utf8'),
+    },
+    human: (data: JsonRecord) => `Exported layer ${data.layer.id} to ${data.out}`,
+  };
+}
+
+async function clearAnnotationLayer(client: RoomClientLike, layerId: string, command: Command): Promise<JsonRecord> {
+  const layer = getLayer(client.layers, layerId);
+  if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${layerId}`);
+  const features = sortedAnnotationFeatures(client.annotationFeatures, layerId);
+  const deletedIds: string[] = [];
+  for (const feature of features) {
+    client.sendJson({ type: 'annotation-feature:delete', featureId: feature.id });
+    const ack = await client.waitFor(
+      (event: RoomEvent) => event.json?.type === 'annotation-feature:deleted' && event.json.featureId === feature.id,
+      `annotation feature delete ${feature.id}`,
+    );
+    deletedIds.push(ack.json.featureId);
+  }
+  const updatedLayer = command.hideLayer
+    ? await patchLayerVisibility(client, layerId, false, 'annotation layer')
+    : layer;
+  return {
+    ok: true,
+    room: client.config.room,
+    layerId,
+    deletedIds,
+    layer: updatedLayer,
+  };
+}
+
+async function patchLayerVisibility(
+  client: RoomClientLike,
+  layerId: string,
+  visible: boolean,
+  label = 'layer',
+): Promise<Layer> {
+  client.sendJson({ type: 'layer:update', layerId, patch: { visible } });
+  const ack = await client.waitFor(
+    (event: RoomEvent) => event.json?.type === 'layer:updated' && event.json.layer?.id === layerId,
+    `${label} visibility ${layerId}`,
+  );
+  return ack.json.layer;
 }
 
 function layerPatchFromCommand(command: Command, existing: Layer): JsonRecord {

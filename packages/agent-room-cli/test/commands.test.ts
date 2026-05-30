@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildFeatureFromParts } from '../src/annotation-feature.js';
@@ -38,6 +38,13 @@ class FakeRoomClient {
         lastAction: 'connect',
       },
     ];
+    this.roomStatus = {
+      type: 'room:status',
+      room: 'test-room',
+      persistence: 'ephemeral',
+      lastActiveAt: NOW,
+      expiresAt: NOW + 86_400_000,
+    };
     this.sentJson = [];
     this.sentBinary = [];
     this.fileContents = new Map();
@@ -62,12 +69,24 @@ class FakeRoomClient {
       if (!content) throw new Error(`Missing fake file content: ${contentHash}`);
       return { binary: { contentHash, content } };
     }
+    if (label === 'room status') {
+      return { json: { ...this.roomStatus, type: 'room:status' } };
+    }
+    if (label.startsWith('room persistence')) {
+      const persistence = label.split(' ').at(-1);
+      this.roomStatus = { ...this.roomStatus, type: 'room:updated', persistence };
+      return { json: this.roomStatus };
+    }
     if (label.startsWith('layer create')) {
       const layer = this.sentJson.at(-1)?.layer;
       this.upsertLayer(layer);
       return { json: { type: 'layer:created', layer } };
     }
-    if (label.startsWith('layer update') || label.startsWith('annotation layer update')) {
+    if (
+      label.startsWith('layer update') ||
+      label.startsWith('annotation layer update') ||
+      label.includes(' visibility ')
+    ) {
       const message = this.sentJson.at(-1);
       const layer = this.layers.find((item) => item.id === message.layerId);
       const next = { ...layer, ...message.patch, updatedAt: NOW + 1 };
@@ -99,6 +118,7 @@ class FakeRoomClient {
     }
     if (label.startsWith('annotation feature delete')) {
       const featureId = this.sentJson.at(-1)?.featureId;
+      this.annotationFeatures = this.annotationFeatures.filter((feature) => feature.id !== featureId);
       return { json: { type: 'annotation-feature:deleted', featureId } };
     }
     if (label === 'annotation feature reorder') {
@@ -117,6 +137,61 @@ class FakeRoomClient {
     if (index === -1) this.layers.push(layer);
     else this.layers[index] = layer;
   }
+}
+
+function addFakeFileLayer(client, geojson = routeGeoJson(), options = {}) {
+  const asset = buildFileLayerAssetFromText('route.geojson', JSON.stringify(geojson), {
+    id: 'route-layer',
+    name: 'Route layer',
+    ...options,
+  });
+  client.layers.push({
+    id: asset.manifest.id,
+    kind: 'file',
+    name: asset.manifest.name,
+    visible: asset.manifest.visible,
+    sortKey: '000020',
+    payload: {
+      version: 1,
+      fileType: asset.manifest.type,
+      contentHash: asset.manifest.contentHash,
+      contentType: asset.manifest.contentType,
+      contentEncoding: asset.manifest.contentEncoding,
+      contentByteLength: asset.manifest.contentByteLength,
+      rawByteLength: asset.manifest.rawByteLength,
+      bounds: asset.manifest.bounds,
+      style: {
+        color: asset.manifest.color,
+        opacity: asset.manifest.opacity,
+        lineWidth: asset.manifest.lineWidth,
+      },
+    },
+    revision: 1,
+    createdAt: NOW,
+    updatedAt: NOW,
+    updatedBy: 'Agent',
+  });
+  client.fileContents.set(asset.manifest.contentHash, asset.content);
+  return { asset, geojson };
+}
+
+function routeGeoJson() {
+  return {
+    type: 'FeatureCollection',
+    features: [
+      {
+        type: 'Feature',
+        properties: { name: 'Walk' },
+        geometry: {
+          type: 'LineString',
+          coordinates: [
+            [121.5, 31.2],
+            [121.51, 31.21],
+          ],
+        },
+      },
+    ],
+  };
 }
 
 describe('agent-room CLI package', () => {
@@ -145,6 +220,50 @@ describe('agent-room CLI package', () => {
     expect(snapshot.result.layers[0]).toMatchObject({ id: 'annotation-default', kind: 'annotation' });
     expect(presence.result.agents[0]).toMatchObject({ id: 'agent-a', lastAction: 'connect' });
     expect(presence.result.peers).toEqual([]);
+  });
+
+  it('can request full snapshot layer contents', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push({
+      id: 'stop-a',
+      layerId: 'annotation-default',
+      featureType: 'point',
+      payload: {
+        id: 'stop-a',
+        type: 'point',
+        layerId: 'annotation-default',
+        label: 'Station',
+        coordinate: [121.5, 31.2],
+      },
+      sortKey: '000010',
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+      updatedBy: 'Agent',
+    });
+
+    const snapshot = await executeCommand(client, { subject: 'snapshot', content: true });
+
+    expect(snapshot.result.layerContents[0]).toMatchObject({
+      layer: { id: 'annotation-default' },
+      annotations: [{ id: 'stop-a' }],
+    });
+  });
+
+  it('can inspect and update room persistence', async () => {
+    const client = new FakeRoomClient();
+
+    const status = await executeCommand(client, { subject: 'room', action: 'status' });
+    const updated = await executeCommand(client, {
+      subject: 'room',
+      action: 'update',
+      persistence: 'persistent',
+    });
+
+    expect(client.sentJson[0]).toEqual({ type: 'room:status:request' });
+    expect(client.sentJson[1]).toEqual({ type: 'room:update', persistence: 'persistent' });
+    expect(status.result.roomStatus).toMatchObject({ room: 'test-room', persistence: 'ephemeral' });
+    expect(updated.result.roomStatus).toMatchObject({ room: 'test-room', persistence: 'persistent' });
   });
 
   it('builds file layer assets with metadata and compressed content', () => {
@@ -298,54 +417,8 @@ describe('agent-room CLI package', () => {
   });
 
   it('requests and materializes file content when getting a file layer', async () => {
-    const geojson = {
-      type: 'FeatureCollection',
-      features: [
-        {
-          type: 'Feature',
-          properties: { name: 'Walk' },
-          geometry: {
-            type: 'LineString',
-            coordinates: [
-              [121.5, 31.2],
-              [121.51, 31.21],
-            ],
-          },
-        },
-      ],
-    };
-    const asset = buildFileLayerAssetFromText('route.geojson', JSON.stringify(geojson), {
-      id: 'route-layer',
-      name: 'Route layer',
-    });
     const client = new FakeRoomClient();
-    client.layers.push({
-      id: asset.manifest.id,
-      kind: 'file',
-      name: asset.manifest.name,
-      visible: asset.manifest.visible,
-      sortKey: '000020',
-      payload: {
-        version: 1,
-        fileType: asset.manifest.type,
-        contentHash: asset.manifest.contentHash,
-        contentType: asset.manifest.contentType,
-        contentEncoding: asset.manifest.contentEncoding,
-        contentByteLength: asset.manifest.contentByteLength,
-        rawByteLength: asset.manifest.rawByteLength,
-        bounds: asset.manifest.bounds,
-        style: {
-          color: asset.manifest.color,
-          opacity: asset.manifest.opacity,
-          lineWidth: asset.manifest.lineWidth,
-        },
-      },
-      revision: 1,
-      createdAt: NOW,
-      updatedAt: NOW,
-      updatedBy: 'Agent',
-    });
-    client.fileContents.set(asset.manifest.contentHash, asset.content);
+    const { asset, geojson } = addFakeFileLayer(client);
 
     const response = await executeCommand(client, {
       subject: 'layers',
@@ -359,6 +432,87 @@ describe('agent-room CLI package', () => {
     });
     expect(response.result.layer).toMatchObject({ id: 'route-layer', kind: 'file' });
     expect(response.result.content).toMatchObject(geojson);
+  });
+
+  it('exports decoded file layer content to disk', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-export-'));
+    const out = join(dir, 'route-export.geojson');
+    const client = new FakeRoomClient();
+    const { geojson } = addFakeFileLayer(client);
+
+    try {
+      const response = await executeCommand(client, {
+        subject: 'layers',
+        action: 'export',
+        id: 'route-layer',
+        out,
+      });
+
+      expect(response.result.out).toBe(out);
+      expect(JSON.parse(await readFile(out, 'utf8'))).toMatchObject(geojson);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('sends visibility patches for layer show and hide aliases', async () => {
+    const client = new FakeRoomClient();
+
+    const response = await executeCommand(client, {
+      subject: 'layers',
+      action: 'hide',
+      id: 'annotation-default',
+    });
+
+    expect(client.sentJson[0]).toEqual({
+      type: 'layer:update',
+      layerId: 'annotation-default',
+      patch: { visible: false },
+    });
+    expect(response.result.layer.visible).toBe(false);
+  });
+
+  it('clears annotation features from a layer and can hide it', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push(
+      {
+        id: 'stop-a',
+        layerId: 'annotation-default',
+        featureType: 'point',
+        payload: { id: 'stop-a', type: 'point', layerId: 'annotation-default', coordinate: [121.5, 31.2] },
+        sortKey: '000010',
+        revision: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
+        updatedBy: 'Agent',
+      },
+      {
+        id: 'stop-b',
+        layerId: 'annotation-default',
+        featureType: 'point',
+        payload: { id: 'stop-b', type: 'point', layerId: 'annotation-default', coordinate: [121.51, 31.21] },
+        sortKey: '000020',
+        revision: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
+        updatedBy: 'Agent',
+      },
+    );
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'clear',
+      layerId: 'annotation-default',
+      hideLayer: true,
+    });
+
+    expect(client.sentJson).toEqual([
+      { type: 'annotation-feature:delete', featureId: 'stop-a' },
+      { type: 'annotation-feature:delete', featureId: 'stop-b' },
+      { type: 'layer:update', layerId: 'annotation-default', patch: { visible: false } },
+    ]);
+    expect(response.result.deletedIds).toEqual(['stop-a', 'stop-b']);
+    expect(response.result.layer.visible).toBe(false);
   });
 
   it('sends annotation-feature upsert and delete protocol messages for annotations', async () => {

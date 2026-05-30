@@ -2,6 +2,7 @@ export type JsonRecord = Record<string, any>;
 export type LngLatTuple = [number, number];
 export type FileLayerType = 'geojson' | 'gpx';
 export type ContentEncoding = 'gzip' | 'identity';
+export type RoomPersistence = 'ephemeral' | 'persistent';
 
 export interface AgentRoomConfig {
   host: string;
@@ -111,6 +112,13 @@ export interface AgentParticipant extends JsonRecord {
   lastAction: string;
 }
 
+export interface RoomStatus extends JsonRecord {
+  room: string;
+  persistence: RoomPersistence;
+  lastActiveAt?: number;
+  expiresAt?: number | null;
+}
+
 export interface FileContentFrame {
   contentHash: string;
   content: Uint8Array;
@@ -131,6 +139,7 @@ export interface RoomClientLike {
   annotationFeatures: AnnotationFeature[];
   peers: JsonRecord[];
   agents: AgentParticipant[];
+  roomStatus?: RoomStatus | null;
   sendJson(message: JsonRecord): void;
   sendBinary(bytes: Uint8Array): void;
   waitFor(predicate: (event: RoomEvent) => boolean, label: string, timeoutMs?: number): Promise<RoomEvent>;
@@ -152,6 +161,11 @@ export interface Command extends JsonRecord {
   type?: string;
   featureType?: string;
   layerAction?: string;
+  layerId?: string;
+  content?: boolean;
+  out?: string;
+  persistence?: RoomPersistence;
+  hideLayer?: boolean;
 }
 
 export interface WebSocketLike {

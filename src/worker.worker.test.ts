@@ -261,10 +261,37 @@ describe('MapCollaboration layer storage', () => {
     });
 
     expect(result).toContain('presence:init');
+    expect(result).toContain('room:status');
     expect(result).toContain('layer:list');
     expect(result).toContain('annotation-feature:list');
     expect(result).not.toContain('overlay:init');
     expect(result).not.toContain('drawing:snapshot');
+  });
+
+  it('serves room status and updates room persistence', async () => {
+    const stub = roomStub('room-status');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = createConnection();
+
+      await sendWorkerMessage(instance, connection, jsonMessage('room:status:request'));
+      await sendWorkerMessage(instance, connection, jsonMessage('room:update', { persistence: 'persistent' }));
+
+      return {
+        status: sentJson(connection, 'room:status').at(-1),
+        updated: sentJson(connection, 'room:updated').at(-1),
+        roomMeta: instance.sql`
+          SELECT persistence, expires_at
+          FROM room_meta
+          WHERE room_id = ${'room-status'}
+          LIMIT 1
+        `[0],
+      };
+    });
+
+    expect(result.status).toMatchObject({ type: 'room:status', room: 'room-status', persistence: 'ephemeral' });
+    expect(result.updated).toMatchObject({ type: 'room:updated', room: 'room-status', persistence: 'persistent' });
+    expect(result.roomMeta).toMatchObject({ persistence: 'persistent', expires_at: null });
   });
 
   it('stores file content, creates file layers, serves content requests, and prunes unreferenced content', async () => {

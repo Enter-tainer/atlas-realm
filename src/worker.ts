@@ -446,6 +446,49 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     await this.ctx.storage.setAlarm(expiresAt + 60_000);
   }
 
+  _roomStatus() {
+    const row = this.sql<{
+      room_id: string;
+      persistence: RoomPersistence;
+      last_active_at: number;
+      expires_at: number | null;
+    }>`
+      SELECT room_id, persistence, last_active_at, expires_at
+      FROM room_meta
+      WHERE room_id = ${this.name}
+      LIMIT 1
+    `[0];
+    return {
+      room: row?.room_id || this.name,
+      persistence: row?.persistence === 'persistent' ? 'persistent' : ('ephemeral' as RoomPersistence),
+      lastActiveAt: Number(row?.last_active_at || Date.now()),
+      expiresAt: row?.expires_at === null || row?.expires_at === undefined ? null : Number(row.expires_at),
+    };
+  }
+
+  async _setRoomPersistence(persistence: RoomPersistence): Promise<ReturnType<MapCollaboration['_roomStatus']>> {
+    await this._ensureLayerStorage();
+    const now = Date.now();
+    const existing = this.sql<{ created_at: number }>`
+      SELECT created_at FROM room_meta WHERE room_id = ${this.name} LIMIT 1
+    `[0];
+    const expiresAt = persistence === 'persistent' ? null : now + EPHEMERAL_ROOM_TTL_MS;
+    if (existing) {
+      this.sql`
+        UPDATE room_meta
+        SET persistence = ${persistence}, last_active_at = ${now}, expires_at = ${expiresAt}
+        WHERE room_id = ${this.name}
+      `;
+    } else {
+      this.sql`
+        INSERT INTO room_meta (room_id, persistence, created_at, last_active_at, expires_at)
+        VALUES (${this.name}, ${persistence}, ${now}, ${now}, ${expiresAt})
+      `;
+    }
+    if (expiresAt) await this.ctx.storage.setAlarm(expiresAt + 60_000);
+    return this._roomStatus();
+  }
+
   _agentParticipants(now = Date.now()): AgentParticipant[] {
     return this.sql<{
       agent_id: string;
@@ -767,10 +810,13 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         type: 'presence:init',
         id: connection.id,
         room: this.name,
+        roomStatus: this._roomStatus(),
         peers,
         agents: this._agentParticipants(),
       }),
     );
+
+    connection.send(encodeMessage({ type: 'room:status', ...this._roomStatus() }));
 
     connection.send(
       encodeMessage({
@@ -836,6 +882,22 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       return;
     }
     if (!isRecord(payload)) return;
+
+    if (payload.type === 'room:status:request') {
+      connection.send(encodeMessage({ type: 'room:status', ...this._roomStatus() }));
+      return;
+    }
+
+    if (payload.type === 'room:update') {
+      const persistence =
+        payload.persistence === 'persistent' ? 'persistent' : payload.persistence === 'ephemeral' ? 'ephemeral' : null;
+      if (!persistence) return;
+      const status = await this._setRoomPersistence(persistence);
+      const response = { type: 'room:updated', ...status };
+      connection.send(encodeMessage(response));
+      this.broadcast(encodeMessage(response), [connection.id]);
+      return;
+    }
 
     const layerMessage = parseLayerClientMessage(payload);
     if (layerMessage) {

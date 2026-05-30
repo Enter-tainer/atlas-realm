@@ -27,7 +27,7 @@ By default, CLI calls identify as `--client-type agent` and refresh that agent's
 
 ## Workflow
 
-1. Start with `snapshot --json` unless the user explicitly gave the exact object id and desired mutation.
+1. Start with `snapshot --json` unless the user explicitly gave the exact object id and desired mutation. Use `snapshot --content --json` when you need decoded layer contents for the whole room.
 2. Make one focused mutation at a time.
 3. Read back the object with `layers get <id> --json` or `annotations get <id> --json` after important writes.
 4. Use stable ids when you create objects so later turns can update/delete them.
@@ -44,6 +44,16 @@ orm-agent-room --host <host> --room <room> --client-type query presence --json
 
 Use `presence --json` before context-sensitive edits when you need to know whether users are currently in the room, where they are looking, or which agents were active recently. Do not infer a human user is still online from agent recent activity; humans and agents are separate lists.
 
+## Room
+
+Room metadata includes persistence. Ephemeral rooms expire after inactivity; persistent rooms do not expire on the normal room alarm.
+
+```bash
+orm-agent-room --host <host> --room <room> room status --json
+orm-agent-room --host <host> --room <room> room update --persistence persistent --json
+orm-agent-room --host <host> --room <room> room update --persistence ephemeral --json
+```
+
 ## Layers
 
 Layers are uploaded map files, usually GeoJSON or GPX.
@@ -51,14 +61,20 @@ Layers are uploaded map files, usually GeoJSON or GPX.
 ```bash
 orm-agent-room --host <host> --room <room> layers list --json
 orm-agent-room --host <host> --room <room> layers get trip-route --json
+orm-agent-room --host <host> --room <room> layers metadata trip-route --json
 orm-agent-room --host <host> --room <room> layers content trip-route --json
+orm-agent-room --host <host> --room <room> layers export trip-route --out ./route.geojson --json
 orm-agent-room --host <host> --room <room> layers add ./route.geojson --id trip-route --name "Trip route" --json
+orm-agent-room --host <host> --room <room> layers add ./route.geojson --id trip-route --persistence persistent --json
 orm-agent-room --host <host> --room <room> layers update trip-route --name "Morning route" --visible false --json
+orm-agent-room --host <host> --room <room> layers hide trip-route --json
+orm-agent-room --host <host> --room <room> layers show trip-route --json
 orm-agent-room --host <host> --room <room> layers delete trip-route --json
 orm-agent-room --host <host> --room <room> layers reorder layer-a layer-b --json
 ```
 
 `layers get` and `layers content` return the layer row plus its contents: annotation layers include `annotations`, file layers include decoded `content` (GeoJSON object or GPX text).
+Use `layers metadata` for only the layer row. Use `layers export` to write decoded file content or annotation-layer contents to disk.
 
 Layer style options:
 
@@ -100,9 +116,21 @@ Update/delete:
 ```bash
 orm-agent-room --host <host> --room <room> annotations update hotel --label "Updated hotel" --json
 orm-agent-room --host <host> --room <room> annotations delete hotel --json
+orm-agent-room --host <host> --room <room> annotations clear --layer-id annotation-default --json
+orm-agent-room --host <host> --room <room> annotations clear --layer-id annotation-default --hide-layer --json
 ```
 
 For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
+
+Annotation layers:
+
+```bash
+orm-agent-room --host <host> --room <room> annotations layers list --json
+orm-agent-room --host <host> --room <room> annotations layers add notes --name "Notes" --json
+orm-agent-room --host <host> --room <room> annotations layers hide notes --json
+orm-agent-room --host <host> --room <room> annotations layers clear notes --json
+orm-agent-room --host <host> --room <room> annotations layers delete notes --json
+```
 
 ## Travel Planning Conventions
 

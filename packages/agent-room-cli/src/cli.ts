@@ -59,7 +59,12 @@ export function buildParser(argv: readonly string[] = []) {
       type: 'boolean',
       describe: 'Pretty-print JSON',
     })
+    .option('content', {
+      type: 'boolean',
+      describe: 'Include decoded layer contents when supported',
+    })
     .command(['snapshot', 'status'], 'Print room layers and annotations', () => {}, runSnapshot)
+    .command(['room <action>', 'rooms <action>'], 'Inspect or update room metadata', roomBuilder, runRoom)
     .command(['presence', 'users', 'participants'], 'Print live users and recent agents', () => {}, runPresence)
     .command(
       ['layers <action> [items..]', 'layer <action> [items..]'],
@@ -102,7 +107,7 @@ export async function runCli(argv: string[] = hideBin(process.argv), io: Console
 function layerBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|content|add|upsert|update|patch|delete|remove|rm|reorder',
+      describe: 'list|get|content|metadata|export|add|upsert|update|patch|show|hide|delete|remove|rm|reorder',
       type: 'string',
     })
     .positional('items', {
@@ -119,13 +124,14 @@ function layerBuilder(y: any): any {
     .option('line-width', { type: 'number', describe: 'Layer line width, 1-12' })
     .option('visible', { type: 'boolean', describe: 'Layer visibility' })
     .option('sort-key', { type: 'string', describe: 'Layer sort key' })
+    .option('out', { type: 'string', alias: 'output', describe: 'Export destination file' })
     .option('persistence', { choices: ['ephemeral', 'persistent'], describe: 'Room persistence hint' });
 }
 
 function annotationBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|content|add|upsert|update|patch|delete|remove|rm|reorder|layers',
+      describe: 'list|get|content|add|upsert|update|patch|clear|delete|remove|rm|reorder|layers',
       type: 'string',
     })
     .positional('items', {
@@ -160,7 +166,20 @@ function annotationBuilder(y: any): any {
     .option('updated-by', { type: 'string', describe: 'Annotation editor id/name' })
     .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
-    .option('visible', { type: 'boolean', describe: 'Annotation layer visibility' });
+    .option('visible', { type: 'boolean', describe: 'Annotation layer visibility' })
+    .option('hide-layer', { type: 'boolean', describe: 'Hide annotation layer after clearing it' });
+}
+
+function roomBuilder(y: any): any {
+  return y
+    .positional('action', {
+      describe: 'status|get|update|set|persistence',
+      type: 'string',
+    })
+    .option('persistence', {
+      choices: ['ephemeral', 'persistent'],
+      describe: 'Room persistence mode',
+    });
 }
 
 async function runSnapshot(args: JsonRecord): Promise<void> {
@@ -168,6 +187,18 @@ async function runSnapshot(args: JsonRecord): Promise<void> {
     {
       subject: 'snapshot',
       action: 'snapshot',
+      content: args.content,
+    },
+    args,
+  );
+}
+
+async function runRoom(args: JsonRecord): Promise<void> {
+  await runRoomCommand(
+    {
+      subject: 'room',
+      action: args.action,
+      persistence: args.persistence,
     },
     args,
   );
@@ -189,6 +220,7 @@ async function runLayer(args: JsonRecord): Promise<void> {
     lineWidth: args.lineWidth,
     visible: args.visible,
     sortKey: args.sortKey,
+    out: args.out,
     persistence: args.persistence,
   };
 
@@ -217,6 +249,8 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
       name: args.name,
       visible: args.visible,
       sortKey: args.sortKey,
+      updatedBy: args.updatedBy,
+      hideLayer: args.hideLayer,
     };
   }
 
@@ -251,6 +285,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     featureJson: args.featureJson,
     patchFile: args.patchFile,
     patchJson: args.patchJson,
+    hideLayer: args.hideLayer,
   };
 
   if (action === 'add' || action === 'upsert') {
@@ -274,9 +309,33 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
   const client = new RoomClient(config);
   await client.connect();
   try {
+    if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
     const response = await executeCommand(client, command);
     args.io.log(formatOutput(response.result, { json: args.json, pretty: args.pretty }, response.human));
   } finally {
     client.close();
   }
+}
+
+async function touchAgentAction(client: RoomClient, action: string): Promise<void> {
+  client.sendJson({ type: 'client:update', action });
+  try {
+    await client.waitFor(
+      (event) =>
+        event.json?.type === 'agent:participant:update' &&
+        event.json.agent?.id === client.config.clientId &&
+        event.json.agent?.lastAction === action,
+      `agent action ${action}`,
+      Math.min(client.config.timeoutMs, 1000),
+    );
+  } catch {
+    // Recent-agent activity is useful metadata, but it should not block the requested command.
+  }
+}
+
+function commandActionLabel(command: Command): string {
+  if (command.subject === 'annotations' && command.action === 'layers') {
+    return `annotations layers ${command.layerAction || 'list'}`;
+  }
+  return [command.subject, command.action].filter(Boolean).join(' ') || 'command';
 }
