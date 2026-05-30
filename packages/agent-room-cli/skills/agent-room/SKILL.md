@@ -50,11 +50,15 @@ Layers are uploaded map files, usually GeoJSON or GPX.
 
 ```bash
 orm-agent-room --host <host> --room <room> layers list --json
+orm-agent-room --host <host> --room <room> layers get trip-route --json
+orm-agent-room --host <host> --room <room> layers content trip-route --json
 orm-agent-room --host <host> --room <room> layers add ./route.geojson --id trip-route --name "Trip route" --json
 orm-agent-room --host <host> --room <room> layers update trip-route --name "Morning route" --visible false --json
 orm-agent-room --host <host> --room <room> layers delete trip-route --json
 orm-agent-room --host <host> --room <room> layers reorder layer-a layer-b --json
 ```
+
+`layers get` and `layers content` return the layer row plus its contents: annotation layers include `annotations`, file layers include decoded `content` (GeoJSON object or GPX text).
 
 Layer style options:
 
