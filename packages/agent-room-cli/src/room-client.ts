@@ -6,6 +6,7 @@ import type {
   AnnotationFeature,
   JsonRecord,
   Layer,
+  RoomStatus,
   RoomEvent,
   RoomWaiter,
   WebSocketConstructorLike,
@@ -40,6 +41,7 @@ export class RoomClient {
   annotationFeatures: AnnotationFeature[];
   peers: JsonRecord[];
   agents: AgentParticipant[];
+  roomStatus: RoomStatus | null;
   socket: WebSocketLike | null;
 
   constructor(
@@ -58,6 +60,7 @@ export class RoomClient {
     this.annotationFeatures = [];
     this.peers = [];
     this.agents = [];
+    this.roomStatus = null;
     this.socket = null;
   }
 
@@ -126,6 +129,9 @@ export class RoomClient {
     if (json.type === 'presence:init') {
       this.peers = Array.isArray(json.peers) ? json.peers : [];
       this.agents = Array.isArray(json.agents) ? json.agents : [];
+      if (json.roomStatus) this.roomStatus = json.roomStatus;
+    } else if (json.type === 'room:status' || json.type === 'room:updated') {
+      this.roomStatus = json as RoomStatus;
     } else if (json.type === 'presence:join' || json.type === 'presence:update') {
       if (json.peer?.id) {
         const index = this.peers.findIndex((peer: JsonRecord) => peer.id === json.peer.id);

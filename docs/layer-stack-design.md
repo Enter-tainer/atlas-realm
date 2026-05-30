@@ -420,11 +420,32 @@ File layer creation is a layer operation after bytes are stored:
 upload binary content -> file:content:stored -> layer:create(kind='file')
 ```
 
+### Room Metadata Protocol
+
+Room metadata is small room-level state, separate from layer rows.
+
+Client to server:
+
+| Message               | Purpose                             |
+| --------------------- | ----------------------------------- |
+| `room:status:request` | Request room metadata               |
+| `room:update`         | Update mutable room metadata fields |
+
+Server to client:
+
+| Message        | Payload                              |
+| -------------- | ------------------------------------ |
+| `room:status`  | Current room metadata                |
+| `room:updated` | Canonical room metadata after update |
+
+Initial mutable metadata is limited to `persistence: 'ephemeral' | 'persistent'`. Persistent rooms keep `expires_at = null` and are not cleared by the normal inactivity alarm.
+
 ## Connection And Reconnection
 
 On connect, the server sends or the client requests:
 
 ```text
+room:status
 layer:list
 annotation-feature:list
 ```
