@@ -8,7 +8,8 @@ import {
 import type { FileLayerContent, FileLayerManifest, FileLayerSyncAsset } from './file-layer-sync.js';
 import type { LayerStore } from './layer-store.js';
 import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
-import { initialSortKey } from './layer-model.js';
+import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
+import { initialSortKey, type Layer } from './layer-model.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const PARTY_NAME = 'map-collaboration';
@@ -125,6 +126,15 @@ const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '
 
 export function activeAgentParticipants(agents: Iterable<AgentParticipant>, now = Date.now()): AgentParticipant[] {
   return [...agents].filter((agent) => agent.active && Number(agent.expiresAt) > now);
+}
+
+export function shouldSyncKnownLocalLayer(layer: Layer, annotationFeatureCount = 0) {
+  return !(
+    layer.kind === 'annotation' &&
+    layer.id === ANNOTATION_DEFAULT_LAYER_ID &&
+    layer.revision === 0 &&
+    annotationFeatureCount === 0
+  );
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -1014,6 +1024,8 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     sendLayerMessage({ type: 'layer:list:request' });
     sendLayerMessage({ type: 'annotation-feature:list:request' });
     for (const layer of layerStore.getLayers?.() || []) {
+      const featureCount = layer.kind === 'annotation' ? (layerStore.getAnnotationFeatureCount?.(layer.id) ?? 0) : 0;
+      if (!shouldSyncKnownLocalLayer(layer, featureCount)) continue;
       sendLayerMessage({ type: 'layer:create', layer });
     }
     for (const feature of layerStore.getAnnotationFeatures?.() || []) {
