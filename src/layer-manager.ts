@@ -1030,6 +1030,15 @@ class LayerManagerControl {
     return this._layerItems.find((layerItem) => layerItem.id === this._selectedId) || null;
   }
 
+  _annotationLayerCount() {
+    if (this._layerStore) return this._layerStore.getAnnotationLayers().length;
+    return this._layerItems.filter((layerItem) => isAnnotationLayerItem(layerItem)).length;
+  }
+
+  _shouldClearAnnotationLayer(layerItem: LayerItem) {
+    return isAnnotationLayerItem(layerItem) && this._annotationLayerCount() <= 1;
+  }
+
   _selectLayerItem(id: string) {
     this._selectedId = id;
     const layerItem = this._selectedLayerItem();
@@ -1208,8 +1217,8 @@ class LayerManagerControl {
   _removeLayerItem(layerItem: LayerItem, { emit = true }: LayerMutationOptions = {}) {
     if (isAnnotationLayerItem(layerItem)) {
       const layerId = layerItem.annotationLayerId || ANNOTATION_DEFAULT_LAYER_ID;
-      if (layerId === ANNOTATION_DEFAULT_LAYER_ID) {
-        this._layerStore?.clearLayer(layerId, { hidden: true });
+      if (this._shouldClearAnnotationLayer(layerItem)) {
+        this._layerStore?.clearLayer(layerId);
         this._selectedId = layerItem.id;
       } else {
         this._layerStore?.deleteLayer(layerId);
@@ -1553,10 +1562,10 @@ class LayerManagerControl {
     this._opacityValue.textContent = `${Math.round(opacity * 100)}%`;
     this._zoomButton.disabled = !layerItem.bounds;
     this._editButton.hidden = !isAnnotationLayerItem(layerItem);
-    this._deleteButton.querySelector('.layer-manager-action-label').textContent = isAnnotationLayerItem(layerItem)
-      ? layerItem.annotationLayerId === ANNOTATION_DEFAULT_LAYER_ID
-        ? 'Clear'
-        : 'Delete'
+    this._deleteButton.querySelector('.layer-manager-action-label').textContent = this._shouldClearAnnotationLayer(
+      layerItem,
+    )
+      ? 'Clear'
       : 'Delete';
   }
 }

@@ -557,8 +557,12 @@ class AnnotationToolsControl {
     this._map.getContainer().dispatchEvent(new CustomEvent(ANNOTATION_ACTIVE_LAYER_EVENT, { detail: { layerId } }));
   }
 
+  _fallbackActiveLayerId() {
+    return this._store.getAnnotationLayers()[0]?.id || ANNOTATION_DEFAULT_LAYER_ID;
+  }
+
   _setActiveLayer(layerId: string, { emit = true }: { emit?: boolean } = {}) {
-    const nextLayerId = this._store.getAnnotationLayer(layerId) ? layerId : ANNOTATION_DEFAULT_LAYER_ID;
+    const nextLayerId = this._store.getAnnotationLayer(layerId) ? layerId : this._fallbackActiveLayerId();
     if (this._activeLayerId === nextLayerId) return;
     this._activeLayerId = nextLayerId;
     this._clearDraft();
@@ -1192,7 +1196,7 @@ class AnnotationToolsControl {
 
   _sync() {
     if (!this._map) return;
-    if (!this._store.getAnnotationLayer(this._activeLayerId)) this._activeLayerId = ANNOTATION_DEFAULT_LAYER_ID;
+    if (!this._store.getAnnotationLayer(this._activeLayerId)) this._activeLayerId = this._fallbackActiveLayerId();
     this._syncLayerSelect();
     const layerVisible = this._isActiveLayerVisible();
     if (!layerVisible && this._mode !== 'select') {

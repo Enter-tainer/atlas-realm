@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
+import { ANNOTATION_DEFAULT_LAYER_ID, type AnnotationFeaturePayload } from './annotation-model.js';
 import { installLayerManager } from './layer-manager.js';
 import { LayerStore } from './layer-store.js';
 import type { Layer } from './layer-model.js';
@@ -127,6 +127,21 @@ function testFileLayer(id: string, sortKey: string, fileType: 'geojson' | 'gpx' 
   };
 }
 
+function testPointFeature(id: string, layerId: string): AnnotationFeaturePayload {
+  return {
+    id,
+    type: 'point',
+    layerId,
+    coordinate: [121.5, 31.2],
+    label: id,
+    note: '',
+    color: '#2563eb',
+    createdAt: 1000,
+    updatedAt: 1000,
+    updatedBy: 'user-a',
+  };
+}
+
 function createTestLayerStore(annotationOrder?: number): LayerStore {
   const layers =
     annotationOrder === 1
@@ -241,6 +256,22 @@ function rowNames() {
   return Array.from(document.querySelectorAll<HTMLElement>('.layer-manager-item-name')).map((node) => node.textContent);
 }
 
+function selectedActionLabel() {
+  return document.querySelector<HTMLElement>('.layer-manager-danger .layer-manager-action-label')?.textContent;
+}
+
+function deleteActionButton() {
+  const button = document.querySelector<HTMLButtonElement>('.layer-manager-danger');
+  expect(button).toBeTruthy();
+  return button as HTMLButtonElement;
+}
+
+function openLayerManager() {
+  const button = document.querySelector<HTMLButtonElement>('.maplibregl-ctrl-layers');
+  expect(button).toBeTruthy();
+  (button as HTMLButtonElement).click();
+}
+
 function dispatchPointer(target: EventTarget, type: string, init: PointerEventInit) {
   target.dispatchEvent(
     new PointerEvent(type, {
@@ -255,6 +286,46 @@ function dispatchPointer(target: EventTarget, type: string, init: PointerEventIn
 }
 
 describe('layer manager DOM behavior', () => {
+  it('deletes the default annotation layer when another annotation layer remains', () => {
+    const map = createTestMap();
+    const layerStore = createTestLayerStoreWithExtraLayer();
+
+    installLayerManager(map, layerStore);
+    openLayerManager();
+
+    expect(rowNames()).toEqual(['Annotations', 'Day 1']);
+    expect(selectedActionLabel()).toBe('Delete');
+
+    deleteActionButton().click();
+
+    expect(layerStore.getAnnotationLayer(ANNOTATION_DEFAULT_LAYER_ID)).toBeNull();
+    expect(layerStore.getAnnotationLayer('annotation-layer-a')).toBeTruthy();
+    expect(rowNames()).toEqual(['Day 1']);
+    expect(selectedActionLabel()).toBe('Clear');
+  });
+
+  it('clears rather than deletes the last remaining annotation layer', () => {
+    const map = createTestMap();
+    const layerStore = new LayerStore({
+      layers: [testAnnotationLayer('annotation-layer-a', 'Day 1', '000010')],
+    });
+    layerStore.upsertFeature(testPointFeature('point-a', 'annotation-layer-a'));
+
+    installLayerManager(map, layerStore);
+    openLayerManager();
+
+    expect(rowNames()).toEqual(['Day 1']);
+    expect(selectedActionLabel()).toBe('Clear');
+    expect(layerStore.getAnnotationFeatureCount('annotation-layer-a')).toBe(1);
+
+    deleteActionButton().click();
+
+    expect(layerStore.getAnnotationLayer('annotation-layer-a')).toBeTruthy();
+    expect(layerStore.getAnnotationFeatureCount('annotation-layer-a')).toBe(0);
+    expect(rowNames()).toEqual(['Day 1']);
+    expect(selectedActionLabel()).toBe('Clear');
+  });
+
   it('commits a drag reorder when the pointer is released outside the reorder handle', () => {
     const map = createTestMap();
     const layerStore = createTestLayerStore();
