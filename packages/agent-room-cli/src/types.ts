@@ -166,6 +166,9 @@ export interface Command extends JsonRecord {
   out?: string;
   persistence?: RoomPersistence;
   hideLayer?: boolean;
+  lineStyle?: string;
+  opacity?: number;
+  fillOpacity?: number;
 }
 
 export interface WebSocketLike {

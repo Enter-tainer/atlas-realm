@@ -214,9 +214,13 @@ Annotation feature:
     [139.71, 35.61]
   ],
   "directed": true,
-  "width": 4
+  "width": 4,
+  "lineStyle": "dashed",
+  "opacity": 0.8
 }
 ```
+
+Line-like annotation features (`path` and `route`) support `lineStyle` values `solid`, `dashed`, or `dotted`, plus `opacity` from `0.05` to `1`. Polygon annotations use the same outline fields and also keep `fillOpacity` for the area fill.
 
 The canonical fields `feature_id`, `layer_id`, `feature_type`, `sort_key`, `revision`, `created_at`, `updated_at`, and `updated_by` stay as SQL columns so they can be queried and synced without parsing every JSON payload.
 
@@ -389,7 +393,9 @@ Feature upsert example:
         [139.71, 35.61]
       ],
       "directed": true,
-      "width": 4
+      "width": 4,
+      "lineStyle": "dashed",
+      "opacity": 0.8
     },
     "updatedBy": "user_a"
   }

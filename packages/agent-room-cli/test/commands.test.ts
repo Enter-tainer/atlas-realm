@@ -328,6 +328,28 @@ describe('agent-room CLI package', () => {
     });
   });
 
+  it('builds styled line annotation payloads from command options', () => {
+    const feature = buildFeatureFromParts({
+      options: {
+        id: 'walk-a',
+        points: '121.5,31.2;121.51,31.21',
+        lineStyle: 'dashed',
+        opacity: 0.55,
+      },
+      config: { agentName: 'Planner' },
+      typeHint: 'path',
+      now: NOW,
+    });
+
+    expect(feature).toMatchObject({
+      id: 'walk-a',
+      type: 'path',
+      lineStyle: 'dashed',
+      opacity: 0.55,
+      width: 4,
+    });
+  });
+
   it('sends file content upload followed by layer:create for file layers', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-'));
     const file = join(dir, 'route.geojson');

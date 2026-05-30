@@ -13,6 +13,8 @@ export const ANNOTATION_TEXT_MAX_HEIGHT = 260;
 export type LngLatTuple = [number, number];
 export type AnnotationFeatureType = 'point' | 'text' | 'path' | 'route' | 'polygon';
 export type AnnotationRouteProfile = 'driving' | 'walking' | 'cycling';
+export const ANNOTATION_LINE_STYLES = ['solid', 'dashed', 'dotted'] as const;
+export type AnnotationLineStyle = (typeof ANNOTATION_LINE_STYLES)[number];
 
 export type AnnotationFeaturePayloadBase = {
   id: string;
@@ -43,12 +45,16 @@ export type AnnotationPathPayload = AnnotationFeaturePayloadBase & {
   points: LngLatTuple[];
   directed: boolean;
   width: number;
+  lineStyle: AnnotationLineStyle;
+  opacity: number;
 };
 
 export type AnnotationPolygonPayload = AnnotationFeaturePayloadBase & {
   type: 'polygon';
   points: LngLatTuple[];
   width: number;
+  lineStyle: AnnotationLineStyle;
+  opacity: number;
   fillOpacity: number;
 };
 
@@ -58,6 +64,8 @@ export type AnnotationRoutePayload = AnnotationFeaturePayloadBase & {
   profile: AnnotationRouteProfile;
   directed: boolean;
   width: number;
+  lineStyle: AnnotationLineStyle;
+  opacity: number;
   geometry: LngLatTuple[];
   distance: number | null;
   duration: number | null;
@@ -90,6 +98,8 @@ export type AnnotationGeoJsonProperties = {
   duration_text?: string;
   bearing?: number;
   width?: number;
+  line_style?: AnnotationLineStyle;
+  opacity?: number;
   fill_opacity?: number;
   'line-width'?: number;
   text_width?: number;
@@ -105,6 +115,9 @@ type AnnotationBoundsOptions = {
 };
 
 const DEFAULT_ANNOTATION_COLOR = '#2563eb';
+const DEFAULT_ANNOTATION_LINE_STYLE: AnnotationLineStyle = 'solid';
+const DEFAULT_ANNOTATION_LINE_OPACITY = 0.95;
+const DEFAULT_ANNOTATION_FILL_OPACITY = 0.22;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const ID_RE = /^[0-9a-zA-Z_-]{1,96}$/;
 const MAX_ANNOTATION_POINTS = 512;
@@ -132,6 +145,21 @@ export function sanitizeAnnotationColor(value: unknown, fallback = DEFAULT_ANNOT
   return typeof value === 'string' && HEX_COLOR_RE.test(value) ? value.toLowerCase() : fallback;
 }
 
+export function sanitizeAnnotationLineStyle(
+  value: unknown,
+  fallback: AnnotationLineStyle = DEFAULT_ANNOTATION_LINE_STYLE,
+): AnnotationLineStyle {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s-]+/g, '-');
+  if (normalized === 'dash' || normalized === 'dashed') return 'dashed';
+  if (normalized === 'dot' || normalized === 'dotted') return 'dotted';
+  if (normalized === 'solid') return 'solid';
+  return fallback;
+}
+
 function sanitizeNumber(value: unknown, min: number, max: number, fallback: number) {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -155,6 +183,14 @@ export function sanitizeAnnotationTextHeight(value: unknown) {
   return Math.round(
     sanitizeNumber(value, ANNOTATION_TEXT_MIN_HEIGHT, ANNOTATION_TEXT_MAX_HEIGHT, ANNOTATION_TEXT_DEFAULT_HEIGHT),
   );
+}
+
+export function sanitizeAnnotationOpacity(value: unknown, fallback = DEFAULT_ANNOTATION_LINE_OPACITY) {
+  return sanitizeNumber(value, 0.05, 1, fallback);
+}
+
+export function sanitizeAnnotationFillOpacity(value: unknown, fallback = DEFAULT_ANNOTATION_FILL_OPACITY) {
+  return sanitizeNumber(value, 0.05, 1, fallback);
 }
 
 export function sanitizeLngLat(value: unknown): LngLatTuple | null {
@@ -185,17 +221,49 @@ function sanitizeRouteProfile(value: unknown): AnnotationRouteProfile {
 function baseFeature(value: JsonRecord, type: AnnotationFeatureType, now: number): AnnotationFeaturePayloadBase | null {
   const id = sanitizeAnnotationId(value.id);
   if (!id) return null;
+  const style = isRecord(value.style) ? value.style : {};
   return {
     id,
     layerId: sanitizeAnnotationId(value.layerId, ANNOTATION_DEFAULT_LAYER_ID),
     type,
     label: sanitizeAnnotationText(value.label ?? value.name, 120),
     note: sanitizeAnnotationText(value.note ?? value.description, 1200),
-    color: sanitizeAnnotationColor(value.color),
+    color: sanitizeAnnotationColor(value.color ?? style.color),
     createdAt: sanitizeNumber(value.createdAt, 0, Number.MAX_SAFE_INTEGER, now),
     updatedAt: sanitizeNumber(value.updatedAt, 0, Number.MAX_SAFE_INTEGER, now),
     updatedBy: sanitizeAnnotationText(value.updatedBy, 96),
   };
+}
+
+function featureStyle(value: JsonRecord) {
+  return isRecord(value.style) ? value.style : {};
+}
+
+function styleLineWidth(value: JsonRecord, fallback: number) {
+  const style = featureStyle(value);
+  return sanitizeNumber(
+    value.width ?? value.lineWidth ?? value.line_width ?? style.width ?? style.lineWidth,
+    1,
+    12,
+    fallback,
+  );
+}
+
+function styleLineStyle(value: JsonRecord) {
+  const style = featureStyle(value);
+  return sanitizeAnnotationLineStyle(value.lineStyle ?? value.line_style ?? style.lineStyle ?? style.line_style);
+}
+
+function styleOpacity(value: JsonRecord, fallback = DEFAULT_ANNOTATION_LINE_OPACITY) {
+  const style = featureStyle(value);
+  return sanitizeAnnotationOpacity(value.opacity ?? style.opacity, fallback);
+}
+
+function styleFillOpacity(value: JsonRecord) {
+  const style = featureStyle(value);
+  return sanitizeAnnotationFillOpacity(
+    value.fillOpacity ?? value.fill_opacity ?? style.fillOpacity ?? style.fill_opacity,
+  );
 }
 
 export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now()): AnnotationFeaturePayload | null {
@@ -228,7 +296,9 @@ export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now(
       type: 'path',
       points,
       directed: value.directed !== false,
-      width: sanitizeNumber(value.width, 1, 12, 4),
+      width: styleLineWidth(value, 4),
+      lineStyle: styleLineStyle(value),
+      opacity: styleOpacity(value),
     };
   }
 
@@ -239,8 +309,10 @@ export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now(
       ...base,
       type: 'polygon',
       points,
-      width: sanitizeNumber(value.width, 1, 12, 3),
-      fillOpacity: sanitizeNumber(value.fillOpacity ?? value.fill_opacity, 0.05, 0.7, 0.22),
+      width: styleLineWidth(value, 3),
+      lineStyle: styleLineStyle(value),
+      opacity: styleOpacity(value),
+      fillOpacity: styleFillOpacity(value),
     };
   }
 
@@ -253,7 +325,9 @@ export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now(
     waypoints,
     profile: sanitizeRouteProfile(value.profile),
     directed: value.directed !== false,
-    width: sanitizeNumber(value.width, 1, 12, 5),
+    width: styleLineWidth(value, 5),
+    lineStyle: styleLineStyle(value),
+    opacity: styleOpacity(value),
     geometry,
     distance: sanitizeOptionalNumber(value.distance, 0, Number.MAX_SAFE_INTEGER),
     duration: sanitizeOptionalNumber(value.duration, 0, Number.MAX_SAFE_INTEGER),
@@ -310,6 +384,8 @@ function lineArrowFeature(feature: AnnotationPathPayload | AnnotationRoutePayloa
       annotation_id: feature.id,
       bearing: lineBearing(coordinates, 0.78),
       width: feature.width,
+      line_style: feature.lineStyle,
+      opacity: feature.opacity,
       'line-width': feature.width,
     },
     geometry: {
@@ -325,6 +401,8 @@ function polygonFeature(feature: AnnotationPolygonPayload): Feature<Polygon, Ann
     properties: {
       ...featureBaseProperties(feature, 'annotation_polygon'),
       width: feature.width,
+      line_style: feature.lineStyle,
+      opacity: feature.opacity,
       fill_opacity: feature.fillOpacity,
       'line-width': feature.width,
     },
@@ -343,6 +421,8 @@ function polygonOutlineFeature(feature: AnnotationPolygonPayload): Feature<LineS
       parent_id: feature.id,
       annotation_id: feature.id,
       width: feature.width,
+      line_style: feature.lineStyle,
+      opacity: feature.opacity,
       'line-width': feature.width,
     },
     geometry: {
@@ -368,6 +448,8 @@ function lineFeature(
       distance_text: feature.type === 'route' ? feature.distanceText : undefined,
       duration_text: feature.type === 'route' ? feature.durationText : undefined,
       width: feature.width,
+      line_style: feature.lineStyle,
+      opacity: feature.opacity,
       'line-width': feature.width,
     },
     geometry: {

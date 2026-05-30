@@ -102,14 +102,20 @@ orm-agent-room --host <host> --room <room> annotations add text --id plan-note -
 Path:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --json
+orm-agent-room --host <host> --room <room> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --line-style dashed --opacity 0.8 --json
 ```
 
 Polygon:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --json
+orm-agent-room --host <host> --room <room> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
 ```
+
+Line, route, and polygon outline style options:
+
+- `--line-style solid|dashed|dotted`
+- `--opacity 0.05-1`
+- `--fill-opacity 0.05-1` for polygon fill
 
 Update/delete:
 

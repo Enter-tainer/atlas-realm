@@ -156,6 +156,8 @@ function annotationBuilder(y: any): any {
     .option('geometry', { type: 'string', describe: 'Route geometry JSON or "lng,lat;lng,lat"' })
     .option('width', { type: 'number', describe: 'Path, route, polygon, or text width' })
     .option('height', { type: 'number', describe: 'Text height' })
+    .option('line-style', { choices: ['solid', 'dashed', 'dotted'], describe: 'Path, route, or polygon outline style' })
+    .option('opacity', { type: 'number', describe: 'Path, route, or polygon outline opacity, 0.05-1' })
     .option('fill-opacity', { type: 'number', describe: 'Polygon fill opacity' })
     .option('directed', { type: 'boolean', describe: 'Path/route direction arrow' })
     .option('profile', { choices: ['driving', 'walking', 'cycling'], describe: 'Route profile' })
@@ -273,6 +275,8 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     geometry: args.geometry,
     width: args.width,
     height: args.height,
+    lineStyle: args.lineStyle,
+    opacity: args.opacity,
     fillOpacity: args.fillOpacity,
     directed: args.directed,
     profile: args.profile,
