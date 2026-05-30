@@ -11,7 +11,7 @@ import {
   sanitizeLngLat,
 } from './annotation-model.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
-import type { AnnotationFeaturePayload, AnnotationTextPayload } from './annotation-model.js';
+import type { AnnotationFeaturePayload, AnnotationPolygonPayload, AnnotationTextPayload } from './annotation-model.js';
 import type { AnnotationLayer } from './layer-model.js';
 import type { LayerStore } from './layer-store.js';
 
@@ -70,6 +70,11 @@ type AnnotationRenderLayerSet = {
 type AnnotationTextMarker = {
   marker: maplibregl.Marker;
   element: HTMLElement;
+};
+type AnnotationVertexMarker = {
+  marker: maplibregl.Marker;
+  element: HTMLElement;
+  cleanup: () => void;
 };
 type TextResizeCorner = 'nw' | 'ne' | 'se' | 'sw';
 type ScreenPoint = { x: number; y: number };
@@ -404,6 +409,13 @@ function stopTextMarkerPropagation(node: Element) {
   node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
 }
 
+function stopVertexMarkerPropagation(node: Element) {
+  node.addEventListener('contextmenu', (event) => event.stopPropagation());
+  node.addEventListener('click', (event) => event.stopPropagation());
+  node.addEventListener('dblclick', (event) => event.stopPropagation());
+  node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
+}
+
 function stopTextResizeHandleEvent(event: Event) {
   event.preventDefault();
   event.stopPropagation();
@@ -537,6 +549,103 @@ function updateTextFeatureCoordinate(store: LayerStore, featureId: string, marke
     coordinate,
     updatedAt: Date.now(),
   });
+}
+
+function activePolygonFeature(store: LayerStore, activeFeatureId: string): AnnotationPolygonPayload | null {
+  const feature = store.getAnnotationFeaturePayload(activeFeatureId);
+  if (feature?.type !== 'polygon') return null;
+  if (store.getAnnotationLayer(feature.layerId)?.visible === false) return null;
+  return feature;
+}
+
+function vertexMarkerKey(featureId: string, vertexIndex: number) {
+  return `${featureId}:${vertexIndex}`;
+}
+
+function createPolygonVertexElement(map: AnnotationMap, feature: AnnotationPolygonPayload, vertexIndex: number) {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = 'annotation-polygon-vertex';
+  element.dataset.annotationId = feature.id;
+  element.dataset.vertexIndex = String(vertexIndex);
+  element.title = `Move area vertex ${vertexIndex + 1}`;
+  element.setAttribute('aria-label', `Move area vertex ${vertexIndex + 1}`);
+  stopVertexMarkerPropagation(element);
+  element.addEventListener('click', () => {
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featureclick', feature));
+  });
+  element.addEventListener('dblclick', () => {
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featuredblclick', feature));
+  });
+  updatePolygonVertexElement(element, feature, vertexIndex);
+  return element;
+}
+
+function updatePolygonVertexElement(element: HTMLElement, feature: AnnotationPolygonPayload, vertexIndex: number) {
+  element.dataset.annotationId = feature.id;
+  element.dataset.vertexIndex = String(vertexIndex);
+  element.style.setProperty('--annotation-vertex-color', feature.color || '#2563eb');
+  element.title = `Move area vertex ${vertexIndex + 1}`;
+  element.setAttribute('aria-label', `Move area vertex ${vertexIndex + 1}`);
+}
+
+function updatePolygonVertexCoordinate(
+  store: LayerStore,
+  featureId: string,
+  vertexIndex: number,
+  marker: maplibregl.Marker,
+  options: { force?: boolean; remote?: boolean } = {},
+) {
+  const feature = store.getAnnotationFeaturePayload(featureId);
+  if (feature?.type !== 'polygon') return;
+  if (vertexIndex < 0 || vertexIndex >= feature.points.length) return;
+  const lngLat = marker.getLngLat();
+  const coordinate = sanitizeLngLat([lngLat.lng, lngLat.lat]);
+  if (!coordinate) return;
+  const current = feature.points[vertexIndex];
+  if (!options.force && current[0] === coordinate[0] && current[1] === coordinate[1]) return;
+  const points = feature.points.slice();
+  points[vertexIndex] = coordinate;
+  store.upsertFeature(
+    {
+      ...feature,
+      points,
+      updatedAt: Date.now(),
+    },
+    { remote: options.remote },
+  );
+}
+
+function installPolygonVertexDrag(
+  store: LayerStore,
+  marker: maplibregl.Marker,
+  featureId: string,
+  vertexIndex: number,
+) {
+  let frame = 0;
+  const cancelLocalUpdate = () => {
+    if (!frame) return;
+    globalThis.cancelAnimationFrame(frame);
+    frame = 0;
+  };
+  const scheduleLocalUpdate = () => {
+    if (frame) return;
+    frame = globalThis.requestAnimationFrame(() => {
+      frame = 0;
+      updatePolygonVertexCoordinate(store, featureId, vertexIndex, marker, { remote: true });
+    });
+  };
+  const commitUpdate = () => {
+    cancelLocalUpdate();
+    updatePolygonVertexCoordinate(store, featureId, vertexIndex, marker, { force: true });
+  };
+  marker.on('drag', scheduleLocalUpdate);
+  marker.on('dragend', commitUpdate);
+  return () => {
+    cancelLocalUpdate();
+    marker.off('drag', scheduleLocalUpdate);
+    marker.off('dragend', commitUpdate);
+  };
 }
 
 function updateTextMarkerResize(
@@ -698,16 +807,52 @@ function syncTextMarkers(
   }
 }
 
+function syncPolygonVertexMarkers(
+  map: AnnotationMap,
+  store: LayerStore,
+  markers: Map<string, AnnotationVertexMarker>,
+  activeFeatureId: string,
+) {
+  const feature = activePolygonFeature(store, activeFeatureId);
+  const visibleKeys = new Set(feature?.points.map((_point, index) => vertexMarkerKey(feature.id, index)) || []);
+  for (const [key, entry] of markers) {
+    if (!visibleKeys.has(key)) {
+      entry.cleanup();
+      entry.marker.remove();
+      markers.delete(key);
+    }
+  }
+  if (!feature) return;
+
+  for (const [index, point] of feature.points.entries()) {
+    const key = vertexMarkerKey(feature.id, index);
+    const existing = markers.get(key);
+    if (existing) {
+      updatePolygonVertexElement(existing.element, feature, index);
+      existing.marker.setLngLat(point);
+      continue;
+    }
+    const element = createPolygonVertexElement(map, feature, index);
+    const marker = new maplibregl.Marker({ element, anchor: 'center', draggable: true })
+      .setLngLat(point)
+      .addTo(map as unknown as maplibregl.Map);
+    const cleanup = installPolygonVertexDrag(store, marker, feature.id, index);
+    markers.set(key, { marker, element, cleanup });
+  }
+}
+
 export function installAnnotationRenderer(map: AnnotationMap, store: LayerStore) {
   let disposed = false;
   let currentZoom = map.getZoom();
   let activeFeatureId = '';
   const renderSets = new Map<string, AnnotationRenderLayerSet>();
   const textMarkers = new Map<string, AnnotationTextMarker>();
+  const vertexMarkers = new Map<string, AnnotationVertexMarker>();
   const syncTextMarkerView = () => {
     if (disposed) return;
     currentZoom = map.getZoom();
     syncTextMarkers(map, store, textMarkers, { zoom: currentZoom, activeFeatureId });
+    syncPolygonVertexMarkers(map, store, vertexMarkers, activeFeatureId);
   };
   const render = () => {
     if (disposed) return;
@@ -762,6 +907,11 @@ export function installAnnotationRenderer(map: AnnotationMap, store: LayerStore)
       renderSets.clear();
       for (const entry of textMarkers.values()) entry.marker.remove();
       textMarkers.clear();
+      for (const entry of vertexMarkers.values()) {
+        entry.cleanup();
+        entry.marker.remove();
+      }
+      vertexMarkers.clear();
     },
   };
 }

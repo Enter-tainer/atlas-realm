@@ -1535,6 +1535,37 @@ body,
   cursor: nesw-resize;
 }
 
+.annotation-polygon-vertex,
+.annotation-polygon-vertex * {
+  box-sizing: border-box;
+}
+
+.annotation-polygon-vertex {
+  display: block;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  appearance: none;
+  background: var(--annotation-vertex-color, #2563eb);
+  box-shadow:
+    0 2px 8px rgba(15, 23, 42, 0.32),
+    inset 0 0 0 2px rgba(255, 255, 255, 0.24);
+  cursor: grab;
+  touch-action: none;
+}
+
+.annotation-polygon-vertex:hover,
+.annotation-polygon-vertex:focus {
+  outline: 3px solid rgba(37, 99, 235, 0.24);
+  outline-offset: 2px;
+}
+
+.annotation-polygon-vertex:active {
+  cursor: grabbing;
+}
+
 .annotation-edit-popup .maplibregl-popup-content {
   width: min(320px, calc(100vw - 32px));
   padding: 0;
