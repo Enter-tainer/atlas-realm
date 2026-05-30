@@ -1,5 +1,5 @@
 import { buildFeatureFromOptions } from './annotation-feature.js';
-import { buildFileLayerAsset } from './file-layer-asset.js';
+import { buildFileLayerAsset, materializeFileLayerContent, sha256Hex } from './file-layer-asset.js';
 import { encodeFileContentMessage } from './protocol.js';
 import {
   getAnnotationFeature,
@@ -18,6 +18,7 @@ import type {
   CommandResponse,
   JsonRecord,
   Layer,
+  FileLayerPayload,
   FileLayerManifest,
   RoomClientLike,
   RoomEvent,
@@ -72,10 +73,10 @@ export async function handleLayerCommand(
     };
   }
 
-  if (action === 'get') {
+  if (action === 'get' || action === 'content') {
     const layer = getLayer(client.layers, command.id);
     if (!layer) throw new Error(`Layer not found: ${command.id}`);
-    return { result: { ok: true, room: client.config.room, layer } };
+    return { result: await layerContentResult(client, layer) };
   }
 
   if (action === 'add' || action === 'upsert') {
@@ -172,7 +173,7 @@ export async function handleAnnotationCommand(
     };
   }
 
-  if (action === 'get') {
+  if (action === 'get' || action === 'content') {
     const feature = getAnnotationFeature(client.annotationFeatures, command.id);
     if (!feature) throw new Error(`Annotation not found: ${command.id}`);
     return { result: { ok: true, room: client.config.room, annotation: feature } };
@@ -261,10 +262,10 @@ export async function handleAnnotationLayerCommand(
     };
   }
 
-  if (action === 'get') {
+  if (action === 'get' || action === 'content') {
     const layer = getLayer(client.layers, command.id);
     if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${command.id}`);
-    return { result: { ok: true, room: client.config.room, layer } };
+    return { result: await layerContentResult(client, layer) };
   }
 
   if (action === 'add' || action === 'create' || action === 'upsert' || action === 'update') {
@@ -406,6 +407,41 @@ async function waitForFeatureMutation(client: RoomClientLike, featureId: string,
     throw new Error(`Annotation feature rejected: ${ack.json.reason || 'unknown'}`);
   }
   return ack;
+}
+
+async function layerContentResult(client: RoomClientLike, layer: Layer): Promise<JsonRecord> {
+  if (layer.kind === 'annotation') {
+    return {
+      ok: true,
+      room: client.config.room,
+      layer,
+      annotations: sortedAnnotationFeatures(client.annotationFeatures, layer.id),
+    };
+  }
+
+  return {
+    ok: true,
+    room: client.config.room,
+    layer,
+    content: await fetchFileLayerContent(client, layer),
+  };
+}
+
+async function fetchFileLayerContent(client: RoomClientLike, layer: Layer): Promise<string | JsonRecord> {
+  const payload = layer.payload as FileLayerPayload;
+  if (!payload?.contentHash) throw new Error(`File layer is missing content hash: ${layer.id}`);
+  client.sendJson({ type: 'file:content:request', contentHash: payload.contentHash });
+  const event = await client.waitFor(
+    (roomEvent: RoomEvent) => roomEvent.binary?.contentHash === payload.contentHash,
+    `file content ${payload.contentHash}`,
+  );
+  const content = event.binary?.content;
+  if (!content) throw new Error(`File content not found: ${payload.contentHash}`);
+  const actualHash = sha256Hex(content);
+  if (actualHash !== payload.contentHash) {
+    throw new Error(`File content hash mismatch: expected ${payload.contentHash}, got ${actualHash}`);
+  }
+  return materializeFileLayerContent(payload.fileType, content, payload.contentEncoding);
 }
 
 function layerPatchFromCommand(command: Command, existing: Layer): JsonRecord {

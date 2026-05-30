@@ -102,7 +102,7 @@ export async function runCli(argv: string[] = hideBin(process.argv), io: Console
 function layerBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|add|upsert|update|patch|delete|remove|rm|reorder',
+      describe: 'list|get|content|add|upsert|update|patch|delete|remove|rm|reorder',
       type: 'string',
     })
     .positional('items', {
@@ -125,7 +125,7 @@ function layerBuilder(y: any): any {
 function annotationBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|add|upsert|update|patch|delete|remove|rm|reorder|layers',
+      describe: 'list|get|content|add|upsert|update|patch|delete|remove|rm|reorder|layers',
       type: 'string',
     })
     .positional('items', {

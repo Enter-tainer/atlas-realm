@@ -1,11 +1,14 @@
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { createHash } from 'node:crypto';
-import { gzipSync } from 'node:zlib';
+import { gunzipSync, gzipSync } from 'node:zlib';
 import { MAX_FILE_CONTENT_BYTES } from './constants.js';
 import { summarizeGeoJson, summarizeGpx } from './geojson-summary.js';
 import { clamp, coerceBoolean, normalizeColor, normalizeId, normalizeName, randomId } from './validation.js';
 import type { FileLayerType, JsonRecord, FileLayerAsset, FileLayerSummary } from './types.js';
+
+const GZIP_MAGIC_0 = 0x1f;
+const GZIP_MAGIC_1 = 0x8b;
 
 export function inferFileLayerType(file: string, explicit?: unknown): FileLayerType {
   if (explicit === 'gpx' || explicit === 'geojson') return explicit;
@@ -85,4 +88,20 @@ export function buildFileLayerAssetFromText(
     ...summary,
   };
   return { manifest, content: new Uint8Array(compressed) };
+}
+
+export function materializeFileLayerContent(
+  type: FileLayerType,
+  contentBytes: Uint8Array,
+  contentEncoding?: string,
+): string | JsonRecord {
+  const encoding = contentEncoding || (isGzip(contentBytes) ? 'gzip' : 'identity');
+  const rawBytes = encoding === 'gzip' ? gunzipSync(Buffer.from(contentBytes)) : Buffer.from(contentBytes);
+  const text = rawBytes.toString('utf8');
+  if (type === 'gpx') return text;
+  return JSON.parse(text);
+}
+
+function isGzip(bytes: Uint8Array): boolean {
+  return bytes?.[0] === GZIP_MAGIC_0 && bytes?.[1] === GZIP_MAGIC_1;
 }

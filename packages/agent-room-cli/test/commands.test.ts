@@ -40,6 +40,7 @@ class FakeRoomClient {
     ];
     this.sentJson = [];
     this.sentBinary = [];
+    this.fileContents = new Map();
   }
 
   sendJson(message) {
@@ -54,6 +55,12 @@ class FakeRoomClient {
     if (label.startsWith('file content store')) {
       const contentHash = label.split(' ').at(-1);
       return { json: { type: 'file:content:stored', contentHash } };
+    }
+    if (label.startsWith('file content')) {
+      const contentHash = label.split(' ').at(-1);
+      const content = this.fileContents.get(contentHash);
+      if (!content) throw new Error(`Missing fake file content: ${contentHash}`);
+      return { binary: { contentHash, content } };
     }
     if (label.startsWith('layer create')) {
       const layer = this.sentJson.at(-1)?.layer;
@@ -252,6 +259,106 @@ describe('agent-room CLI package', () => {
       },
     });
     expect(response.result.layer.id).toBe('route-layer');
+  });
+
+  it('returns annotation features when getting an annotation layer', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push({
+      id: 'stop-a',
+      layerId: 'annotation-default',
+      featureType: 'point',
+      payload: {
+        id: 'stop-a',
+        type: 'point',
+        layerId: 'annotation-default',
+        label: 'Station',
+        coordinate: [121.5, 31.2],
+      },
+      sortKey: '000010',
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+      updatedBy: 'Agent',
+    });
+
+    const response = await executeCommand(client, {
+      subject: 'layers',
+      action: 'get',
+      id: 'annotation-default',
+    });
+
+    expect(client.sentJson).toEqual([]);
+    expect(response.result.layer).toMatchObject({ id: 'annotation-default', kind: 'annotation' });
+    expect(response.result.annotations).toMatchObject([
+      {
+        id: 'stop-a',
+        payload: { label: 'Station' },
+      },
+    ]);
+  });
+
+  it('requests and materializes file content when getting a file layer', async () => {
+    const geojson = {
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          properties: { name: 'Walk' },
+          geometry: {
+            type: 'LineString',
+            coordinates: [
+              [121.5, 31.2],
+              [121.51, 31.21],
+            ],
+          },
+        },
+      ],
+    };
+    const asset = buildFileLayerAssetFromText('route.geojson', JSON.stringify(geojson), {
+      id: 'route-layer',
+      name: 'Route layer',
+    });
+    const client = new FakeRoomClient();
+    client.layers.push({
+      id: asset.manifest.id,
+      kind: 'file',
+      name: asset.manifest.name,
+      visible: asset.manifest.visible,
+      sortKey: '000020',
+      payload: {
+        version: 1,
+        fileType: asset.manifest.type,
+        contentHash: asset.manifest.contentHash,
+        contentType: asset.manifest.contentType,
+        contentEncoding: asset.manifest.contentEncoding,
+        contentByteLength: asset.manifest.contentByteLength,
+        rawByteLength: asset.manifest.rawByteLength,
+        bounds: asset.manifest.bounds,
+        style: {
+          color: asset.manifest.color,
+          opacity: asset.manifest.opacity,
+          lineWidth: asset.manifest.lineWidth,
+        },
+      },
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+      updatedBy: 'Agent',
+    });
+    client.fileContents.set(asset.manifest.contentHash, asset.content);
+
+    const response = await executeCommand(client, {
+      subject: 'layers',
+      action: 'content',
+      id: 'route-layer',
+    });
+
+    expect(client.sentJson.at(-1)).toEqual({
+      type: 'file:content:request',
+      contentHash: asset.manifest.contentHash,
+    });
+    expect(response.result.layer).toMatchObject({ id: 'route-layer', kind: 'file' });
+    expect(response.result.content).toMatchObject(geojson);
   });
 
   it('sends annotation-feature upsert and delete protocol messages for annotations', async () => {
