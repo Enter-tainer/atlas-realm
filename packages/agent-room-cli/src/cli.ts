@@ -30,6 +30,7 @@ export function buildParser(argv: readonly string[] = []) {
     .option('client-id', {
       type: 'string',
       describe: 'WebSocket client id',
+      demandOption: true,
     })
     .option('agent-name', {
       type: 'string',

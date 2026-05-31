@@ -67,7 +67,7 @@ export function createConfig(
   options: JsonRecord = {},
   env: Record<string, string | undefined> = process.env,
 ): AgentRoomConfig {
-  const clientId = normalizeId(options.clientId, randomId('agent'));
+  const clientId = normalizeId(options.clientId, '');
   const clientType = options.clientType === 'query' || options.headless === true ? 'query' : 'agent';
   return {
     host: String(options.host || env.ORM_ROOM_HOST || env.ROOM_HOST || DEFAULT_HOST),
