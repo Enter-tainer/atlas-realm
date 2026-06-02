@@ -25,6 +25,16 @@ Always prefer `--json` for agent automation. Use `--pretty` only for human-reada
 
 By default, CLI calls identify as `--client-type agent` and refresh that agent's recent activity in the room. Use `--client-type query` for read-only checks that should not update agent activity.
 
+## Room URL
+
+The web client URL uses the `room` query parameter:
+
+```
+https://<host>/?room=<room-name>
+```
+
+Example: `https://map.mgt.moe/?room=niutoushan`
+
 ## Workflow
 
 1. Start with `snapshot --json` unless the user explicitly gave the exact object id and desired mutation. Use `snapshot --content --json` when you need decoded layer contents for the whole room.
@@ -82,6 +92,20 @@ Layer style options:
 - `--opacity 0.8`
 - `--line-width 5`
 - `--visible true|false`
+
+## Pitfalls
+
+1. **`layers add --opacity` may not take effect on initial upload**: After adding a layer, verify with `snapshot` and apply `layers update <id> --opacity <value>` if needed.
+
+2. **Route feature file `geometry` format**: When using `--feature-file` for route annotations, `geometry` must be a flat `[[lng,lat], ...]` array, NOT a GeoJSON Geometry object (`{"type":"LineString","coordinates":[...]}`). Passing a GeoJSON object causes the CLI to fall back to waypoints-only (straight line).
+
+3. **Route annotation styles on `add`**: Use the correct flag names: `--width` (not `--line-width`), `--color`, `--opacity`, `--line-style`. Wrong flag names are silently ignored by `annotations add route`, leaving routes at default styles.
+
+4. **GCJ-02 vs WGS-84 coordinate systems**: AMAP (高德) returns coordinates in GCJ-02 (国测局偏移坐标系). The map tiles use WGS-84 (international standard). GCJ-02 coordinates are offset by ~300-500m in China. ALL AMAP-sourced coordinates MUST be converted from GCJ-02 to WGS-84 before adding to the map. Sample offset at 31°N/119°E: ~460m east, ~255m south. If annotations appear offset from roads, coordinate system mismatch is the likely cause.
+
+5. **`execute_code` / subprocess shell escaping**: When delegating CLI calls through Python `subprocess.run` with `shell=True` + f-strings, CLI arguments can be silently dropped (especially those with quotes, colors, or special chars). Prefer direct terminal CLI calls for mutation commands. Verify with `annotations get <id> --json` after critical writes.
+
+6. **Snapshot JSON is large**: Route geometry arrays can make snapshot output >1MB. Redirect to file (`> /tmp/snap.json`) instead of parsing from terminal tool output, which truncates at ~20K chars.
 
 ## Annotations
 
@@ -141,7 +165,10 @@ orm-agent-room --host <host> --room <room> annotations layers delete notes --jso
 ## Travel Planning Conventions
 
 - Use points for POIs, hotels, stations, restaurants, meeting spots, and warnings.
-- Use paths for suggested walking/transit segments when exact route geometry is simple.
-- Use polygons for candidate neighborhoods, avoid zones, or search areas.
-- Use text annotations for concise instructions tied to a coordinate.
+- Use routes (via `annotations add route`) for road trip daily segments. Use AMAP (高德) or OSRM for real road geometry — never hand-draw straight lines.
+- Split long driving days (>5h) into shorter segments with activity stops in between.
+- Use warm+cool color palettes by geographic region (not all one hue). Example: green for valleys, violet for mountains, orange for desert cities, cyan for plateau.
+- Use `--line-style dashed` / `--line-style dotted` with low opacity (0.35–0.55) for backup/detour routes to visually distinguish them from main routes.
+- Annotation layers should have descriptive names reflecting their content (e.g. "🏔️ 伊犁+独库+帕米尔 10天" not "Annotations").
+- Group related routes, activities, and risk markers in the same annotation layer.
 - Keep labels short; put details in `--note`.
