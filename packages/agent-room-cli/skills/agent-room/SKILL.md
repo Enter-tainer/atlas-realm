@@ -37,6 +37,13 @@ For rooms with access controls enabled, sign in once with GitHub Device Flow:
 orm-agent-room login --host <host>
 ```
 
+When running as an agent in a non-interactive terminal, avoid keeping the login process open while a human authorizes in the browser. Start the flow, show the user the returned `verificationUrl` and `userCode`, then resume with the returned `flowId` after authorization:
+
+```bash
+orm-agent-room login --host <host> --start-only --json
+orm-agent-room login --host <host> --flow-id <flowId> --json
+```
+
 After login, normal commands automatically use the stored local token:
 
 ```bash

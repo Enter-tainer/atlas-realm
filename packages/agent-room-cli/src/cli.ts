@@ -111,6 +111,18 @@ function authBuilder(y: any): any {
       type: 'string',
       describe: 'Display name for the issued CLI token',
     })
+    .option('start-only', {
+      type: 'boolean',
+      describe: 'Start GitHub Device Flow, print the code, and exit without polling',
+    })
+    .option('flow-id', {
+      type: 'string',
+      describe: 'Resume an existing GitHub Device Flow login',
+    })
+    .option('poll-once', {
+      type: 'boolean',
+      describe: 'With --flow-id, poll once and exit if authorization is still pending',
+    })
     .option('poll-delay', {
       type: 'number',
       describe: 'Override login polling delay in milliseconds',
@@ -143,11 +155,45 @@ function sleep(ms: number): Promise<void> {
 
 async function runLogin(args: JsonRecord): Promise<void> {
   const config = createConfig(args);
+  const flowId = String(args.flowId || '').trim();
+  if (args.startOnly && flowId) throw new Error('Use either --start-only or --flow-id, not both.');
+  if (args.pollOnce && !flowId) throw new Error('--poll-once requires --flow-id.');
+
+  if (flowId) {
+    if (!args.pollOnce && !args.json && !args.pretty) args.io.log('Waiting for GitHub authorization...');
+    await runLoginPoll(args, config, flowId, { initialIntervalMs: 0, pollImmediately: true });
+    return;
+  }
+
   const tokenName = String(args.tokenName || `Agent CLI (${config.host})`);
   const started = await startDeviceLogin(config.host, tokenName);
   const verificationUrl = started.verificationUriComplete || started.verificationUri;
-  const startedAt = Date.now();
-  const maxWait = Number.isFinite(Number(args.maxWait)) ? Number(args.maxWait) : 10 * 60 * 1000;
+  const startResult = {
+    ok: true,
+    status: 'pending',
+    host: config.host,
+    flowId: started.flowId,
+    userCode: started.userCode,
+    verificationUri: started.verificationUri,
+    verificationUriComplete: started.verificationUriComplete || null,
+    verificationUrl,
+    expiresAt: started.expiresAt,
+    intervalSeconds: started.intervalSeconds,
+  };
+
+  if (args.startOnly) {
+    args.io.log(
+      formatOutput(startResult, { json: args.json, pretty: args.pretty }, (value) =>
+        [
+          `Open ${value.verificationUrl}`,
+          `Enter code: ${value.userCode}`,
+          `Device flow: ${value.flowId}`,
+          `After approving, run: orm-agent-room login --host ${value.host} --flow-id ${value.flowId}`,
+        ].join('\n'),
+      ),
+    );
+    return;
+  }
 
   args.io.log(`Open ${verificationUrl}`);
   args.io.log(`Enter code: ${started.userCode}`);
@@ -155,18 +201,45 @@ async function runLogin(args: JsonRecord): Promise<void> {
 
   let intervalMs = Math.max(1000, started.intervalSeconds * 1000);
   if (args.pollDelay !== undefined) intervalMs = Math.max(0, Number(args.pollDelay) || 0);
+  await runLoginPoll(args, config, started.flowId, {
+    expiresAt: started.expiresAt,
+    initialIntervalMs: intervalMs,
+    pollImmediately: false,
+  });
+}
 
-  while (Date.now() - startedAt <= maxWait && Date.now() <= started.expiresAt) {
-    if (intervalMs > 0) await sleep(intervalMs);
-    const polled = await pollDeviceLogin(config.host, started.flowId);
+async function runLoginPoll(
+  args: JsonRecord,
+  config: ReturnType<typeof createConfig>,
+  flowId: string,
+  options: { expiresAt?: number; initialIntervalMs: number; pollImmediately: boolean },
+): Promise<void> {
+  const startedAt = Date.now();
+  const maxWait = Number.isFinite(Number(args.maxWait)) ? Number(args.maxWait) : 10 * 60 * 1000;
+  const expiresAt = Number.isFinite(Number(options.expiresAt)) ? Number(options.expiresAt) : Number.POSITIVE_INFINITY;
+  let intervalMs = Math.max(0, options.initialIntervalMs);
+  let shouldSleep = !options.pollImmediately;
+
+  while (Date.now() - startedAt <= maxWait && Date.now() <= expiresAt) {
+    if (shouldSleep && intervalMs > 0) await sleep(intervalMs);
+    shouldSleep = true;
+    const polled = await pollDeviceLogin(config.host, flowId);
 
     if (polled.status === 'pending') {
+      if (args.pollOnce) {
+        printLoginPollStatus(args, config.host, flowId, polled);
+        return;
+      }
       intervalMs =
         args.pollDelay !== undefined ? intervalMs : Math.max(1000, Number(polled.intervalSeconds || 5) * 1000);
       continue;
     }
 
     if (polled.status === 'slow_down') {
+      if (args.pollOnce) {
+        printLoginPollStatus(args, config.host, flowId, polled);
+        return;
+      }
       intervalMs =
         args.pollDelay !== undefined
           ? intervalMs
@@ -180,14 +253,51 @@ async function runLogin(args: JsonRecord): Promise<void> {
     if (polled.status === 'complete' && polled.token) {
       await saveStoredToken(config.host, polled.token, polled.user);
       const login = polled.user?.githubLogin || polled.user?.displayName || 'GitHub user';
-      args.io.log(`Logged in as ${login}. Token saved for ${config.host}.`);
+      const result = {
+        ok: true,
+        status: 'complete',
+        host: config.host,
+        tokenSaved: true,
+        user: polled.user || null,
+      };
+      args.io.log(
+        formatOutput(
+          result,
+          { json: args.json, pretty: args.pretty },
+          () => `Logged in as ${login}. Token saved for ${config.host}.`,
+        ),
+      );
       return;
+    }
+
+    if (polled.status === 'complete') {
+      throw new Error(
+        'GitHub device login was already completed and the token is no longer available. Run login again.',
+      );
     }
 
     throw new Error(`Unexpected device login status: ${polled.status || 'unknown'}`);
   }
 
   throw new Error('Timed out waiting for GitHub device login.');
+}
+
+function printLoginPollStatus(args: JsonRecord, host: string, flowId: string, polled: JsonRecord): void {
+  const status = String(polled.status || 'pending');
+  const result = {
+    ok: true,
+    status,
+    host,
+    flowId,
+    intervalSeconds: polled.intervalSeconds,
+    retryAfterSeconds: polled.retryAfterSeconds,
+  };
+  args.io.log(
+    formatOutput(result, { json: args.json, pretty: args.pretty }, () => {
+      const retryAfter = Number(polled.retryAfterSeconds || polled.intervalSeconds || 5);
+      return `GitHub authorization is ${status.replace('_', ' ')}. Retry after ${retryAfter}s.`;
+    }),
+  );
 }
 
 async function runLogout(args: JsonRecord): Promise<void> {

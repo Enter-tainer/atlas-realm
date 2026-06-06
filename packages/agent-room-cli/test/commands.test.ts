@@ -391,6 +391,91 @@ describe('agent-room CLI package', () => {
     });
   });
 
+  it('starts Device Flow login without polling for non-interactive agents', async () => {
+    await withTokenStore(async (storePath) => {
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        return Response.json(
+          {
+            flowId: 'flow_cli',
+            userCode: 'ABCD-EFGH',
+            verificationUri: 'https://github.com/login/device',
+            verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-EFGH',
+            expiresAt: Date.now() + 60_000,
+            intervalSeconds: 5,
+          },
+          { status: 201 },
+        );
+      };
+      const { io, lines } = captureIo();
+
+      await runCli(
+        ['login', '--host', 'https://example.com/app', '--token-name', 'Agent CLI', '--start-only', '--json'],
+        io,
+      );
+
+      expect(fetchCalls.map((call) => call.url)).toEqual(['https://example.com/app/api/auth/github/device/start']);
+      expect(JSON.parse(String(fetchCalls[0].init?.body))).toEqual({ name: 'Agent CLI' });
+      expect(JSON.parse(lines[0])).toMatchObject({
+        ok: true,
+        status: 'pending',
+        host: 'https://example.com/app',
+        flowId: 'flow_cli',
+        userCode: 'ABCD-EFGH',
+        verificationUrl: 'https://github.com/login/device?user_code=ABCD-EFGH',
+      });
+      expect(await getStoredToken('https://example.com/app', storePath)).toBe('');
+    });
+  });
+
+  it('resumes Device Flow login by flow id and can poll once without waiting', async () => {
+    await withTokenStore(async (storePath) => {
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        return Response.json({
+          status: 'complete',
+          token: 'orm_pat_resumed',
+          user: { githubLogin: 'octocat', displayName: 'Octocat' },
+        });
+      };
+      const resumed = captureIo();
+
+      await runCli(['login', '--host', 'https://example.com/app', '--flow-id', 'flow_cli', '--json'], resumed.io);
+
+      expect(fetchCalls.map((call) => call.url)).toEqual(['https://example.com/app/api/auth/github/device/poll']);
+      expect(JSON.parse(String(fetchCalls[0].init?.body))).toEqual({ flowId: 'flow_cli' });
+      expect(JSON.parse(resumed.lines[0])).toMatchObject({
+        ok: true,
+        status: 'complete',
+        host: 'https://example.com/app',
+        tokenSaved: true,
+        user: { githubLogin: 'octocat' },
+      });
+      expect(await getStoredToken('https://example.com/app', storePath)).toBe('orm_pat_resumed');
+    });
+
+    await withTokenStore(async (storePath) => {
+      globalThis.fetch = async () => Response.json({ status: 'pending', intervalSeconds: 5 });
+      const pending = captureIo();
+
+      await runCli(
+        ['login', '--host', 'https://example.com/app', '--flow-id', 'flow_pending', '--poll-once', '--json'],
+        pending.io,
+      );
+
+      expect(JSON.parse(pending.lines[0])).toMatchObject({
+        ok: true,
+        status: 'pending',
+        host: 'https://example.com/app',
+        flowId: 'flow_pending',
+        intervalSeconds: 5,
+      });
+      expect(await getStoredToken('https://example.com/app', storePath)).toBe('');
+    });
+  });
+
   it('continues Device Flow login after slow_down and reports denied or expired flows', async () => {
     await withTokenStore(async () => {
       let pollCount = 0;
