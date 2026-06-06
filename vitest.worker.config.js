@@ -5,6 +5,7 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       main: './src/worker.ts',
+      remoteBindings: false,
       wrangler: { configPath: './wrangler.jsonc' },
     }),
   ],

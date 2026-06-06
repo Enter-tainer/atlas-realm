@@ -30,6 +30,7 @@
     {
       "binding": "ORM_BUCKET",
       "bucket_name": "orm",
+      "remote": true,
     },
   ],
   "d1_databases": [
