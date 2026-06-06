@@ -1,5 +1,13 @@
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
+import {
+  deleteStoredToken,
+  fetchCurrentTokenUser,
+  getStoredToken,
+  pollDeviceLogin,
+  saveStoredToken,
+  startDeviceLogin,
+} from './auth.js';
 import { executeCommand } from './commands.js';
 import { createConfig } from './config.js';
 import { formatOutput } from './format.js';
@@ -29,8 +37,7 @@ export function buildParser(argv: readonly string[] = []) {
     })
     .option('client-id', {
       type: 'string',
-      describe: 'WebSocket client id',
-      demandOption: true,
+      describe: 'Stable WebSocket client id, required for room commands',
     })
     .option('agent-name', {
       type: 'string',
@@ -69,6 +76,9 @@ export function buildParser(argv: readonly string[] = []) {
       type: 'boolean',
       describe: 'Include decoded layer contents when supported',
     })
+    .command(['login'], 'Sign in with GitHub Device Flow and store a local token', authBuilder, runLogin)
+    .command(['logout'], 'Remove the stored local token for this host', authBuilder, runLogout)
+    .command(['whoami'], 'Print the GitHub account for the stored token', authBuilder, runWhoami)
     .command(['snapshot', 'status'], 'Print room layers and annotations', () => {}, runSnapshot)
     .command(['room <action>', 'rooms <action>'], 'Inspect or update room metadata', roomBuilder, runRoom)
     .command(['presence', 'users', 'participants'], 'Print live users and recent agents', () => {}, runPresence)
@@ -95,6 +105,23 @@ export function buildParser(argv: readonly string[] = []) {
     });
 }
 
+function authBuilder(y: any): any {
+  return y
+    .option('token-name', {
+      type: 'string',
+      describe: 'Display name for the issued CLI token',
+    })
+    .option('poll-delay', {
+      type: 'number',
+      describe: 'Override login polling delay in milliseconds',
+    })
+    .option('max-wait', {
+      type: 'number',
+      describe: 'Maximum login wait time in milliseconds',
+      default: 10 * 60 * 1000,
+    });
+}
+
 async function runPresence(args: JsonRecord): Promise<void> {
   await runRoomCommand(
     {
@@ -108,6 +135,80 @@ async function runPresence(args: JsonRecord): Promise<void> {
 export async function runCli(argv: string[] = hideBin(process.argv), io: Console = console): Promise<void> {
   const parser = buildParser();
   await parser.parseAsync(argv, { io });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+}
+
+async function runLogin(args: JsonRecord): Promise<void> {
+  const config = createConfig(args);
+  const tokenName = String(args.tokenName || `Agent CLI (${config.host})`);
+  const started = await startDeviceLogin(config.host, tokenName);
+  const verificationUrl = started.verificationUriComplete || started.verificationUri;
+  const startedAt = Date.now();
+  const maxWait = Number.isFinite(Number(args.maxWait)) ? Number(args.maxWait) : 10 * 60 * 1000;
+
+  args.io.log(`Open ${verificationUrl}`);
+  args.io.log(`Enter code: ${started.userCode}`);
+  args.io.log('Waiting for GitHub authorization...');
+
+  let intervalMs = Math.max(1000, started.intervalSeconds * 1000);
+  if (args.pollDelay !== undefined) intervalMs = Math.max(0, Number(args.pollDelay) || 0);
+
+  while (Date.now() - startedAt <= maxWait && Date.now() <= started.expiresAt) {
+    if (intervalMs > 0) await sleep(intervalMs);
+    const polled = await pollDeviceLogin(config.host, started.flowId);
+
+    if (polled.status === 'pending') {
+      intervalMs =
+        args.pollDelay !== undefined ? intervalMs : Math.max(1000, Number(polled.intervalSeconds || 5) * 1000);
+      continue;
+    }
+
+    if (polled.status === 'slow_down') {
+      intervalMs =
+        args.pollDelay !== undefined
+          ? intervalMs
+          : Math.max(1000, Number(polled.retryAfterSeconds || polled.intervalSeconds || 5) * 1000);
+      continue;
+    }
+
+    if (polled.status === 'expired') throw new Error('GitHub device login expired. Run login again.');
+    if (polled.status === 'denied') throw new Error('GitHub device login was denied.');
+
+    if (polled.status === 'complete' && polled.token) {
+      await saveStoredToken(config.host, polled.token, polled.user);
+      const login = polled.user?.githubLogin || polled.user?.displayName || 'GitHub user';
+      args.io.log(`Logged in as ${login}. Token saved for ${config.host}.`);
+      return;
+    }
+
+    throw new Error(`Unexpected device login status: ${polled.status || 'unknown'}`);
+  }
+
+  throw new Error('Timed out waiting for GitHub device login.');
+}
+
+async function runLogout(args: JsonRecord): Promise<void> {
+  const config = createConfig(args);
+  const deleted = await deleteStoredToken(config.host);
+  args.io.log(deleted ? `Removed stored token for ${config.host}.` : `No stored token for ${config.host}.`);
+}
+
+async function runWhoami(args: JsonRecord): Promise<void> {
+  const config = createConfig(args);
+  const token = config.accessToken || (await getStoredToken(config.host));
+  if (!token) throw new Error(`No token configured for ${config.host}. Run orm-agent-room login first.`);
+  const data = await fetchCurrentTokenUser(config.host, token);
+  const user = data.user as JsonRecord | null;
+  if (!user) throw new Error('Stored token is not valid.');
+  args.io.log(
+    formatOutput({ ok: true, user }, { json: args.json, pretty: args.pretty }, (value) => {
+      const current = value.user || {};
+      return `${current.githubLogin || current.displayName || current.userId}`;
+    }),
+  );
 }
 
 function layerBuilder(y: any): any {
@@ -315,7 +416,8 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
 }
 
 async function runRoomCommand(command: Command, args: JsonRecord): Promise<void> {
-  const config = createConfig(args);
+  const config = createConfig(args, process.env, { requireClientId: true });
+  if (!config.accessToken) config.accessToken = await getStoredToken(config.host);
   const client = new RoomClient(config);
   await client.connect();
   try {

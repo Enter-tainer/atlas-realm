@@ -155,6 +155,40 @@ const EMPTY_LOCATION: LocationState = {
 };
 
 const PROFILE_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#9333ea', '#ea580c', '#0891b2', '#be123c', '#4f46e5'];
+const ANONYMOUS_GUEST_NAMES = [
+  'Antelope',
+  'Badger',
+  'Beaver',
+  'Bison',
+  'Bobcat',
+  'Caribou',
+  'Cheetah',
+  'Dolphin',
+  'Falcon',
+  'Fox',
+  'Gazelle',
+  'Heron',
+  'Ibex',
+  'Jaguar',
+  'Koala',
+  'Lynx',
+  'Marten',
+  'Otter',
+  'Owl',
+  'Panda',
+  'Puma',
+  'Raven',
+  'Seal',
+  'Swan',
+  'Tapir',
+  'Tiger',
+  'Turtle',
+  'Viper',
+  'Wolf',
+  'Wombat',
+  'Yak',
+  'Zebra',
+];
 
 export function activeAgentParticipants(agents: Iterable<AgentParticipant>, now = Date.now()): AgentParticipant[] {
   return [...agents].filter((agent) => agent.active && Number(agent.expiresAt) > now);
@@ -167,6 +201,21 @@ export function shouldSyncKnownLocalLayer(layer: Layer, annotationFeatureCount =
     layer.revision === 0 &&
     annotationFeatureCount === 0
   );
+}
+
+function stableHash(value: string) {
+  let hash = 2_166_136_261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16_777_619);
+  }
+  return hash >>> 0;
+}
+
+export function anonymousGuestName(room: string | null | undefined, seed: string) {
+  const roomKey = room || 'lobby';
+  const index = stableHash(`${roomKey}:${seed}`) % ANONYMOUS_GUEST_NAMES.length;
+  return `Anonymous ${ANONYMOUS_GUEST_NAMES[index]}`;
 }
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -212,7 +261,7 @@ function getProfile(): UserProfile {
           userId: profile.userId,
           name: profile.name,
           color: profile.color,
-          avatarUrl: typeof profile.avatarUrl === 'string' ? profile.avatarUrl : null,
+          avatarUrl: null,
         };
       }
     } catch {
@@ -232,11 +281,11 @@ function getProfile(): UserProfile {
   return profile;
 }
 
-function sanitizeProfileName(value: unknown, fallback = 'Guest') {
+function sanitizeDisplayName(value: unknown, fallback = 'Guest') {
   const name = String(value || '')
     .replace(/\s+/g, ' ')
     .trim()
-    .slice(0, 32);
+    .slice(0, 48);
   return name || fallback;
 }
 
@@ -585,7 +634,6 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   let accessDeniedRetryTimer = 0;
   let panelExpanded = false;
   let currentUser: AccountUser | null = null;
-  let authLoaded = false;
   let roomAccess = defaultRoomAccess();
   let roomAccessLoaded = false;
   let sharePanelOpen = false;
@@ -641,25 +689,6 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   accountBar.appendChild(accountButton);
 
   const roomForm = createElement('form', 'collab-room-form');
-  const nameField = createElement('label', 'collab-field collab-name-field');
-  const nameLabel = createElement('span', 'collab-field-label');
-  nameLabel.textContent = 'Display name';
-  const nameHint = createElement('span', 'collab-field-hint');
-  nameHint.textContent = 'Shown next to your cursor and viewport';
-
-  const nameInput = createElement('input', 'collab-name-input', {
-    type: 'text',
-    maxlength: '32',
-    spellcheck: 'false',
-    autocomplete: 'nickname',
-    'aria-label': 'Your name',
-    placeholder: 'How others see you',
-  });
-  nameInput.value = profile.name;
-  nameField.appendChild(nameLabel);
-  nameField.appendChild(nameInput);
-  nameField.appendChild(nameHint);
-
   const roomField = createElement('label', 'collab-field collab-room-field');
   const roomLabel = createElement('span', 'collab-field-label');
   roomLabel.textContent = 'Shared room';
@@ -684,24 +713,39 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   const joinButton = createElement('button', 'collab-button collab-button-primary collab-join-button', {
     type: 'submit',
   });
-  joinButton.textContent = 'Start sharing';
+  joinButton.textContent = 'Open room';
+  actionGroup.appendChild(joinButton);
+
+  const roomContext = createElement('div', 'collab-room-context');
+  const roomContextText = createElement('div', 'collab-room-context-text');
+  const roomContextName = createElement('span', 'collab-room-context-name');
+  const roomContextMeta = createElement('span', 'collab-room-context-meta');
+  roomContextText.appendChild(roomContextName);
+  roomContextText.appendChild(roomContextMeta);
+  const roomActionGroup = createElement('div', 'collab-action-group collab-room-action-group');
 
   const shareButton = createElement('button', 'collab-button collab-button-secondary collab-share-button', {
     type: 'button',
   });
-  shareButton.textContent = 'Copy invite link';
+  shareButton.textContent = 'Share';
   shareButton.hidden = true;
   const claimButton = createElement('button', 'collab-button collab-button-secondary collab-claim-button', {
     type: 'button',
   });
   claimButton.textContent = 'Claim room';
   claimButton.hidden = true;
-  actionGroup.appendChild(joinButton);
-  actionGroup.appendChild(claimButton);
-  actionGroup.appendChild(shareButton);
+  roomActionGroup.appendChild(claimButton);
+  roomActionGroup.appendChild(shareButton);
+  roomContext.appendChild(roomContextText);
+  roomContext.appendChild(roomActionGroup);
 
   const sharePanel = createElement('div', 'collab-share-panel');
   sharePanel.hidden = true;
+
+  const copyLinkButton = createElement('button', 'collab-button collab-button-secondary collab-copy-link-button', {
+    type: 'button',
+  });
+  copyLinkButton.textContent = 'Copy link';
 
   const linkAccessField = createElement('label', 'collab-field');
   const linkAccessLabel = createElement('span', 'collab-field-label');
@@ -723,7 +767,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   linkAccessField.appendChild(linkAccessSelect);
 
   const grantForm = createElement('form', 'collab-grant-form');
-  const grantInput = createElement('input', 'collab-name-input', {
+  const grantInput = createElement('input', 'collab-text-input', {
     type: 'text',
     spellcheck: 'false',
     autocapitalize: 'none',
@@ -751,6 +795,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   const grantsList = createElement('div', 'collab-grants-list');
 
+  sharePanel.appendChild(copyLinkButton);
   sharePanel.appendChild(linkAccessField);
   sharePanel.appendChild(grantForm);
   sharePanel.appendChild(grantsList);
@@ -772,6 +817,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   roomForm.appendChild(actionGroup);
   panelBody.appendChild(accountBar);
   panelBody.appendChild(roomForm);
+  panelBody.appendChild(roomContext);
   panelBody.appendChild(sharePanel);
   panelBody.appendChild(presenceBar);
   panelBody.appendChild(followBar);
@@ -791,10 +837,16 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   }
 
   function activeProfile(): UserProfile {
-    if (!currentUser) return profile;
+    if (!currentUser) {
+      return {
+        ...profile,
+        name: anonymousGuestName(currentRoom, profile.userId),
+        avatarUrl: null,
+      };
+    }
     return {
       userId: currentUser.userId,
-      name: sanitizeProfileName(accountDisplayName(currentUser), currentUser.githubLogin || profile.name),
+      name: sanitizeDisplayName(accountDisplayName(currentUser), currentUser.githubLogin || 'GitHub user'),
       color: '#111827',
       avatarUrl: currentUser.avatarUrl || null,
     };
@@ -825,28 +877,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     element.textContent = initials(name);
   }
 
-  function renderNameField() {
-    if (!authLoaded || currentUser) {
-      nameField.remove();
-      return;
-    }
-    if (nameField.parentElement !== roomForm) roomForm.insertBefore(nameField, roomField);
-  }
-
-  function syncProfileFromAccount() {
-    if (!currentUser) return;
-    nameInput.value = activeProfile().name;
-    nameInput.disabled = false;
-    renderNameField();
-    renderLocalProfile();
-    scheduleSend(true);
-  }
-
-  function syncGuestProfileUi() {
-    if (currentUser) return;
-    nameInput.disabled = false;
-    nameInput.value = profile.name;
-    renderNameField();
+  function syncLocalProfileUi() {
     renderLocalProfile();
     scheduleSend(true);
   }
@@ -865,6 +896,11 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   function renderRoleBadge() {
     panel.dataset.role = roomAccess.role;
+    if (!currentRoom) {
+      panel.dataset.role = 'none';
+      accountRoleBadge.textContent = currentUser ? 'Account' : 'Guest';
+      return;
+    }
     if (!roomAccessLoaded) {
       accountRoleBadge.textContent = 'Checking';
       return;
@@ -927,6 +963,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   function renderSharePanel() {
     sharePanel.hidden = !sharePanelOpen || !roomAccess.canManage;
+    copyLinkButton.disabled = !currentRoom;
     linkAccessSelect.value = roomAccess.linkAccess;
     linkAccessSelect.disabled = !roomAccess.canManage;
     grantInput.disabled = !roomAccess.canManage;
@@ -951,6 +988,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     renderRoleBadge();
     renderClaimButton();
     renderSharePanel();
+    renderRoomSurface();
     updateActionState();
     dispatchCollaborationAccess(mapContainer, roomAccess, roomAccessLoaded);
   }
@@ -996,9 +1034,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     } catch {
       currentUser = null;
     }
-    authLoaded = true;
-    if (currentUser) syncProfileFromAccount();
-    else syncGuestProfileUi();
+    syncLocalProfileUi();
     renderAccessUi();
   }
 
@@ -1081,7 +1117,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       compactMeta.textContent = 'Open to retry';
     } else {
       compactTitle.textContent = 'Collaborate';
-      compactMeta.textContent = 'Open to set name and room';
+      compactMeta.textContent = currentRoom ? `#${currentRoom}` : 'Open or create a room';
     }
 
     const toggleLabel = panelExpanded ? 'Close collaboration controls' : 'Open collaboration controls';
@@ -1091,7 +1127,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   function renderPresenceSummary() {
     if (!socket) {
-      presenceSummary.textContent = 'Start sharing to invite others';
+      presenceSummary.textContent = currentRoom ? 'Connecting room presence' : 'Open a room to collaborate';
       avatars.setAttribute('aria-label', 'Collaboration is offline');
       return;
     }
@@ -1117,45 +1153,37 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     renderCompactSummary();
   }
 
-  function persistProfile() {
-    safeSetStorage(localStorage, PROFILE_KEY, JSON.stringify(profile));
-  }
-
-  function updateProfileName(value: unknown) {
-    if (currentUser) {
-      syncProfileFromAccount();
-      return;
+  function renderRoomSurface() {
+    const hasRoom = Boolean(currentRoom);
+    roomForm.hidden = hasRoom;
+    roomContext.hidden = !hasRoom;
+    if (!hasRoom) return;
+    roomContextName.textContent = `#${currentRoom}`;
+    if (!roomAccessLoaded) {
+      roomContextMeta.textContent = 'Checking access';
+    } else if (!roomAccess.canView) {
+      roomContextMeta.textContent = 'Access denied';
+    } else {
+      roomContextMeta.textContent =
+        roomAccess.room.persistence === 'persistent' ? 'Persistent room' : 'Temporary guest room';
     }
-    const nextName = sanitizeProfileName(value, profile.name);
-    nameInput.value = nextName;
-    if (profile.name === nextName) return;
-    profile.name = nextName;
-    persistProfile();
-    renderLocalProfile();
-    scheduleSend(true);
   }
 
   function updateActionState() {
     const state = panel.dataset.connection;
-    const nextRoom = normalizeRoom(roomInput.value);
-    const canCopyLink = state === 'live' && nextRoom === currentRoom;
-
-    joinButton.disabled = state === 'connecting';
+    const isCurrentRoomConnecting = state === 'connecting' && Boolean(currentRoom);
+    joinButton.disabled = isCurrentRoomConnecting;
     if (state === 'connecting') {
-      joinButton.textContent = 'Connecting...';
-    } else if (state === 'live' && nextRoom === currentRoom) {
-      joinButton.textContent = 'Stop sharing';
-    } else if (state === 'live') {
-      joinButton.textContent = 'Switch room';
+      joinButton.textContent = 'Opening...';
     } else if (state === 'offline') {
-      joinButton.textContent = 'Retry connection';
+      joinButton.textContent = currentRoom ? 'Retry' : 'Open room';
     } else {
-      joinButton.textContent = 'Start sharing';
+      joinButton.textContent = 'Open room';
     }
 
-    shareButton.hidden = !canCopyLink;
-    shareButton.disabled = !canCopyLink;
-    shareButton.textContent = roomAccess.canManage ? 'Share' : 'Copy link';
+    shareButton.hidden = !currentRoom || !roomAccessLoaded || !roomAccess.canManage;
+    shareButton.disabled = !currentRoom || !roomAccess.canManage;
+    shareButton.textContent = sharePanelOpen ? 'Close sharing' : 'Share';
   }
 
   function setPanelExpanded(expanded: boolean) {
@@ -1797,6 +1825,8 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     currentRoom = room;
     roomInput.value = room;
     updateRoomUrl(room);
+    if (!currentUser) syncLocalProfileUi();
+    renderRoomSurface();
     setStatus('Connecting', 'connecting');
     peers.clear();
     fileLayerManifests.clear();
@@ -1910,12 +1940,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   roomForm.addEventListener('submit', (event) => {
     event.preventDefault();
-    updateProfileName(nameInput.value);
     const nextRoom = normalizeRoom(roomInput.value);
-    if (panel.dataset.connection === 'live' && nextRoom === currentRoom) {
-      disconnect();
-      return;
-    }
     const shouldConnect = !socket || socket.readyState > WebSocket.OPEN || nextRoom !== currentRoom;
     if (!shouldConnect) {
       roomInput.value = nextRoom;
@@ -1933,23 +1958,11 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   };
   compactToggle.addEventListener('click', () => setPanelExpanded(!panelExpanded));
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
-
-  nameInput.addEventListener('change', () => updateProfileName(nameInput.value));
-  nameInput.addEventListener('blur', () => updateProfileName(nameInput.value));
-  nameInput.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      nameInput.value = profile.name;
-      nameInput.blur();
-    }
-  });
   roomInput.addEventListener('input', updateActionState);
 
   async function copyCurrentRoomLink(button: HTMLElement) {
-    const room = normalizeRoom(roomInput.value);
-    currentRoom = room;
-    roomInput.value = room;
-    updateRoomUrl(room);
-    renderCompactSummary();
+    const room = currentRoom;
+    if (!room) return;
     const url = buildShareUrl(room);
     clearTimeout(shareResetTimer);
     try {
@@ -1959,7 +1972,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       button.textContent = 'Copy failed';
     }
     shareResetTimer = window.setTimeout(() => {
-      shareButton.textContent = roomAccess.canManage ? 'Share' : 'Copy link';
+      button.textContent = 'Copy link';
     }, 1_300);
   }
 
@@ -1971,28 +1984,37 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     try {
       await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
     } finally {
+      const roomAfterLogout = currentRoom;
       currentUser = null;
       roomGrants.clear();
-      syncGuestProfileUi();
+      syncLocalProfileUi();
       disconnect();
       renderAccessUi();
+      if (roomAfterLogout) {
+        connect(roomAfterLogout).catch((error) => {
+          console.error('Failed to reconnect collaboration room after sign out:', error);
+          setStatus('Offline', 'offline');
+        });
+      }
     }
   });
 
   shareButton.addEventListener('click', () => {
-    if (!roomAccess.canManage) {
-      copyCurrentRoomLink(shareButton).catch((error) => {
-        console.error('Failed to copy room link:', error);
-      });
-      return;
-    }
+    if (!roomAccess.canManage) return;
     sharePanelOpen = !sharePanelOpen;
+    updateActionState();
     renderSharePanel();
     if (sharePanelOpen) {
       refreshGrants().catch((error) => {
         console.error('Failed to refresh room grants:', error);
       });
     }
+  });
+
+  copyLinkButton.addEventListener('click', () => {
+    copyCurrentRoomLink(copyLinkButton).catch((error) => {
+      console.error('Failed to copy room link:', error);
+    });
   });
 
   claimButton.addEventListener('click', () => {

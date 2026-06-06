@@ -10,6 +10,10 @@ import {
 } from './constants.js';
 import type { AgentRoomConfig, JsonRecord } from './types.js';
 
+export interface CreateConfigOptions {
+  requireClientId?: boolean;
+}
+
 export function clamp(value: unknown, min: number, max: number, fallback: number): number {
   const number = Number(value);
   if (!Number.isFinite(number)) return fallback;
@@ -66,14 +70,19 @@ export function parseJson(value: string, label: string): any {
 export function createConfig(
   options: JsonRecord = {},
   env: Record<string, string | undefined> = process.env,
+  configOptions: CreateConfigOptions = {},
 ): AgentRoomConfig {
-  const clientId = normalizeId(options.clientId, '');
+  const rawClientId = options.clientId || env.ORM_ROOM_CLIENT_ID;
+  const clientId = normalizeId(rawClientId, '');
+  if (configOptions.requireClientId && !clientId) {
+    throw new Error('Room commands require --client-id <id> or ORM_ROOM_CLIENT_ID.');
+  }
   const clientType = options.clientType === 'query' || options.headless === true ? 'query' : 'agent';
   return {
     host: String(options.host || env.ORM_ROOM_HOST || env.ROOM_HOST || DEFAULT_HOST),
     room: normalizeId(options.room, DEFAULT_ROOM),
     party: normalizeId(options.party, DEFAULT_PARTY),
-    clientId,
+    clientId: clientId || randomId('agent'),
     agentName: normalizeName(options.agentName, DEFAULT_AGENT_NAME, 32),
     agentColor: normalizeColor(options.agentColor, DEFAULT_AGENT_COLOR),
     accessToken: String(options.token || options.accessToken || env.ORM_ROOM_TOKEN || ''),

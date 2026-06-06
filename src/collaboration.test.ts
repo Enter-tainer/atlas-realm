@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { activeAgentParticipants, collaborationCanEditForAccess, shouldSyncKnownLocalLayer } from './collaboration.js';
+import {
+  activeAgentParticipants,
+  anonymousGuestName,
+  collaborationCanEditForAccess,
+  shouldSyncKnownLocalLayer,
+} from './collaboration.js';
 import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
 import type { Layer } from './layer-model.js';
 
@@ -54,6 +59,18 @@ describe('collaboration local layer sync', () => {
     expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID), 1)).toBe(true);
     expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID, { revision: 1 }), 0)).toBe(true);
     expect(shouldSyncKnownLocalLayer(annotationLayer('annotation-layer-a'), 0)).toBe(true);
+  });
+});
+
+describe('collaboration guest names', () => {
+  it('assigns stable anonymous names per room and guest seed', () => {
+    const first = anonymousGuestName('trip-planning', 'guest-a');
+    const again = anonymousGuestName('trip-planning', 'guest-a');
+    const otherGuest = anonymousGuestName('trip-planning', 'guest-b');
+
+    expect(first).toBe(again);
+    expect(first).toMatch(/^Anonymous [A-Z][a-z]+$/);
+    expect(otherGuest).toMatch(/^Anonymous [A-Z][a-z]+$/);
   });
 });
 

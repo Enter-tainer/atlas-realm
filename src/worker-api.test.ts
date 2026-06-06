@@ -58,6 +58,22 @@ interface AccessTokenRow {
   revoked_at: number | null;
 }
 
+interface OAuthDeviceFlowRow {
+  flow_id: string;
+  device_code: string;
+  user_code: string;
+  verification_uri: string;
+  verification_uri_complete: string | null;
+  token_name: string;
+  interval_seconds: number;
+  created_at: number;
+  expires_at: number;
+  last_poll_at: number | null;
+  completed_at: number | null;
+  access_token_id: string | null;
+  status: 'pending' | 'complete' | 'denied' | 'expired';
+}
+
 class FakeApiStmt {
   private args: unknown[] = [];
 
@@ -90,6 +106,47 @@ class FakeApiStmt {
         github_login: user.github_login,
         display_name: user.display_name,
         avatar_url: user.avatar_url,
+      } as T;
+    }
+
+    if (this.sql.includes('FROM access_tokens') && this.sql.includes('JOIN users')) {
+      const [tokenHash, now] = this.args as [string, number];
+      const token = [...this.db.tokens.values()].find(
+        (candidate) =>
+          candidate.token_hash === tokenHash &&
+          candidate.revoked_at === null &&
+          (candidate.expires_at === null || candidate.expires_at > now),
+      );
+      if (!token) return null;
+      const user = this.db.users.get(token.user_id);
+      if (!user) return null;
+      return {
+        user_id: user.user_id,
+        github_id: user.github_id,
+        github_login: user.github_login,
+        display_name: user.display_name,
+        avatar_url: user.avatar_url,
+      } as T;
+    }
+
+    if (this.sql.includes('FROM oauth_device_flows')) {
+      const [flowId] = this.args as [string];
+      const flow = this.db.deviceFlows.get(flowId);
+      if (!flow) return null;
+      return {
+        flowId: flow.flow_id,
+        deviceCode: flow.device_code,
+        userCode: flow.user_code,
+        verificationUri: flow.verification_uri,
+        verificationUriComplete: flow.verification_uri_complete,
+        tokenName: flow.token_name,
+        intervalSeconds: flow.interval_seconds,
+        createdAt: flow.created_at,
+        expiresAt: flow.expires_at,
+        lastPollAt: flow.last_poll_at,
+        completedAt: flow.completed_at,
+        accessTokenId: flow.access_token_id,
+        status: flow.status,
       } as T;
     }
 
@@ -278,10 +335,78 @@ class FakeApiStmt {
       return fakeD1Result();
     }
 
+    if (this.sql.includes('UPDATE access_tokens') && this.sql.includes('last_used_at')) {
+      const [tokenHash, now] = this.args as [string, number];
+      const token = [...this.db.tokens.values()].find((candidate) => candidate.token_hash === tokenHash);
+      if (token) token.last_used_at = now;
+      return fakeD1Result();
+    }
+
     if (this.sql.includes('UPDATE access_tokens')) {
       const [tokenId, userId, now] = this.args as [string, string, number];
       const token = this.db.tokens.get(tokenId);
       if (token && token.user_id === userId && token.revoked_at === null) token.revoked_at = now;
+      return fakeD1Result();
+    }
+
+    if (this.sql.includes('INSERT INTO oauth_device_flows')) {
+      const [
+        flowId,
+        deviceCode,
+        userCode,
+        verificationUri,
+        verificationUriComplete,
+        tokenName,
+        intervalSeconds,
+        createdAt,
+        expiresAt,
+      ] = this.args as [string, string, string, string, string | null, string, number, number, number];
+      this.db.deviceFlows.set(flowId, {
+        flow_id: flowId,
+        device_code: deviceCode,
+        user_code: userCode,
+        verification_uri: verificationUri,
+        verification_uri_complete: verificationUriComplete,
+        token_name: tokenName,
+        interval_seconds: intervalSeconds,
+        created_at: createdAt,
+        expires_at: expiresAt,
+        last_poll_at: null,
+        completed_at: null,
+        access_token_id: null,
+        status: 'pending',
+      });
+      return fakeD1Result();
+    }
+
+    if (this.sql.includes('UPDATE oauth_device_flows') && this.sql.includes('last_poll_at')) {
+      const [flowId, now, intervalSeconds] = this.args as [string, number, number];
+      const flow = this.db.deviceFlows.get(flowId);
+      if (flow && flow.status === 'pending') {
+        flow.last_poll_at = now;
+        flow.interval_seconds = intervalSeconds;
+      }
+      return fakeD1Result();
+    }
+
+    if (this.sql.includes('UPDATE oauth_device_flows') && this.sql.includes("status = 'complete'")) {
+      const [flowId, now, tokenId] = this.args as [string, number, string];
+      const flow = this.db.deviceFlows.get(flowId);
+      if (flow && flow.status === 'pending') {
+        flow.status = 'complete';
+        flow.completed_at = now;
+        flow.access_token_id = tokenId;
+      }
+      return fakeD1Result();
+    }
+
+    if (this.sql.includes('UPDATE oauth_device_flows') && this.sql.includes('SET status = ?2')) {
+      const [flowId, status, now] = this.args as [string, 'denied' | 'expired', number];
+      const flow = this.db.deviceFlows.get(flowId);
+      if (flow && flow.status === 'pending') {
+        flow.status = status;
+        flow.completed_at = now;
+      }
       return fakeD1Result();
     }
 
@@ -392,6 +517,7 @@ class FakeApiD1Database {
   grants = new Map<string, GrantRow>();
   pending = new Map<string, PendingGrantRow>();
   tokens = new Map<string, AccessTokenRow>();
+  deviceFlows = new Map<string, OAuthDeviceFlowRow>();
 
   prepare(sql: string): FakeApiStmt {
     return new FakeApiStmt(this, sql);
@@ -619,6 +745,226 @@ describe('account API handler', () => {
     );
     expect(deleteResponse?.status).toBe(200);
     expect(db.tokens.get(stored.token_id)?.revoked_at).toBeTypeOf('number');
+  });
+
+  it('starts GitHub Device Flow and stores only a local flow id for the CLI', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        Response.json({
+          device_code: 'github-device-code',
+          user_code: 'ABCD-EFGH',
+          verification_uri: 'https://github.com/login/device',
+          verification_uri_complete: 'https://github.com/login/device?user_code=ABCD-EFGH',
+          expires_in: 600,
+          interval: 7,
+        }),
+      ),
+    );
+    const db = new FakeApiD1Database();
+
+    const response = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/start', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Laptop CLI' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+
+    expect(response?.status).toBe(201);
+    const body = await json(response as Response);
+    expect(body).toMatchObject({
+      userCode: 'ABCD-EFGH',
+      verificationUri: 'https://github.com/login/device',
+      verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-EFGH',
+      intervalSeconds: 7,
+    });
+    expect(String(body.flowId)).toMatch(/^flow_/);
+    expect(JSON.stringify(body)).not.toContain('github-device-code');
+    const flow = db.deviceFlows.get(String(body.flowId));
+    expect(flow).toMatchObject({
+      device_code: 'github-device-code',
+      token_name: 'Laptop CLI',
+      status: 'pending',
+    });
+  });
+
+  it('polls pending Device Flow once per client request and enforces the local interval', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ error: 'authorization_pending' }));
+    vi.stubGlobal('fetch', fetchMock);
+    const db = new FakeApiD1Database();
+    db.deviceFlows.set('flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+      flow_id: 'flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      device_code: 'github-device-code',
+      user_code: 'ABCD-EFGH',
+      verification_uri: 'https://github.com/login/device',
+      verification_uri_complete: null,
+      token_name: 'CLI',
+      interval_seconds: 5,
+      created_at: Date.now(),
+      expires_at: Date.now() + 600_000,
+      last_poll_at: null,
+      completed_at: null,
+      access_token_id: null,
+      status: 'pending',
+    });
+
+    const first = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    expect(first?.status).toBe(200);
+    await expect(json(first as Response)).resolves.toMatchObject({ status: 'pending', intervalSeconds: 5 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    const second = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    expect(second?.status).toBe(200);
+    await expect(json(second as Response)).resolves.toMatchObject({ status: 'slow_down', intervalSeconds: 5 });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('handles GitHub Device Flow slow down, denied, and expired statuses', async () => {
+    const db = new FakeApiD1Database();
+    const baseFlow: Omit<OAuthDeviceFlowRow, 'flow_id'> = {
+      device_code: 'github-device-code',
+      user_code: 'ABCD-EFGH',
+      verification_uri: 'https://github.com/login/device',
+      verification_uri_complete: null,
+      token_name: 'CLI',
+      interval_seconds: 5,
+      created_at: Date.now(),
+      expires_at: Date.now() + 600_000,
+      last_poll_at: null,
+      completed_at: null,
+      access_token_id: null,
+      status: 'pending' as const,
+    };
+    db.deviceFlows.set('flow_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', {
+      ...baseFlow,
+      flow_id: 'flow_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    });
+    db.deviceFlows.set('flow_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', {
+      ...baseFlow,
+      flow_id: 'flow_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+    });
+    db.deviceFlows.set('flow_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', {
+      ...baseFlow,
+      flow_id: 'flow_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
+      expires_at: Date.now() - 1,
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(Response.json({ error: 'slow_down' }))
+        .mockResolvedValueOnce(Response.json({ error: 'access_denied' })),
+    );
+
+    const slow = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    await expect(json(slow as Response)).resolves.toMatchObject({ status: 'slow_down', intervalSeconds: 10 });
+    expect(
+      db.deviceFlows.get('flow_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb')?.interval_seconds,
+    ).toBe(10);
+
+    const denied = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    await expect(json(denied as Response)).resolves.toMatchObject({ status: 'denied' });
+    expect(db.deviceFlows.get('flow_cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc')?.status).toBe(
+      'denied',
+    );
+
+    const expired = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    await expect(json(expired as Response)).resolves.toMatchObject({ status: 'expired' });
+    expect(db.deviceFlows.get('flow_dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd')?.status).toBe(
+      'expired',
+    );
+  });
+
+  it('completes Device Flow by upserting GitHub identity and returning a local PAT exactly once', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValueOnce(Response.json({ access_token: 'github-token', token_type: 'bearer' }))
+        .mockResolvedValueOnce(
+          Response.json({ id: 123, login: 'octocat', name: 'Octocat', avatar_url: 'https://avatar' }),
+        ),
+    );
+    const db = new FakeApiD1Database();
+    db.deviceFlows.set('flow_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', {
+      flow_id: 'flow_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+      device_code: 'github-device-code',
+      user_code: 'ABCD-EFGH',
+      verification_uri: 'https://github.com/login/device',
+      verification_uri_complete: null,
+      token_name: 'CLI Login',
+      interval_seconds: 5,
+      created_at: Date.now(),
+      expires_at: Date.now() + 600_000,
+      last_poll_at: null,
+      completed_at: null,
+      access_token_id: null,
+      status: 'pending',
+    });
+
+    const response = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+
+    expect(response?.status).toBe(200);
+    const body = await json(response as Response);
+    expect(body).toMatchObject({
+      status: 'complete',
+      user: { githubLogin: 'octocat', displayName: 'Octocat' },
+      accessToken: { name: 'CLI Login' },
+    });
+    expect(String(body.token)).toMatch(/^orm_pat_/);
+    expect([...db.tokens.values()]).toHaveLength(1);
+    expect([...db.tokens.values()][0].token_hash).not.toBe(body.token);
+    expect(db.deviceFlows.get('flow_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee')).toMatchObject({
+      status: 'complete',
+      access_token_id: [...db.tokens.values()][0].token_id,
+    });
+
+    const repoll = await handleAccountApiRequest(
+      new Request('https://example.test/api/auth/github/device/poll', {
+        method: 'POST',
+        body: JSON.stringify({ flowId: 'flow_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' }),
+      }),
+      envWithDb(asD1(db)),
+    );
+    await expect(json(repoll as Response)).resolves.toMatchObject({ status: 'complete', token: null });
+    expect([...db.tokens.values()]).toHaveLength(1);
   });
 
   it('returns effective room capabilities for anonymous and signed-in users', async () => {

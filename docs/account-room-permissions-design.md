@@ -89,16 +89,18 @@ updated_by_agent_id
 
 ## Authentication
 
-Use GitHub OAuth App web application flow.
+Use GitHub OAuth App web application flow for browser users, and GitHub Device Flow for CLI/agent login.
 
 Recommended endpoints:
 
 - `GET /api/auth/github/start`
 - `GET /api/auth/github/callback`
+- `POST /api/auth/github/device/start`
+- `POST /api/auth/github/device/poll`
 - `POST /api/auth/logout`
 - `GET /api/auth/me`
 
-Flow:
+Browser flow:
 
 1. Client opens `/api/auth/github/start?returnTo=<current-url>`.
 2. Worker generates a random `state`, stores it in a short-lived, HttpOnly, Secure cookie, and redirects to `https://github.com/login/oauth/authorize`.
@@ -110,9 +112,33 @@ Flow:
 8. Worker creates an application session and sets an HttpOnly, Secure, SameSite=Lax session cookie.
 9. Worker redirects to `returnTo`.
 
+CLI/agent device flow:
+
+1. CLI calls `POST /api/auth/github/device/start` with a token label such as `"Agent CLI on <hostname>"`.
+2. Worker calls GitHub's device-code endpoint with `GITHUB_CLIENT_ID`.
+3. Worker stores the returned `device_code` in a short-lived D1 row and returns an opaque `flowId`, `userCode`, `verificationUri`, `expiresAt`, and `intervalSeconds` to the CLI.
+4. CLI prints the verification URL and code, and opens the verification URL in a browser when possible.
+5. CLI polls `POST /api/auth/github/device/poll` with `flowId`, respecting `intervalSeconds`.
+6. Each `/device/poll` request makes the Worker perform exactly one GitHub token-status check using the stored `device_code`.
+7. If GitHub returns `authorization_pending`, Worker returns a pending status to the CLI.
+8. If GitHub returns `slow_down`, Worker records a larger minimum poll interval and returns that interval to the CLI.
+9. Once GitHub returns an access token, Worker fetches the GitHub user profile, upserts the local `users` row, claims pending grants by immutable `github_id`, creates a local `orm_pat_...` access token, marks the device flow completed, and returns the raw local token exactly once.
+10. CLI stores the local token and uses it for subsequent room connections.
+
+The Worker should not run any background polling job for Device Flow. Polling is entirely driven by CLI requests. If the user closes the terminal or abandons login, polling stops immediately; the Worker will not contact GitHub again for that flow. The only remaining server state is the short-lived `oauth_device_flows` row. Once `expires_at` passes, `/device/poll` must return an expired status without contacting GitHub.
+
+The CLI should not ask users to manually create PATs for the normal path. The PAT remains the server-side credential format because it lets WebSocket auth reuse the existing `getAccessTokenUser` path, but it is issued automatically after GitHub Device Flow succeeds.
+
 The app only needs identity, so request minimal scope. Start with no extra scopes and rely on GitHub's public user identity. If email is required later, add `user:email` and handle private email addresses explicitly.
 
 Do not expose GitHub access tokens to the browser. Store only what is needed for login and profile display. If future GitHub API calls are not needed after login, do not persist the OAuth access token; use it once to fetch the profile and discard it.
+
+Device Flow must be explicitly enabled in the GitHub OAuth App settings before these endpoints will work. If the product later migrates from an OAuth App to a GitHub App, the same CLI pattern can still work, but the GitHub App registration must also enable Device Flow and the implementation should use the GitHub App client id.
+
+Official references:
+
+- GitHub OAuth App device flow: https://docs.github.com/apps/building-oauth-apps/authorizing-oauth-apps#device-flow
+- GitHub App device flow: https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app#using-the-device-flow-to-generate-a-user-access-token
 
 ## Identity Model
 
@@ -147,6 +173,29 @@ CREATE INDEX sessions_user_idx ON sessions(user_id, expires_at);
 ```
 
 Session cookies should contain an opaque random session id, not user data. Store a hash of `session_id` instead of the raw value if we want database compromise resistance.
+
+Device Flow needs short-lived state. Suggested table:
+
+```sql
+CREATE TABLE oauth_device_flows (
+  flow_id TEXT PRIMARY KEY,
+  device_code TEXT NOT NULL,
+  user_code TEXT NOT NULL,
+  verification_uri TEXT NOT NULL,
+  token_name TEXT NOT NULL,
+  interval_seconds INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  last_poll_at INTEGER,
+  completed_at INTEGER,
+  access_token_id TEXT,
+  FOREIGN KEY (access_token_id) REFERENCES access_tokens(token_id)
+);
+
+CREATE INDEX oauth_device_flows_expiry_idx ON oauth_device_flows(expires_at);
+```
+
+`device_code` is short-lived but still sensitive. Do not log it, and delete or ignore expired rows. Expired rows can be cleaned lazily when starting or polling device flows; a separate cron is optional and not required for correctness. If we want stronger database compromise resistance, encrypt `device_code` at rest using a Worker secret before inserting it.
 
 ## Room Ownership And Sharing Model
 
@@ -511,9 +560,17 @@ When room metadata changes in D1, send a control message or direct DO call to up
 
 The current agent-room CLI identifies through query parameters. That is acceptable for presence identity, but not for write authorization.
 
-Use Personal Access Tokens for automation in v1. Room-scoped tokens are deferred because they require extra lifecycle rules: who can create them, whether managers can revoke them, and what happens when the creator loses access to a room.
+Use GitHub Device Flow as the primary CLI login experience in v1, backed by local Personal Access Tokens.
 
-Add PAT storage:
+The important distinction:
+
+- Product interaction: users run `orm-agent-room login`, authorize with GitHub in a browser, and the CLI stores the resulting local credential.
+- Server credential: the Worker issues an `orm_pat_...` token after GitHub Device Flow succeeds.
+- Authorization model: the token authenticates as the owning `user_id`; room permissions still come from owner, explicit grants, and link access.
+
+Room-scoped tokens are deferred because they require extra lifecycle rules: who can create them, whether managers can revoke them, and what happens when the creator loses access to a room.
+
+PAT storage:
 
 ```sql
 CREATE TABLE access_tokens (
@@ -531,12 +588,36 @@ CREATE TABLE access_tokens (
 
 Token format should make the token type obvious, for example `orm_pat_...`. Store only a hash. The token should authenticate as the owning user, then the normal room access calculation decides whether the agent can view, edit, or manage the room.
 
+Recommended CLI login:
+
+```text
+orm-agent-room login --host https://map.mgt.moe
+```
+
+Example CLI output:
+
+```text
+Open https://github.com/login/device
+Enter code: WDJB-MJHT
+Waiting for GitHub authorization...
+Logged in as octocat. Token saved for https://map.mgt.moe.
+```
+
 CLI usage:
 
 ```text
-orm-agent-room --host <host> --room <room> --token <token> snapshot --json
-orm-agent-room --host <host> --room <room> --token <token> layers add route.geojson --json
+orm-agent-room --host <host> --room <room> snapshot --json
+orm-agent-room --host <host> --room <room> layers add route.geojson --json
 ```
+
+Manual token usage should remain supported for automation and CI:
+
+```text
+orm-agent-room --host <host> --room <room> --token <token> snapshot --json
+ORM_ROOM_TOKEN=<token> orm-agent-room --host <host> --room <room> snapshot --json
+```
+
+The CLI should store tokens outside the repository, preferably in an OS credential store when available. A file fallback is acceptable if permissions are restricted to the current user. The CLI must never write the raw token to logs, room state, snapshots, or command output except for explicit debug modes that are disabled by default.
 
 Agent presence should use the authenticated user's account as the durable identity, plus an agent-specific display suffix. For example:
 
@@ -552,25 +633,51 @@ This keeps audit and permissions tied to a real account, while live UI state sta
 
 For short-term compatibility, allow unauthenticated CLI access only to rooms with `link_access = 'edit'`.
 
+Manual PAT UI is not required for v1 if Device Flow is implemented. The browser UI can defer token management or expose a small advanced account panel later for listing and revoking CLI tokens. Creating manual PATs in the UI is lower priority because it adds one-time secret display, copy-state, and user education complexity.
+
 ## Client UI
 
-Minimal v1 UI:
+The account/permissions UI should follow a document-style mental model. A room is the current document/context, not a separate sharing session that users start and stop from inside the page.
 
-- Top bar account area:
-  - Signed out: "Sign in with GitHub" button.
-  - Signed in: GitHub avatar, display name or login, account menu, sign out.
+Minimal v1 UI has two primary states.
+
+No room selected:
+
+- Show a room entry surface only when the URL does not already identify a room.
+- Let the user enter a room name and open it, create it, or generate a new room id.
+- Show the GitHub sign-in entry point.
+- For signed-in users, a future room picker can list owned rooms and rooms shared with them.
+- Guest display name may be editable here, but it should be secondary to choosing a room.
+
+Inside a room:
+
+- Auto-connect from the URL room id. Being in the room means collaboration is active by default.
+- Do not show the room name as an editable field.
+- Do not show `Start sharing` or `Stop sharing`. Those controls imply a local sharing session, but sharing is now controlled by the room access policy.
+- Show account identity in the top area:
+  - Signed out: guest/avatar plus "Sign in with GitHub".
+  - Signed in: GitHub avatar, GitHub display name or login, account menu, sign out.
+  - Signed-in users do not get a display-name input or a disabled display-name field; their visible identity comes from GitHub.
+- Show the current effective room role as a compact badge next to the account identity: `View`, `Edit`, or `Manage`.
+- Show room title or `#room_id` as metadata, not as a room switcher.
+- Show a single `Share` entry point for users with `manage` access.
+- Do not show a separate top-level `Copy link` button if the share dialog already contains copy-link behavior.
 - Presence avatars:
   - Signed-in humans use GitHub avatar and profile name.
-  - Guests keep generated color/avatar and local guest name.
+  - Guests keep generated color/avatar and local guest name if guest naming is still exposed.
   - Agents use the authenticated user's avatar with an agent label/badge.
   - Anonymous viewers in `link_access = 'view'` rooms should be aggregated once the count is non-trivial, for example `+42 Guests`, instead of rendering every guest as a full presence item.
-- Room title, persistence indicator, and current access role.
-- Share dialog with:
-  - General access selector: restricted, anyone with link can view, anyone with link can edit.
-  - People list with role selector: view/edit/manage/remove.
-  - Add by GitHub username.
-  - Copy link.
-  - No invite-link creation in v1.
+
+Share dialog:
+
+- Copy link.
+- General access selector: restricted, anyone with link can view, anyone with link can edit.
+- People list with role selector: view/edit/manage/remove.
+- Add by GitHub username.
+- No invite-link creation in v1.
+
+Access and lifecycle states:
+
 - Access-denied screen with sign-in button.
 - Read-only mode banner or disabled edit controls when user can view but not edit.
 - Claim room prompt for signed-in users in guest-created rooms.
@@ -579,6 +686,14 @@ Minimal v1 UI:
   - Change general access.
   - Add/remove members.
   - Transfer ownership can be deferred; it is not required for v1.
+
+`Leave room` is optional and should not be a primary action. If we add it, it should behave like navigating away from the current document: close the WebSocket, clear the `room` URL parameter, and return to the no-room entry surface. It should not change the room's share policy or delete room content.
+
+Room identity and naming:
+
+- `room_id` is the stable URL/routing identity.
+- `title` is optional display metadata and can be renamed by users with `manage` access.
+- Switching rooms should happen by changing URL, using the no-room entry surface, or a future room picker, not by editing an in-room text field.
 
 Frontend state should treat access as a server-provided capability object, not reimplement policy from raw fields. `GET /api/rooms/:room/access` can return:
 
@@ -611,6 +726,8 @@ The UI should be advisory only. Server-side enforcement is mandatory.
 GET    /api/auth/me
 GET    /api/auth/github/start
 GET    /api/auth/github/callback
+POST   /api/auth/github/device/start
+POST   /api/auth/github/device/poll
 POST   /api/auth/logout
 
 GET    /api/rooms
@@ -631,6 +748,8 @@ DELETE /api/tokens/:tokenId
 ```
 
 `/_control/*` routes are internal Worker-to-DO routes, not public client APIs. They must require the internal control signature.
+
+`/api/tokens` remains useful for advanced token management and future account settings, but it is not the primary v1 CLI onboarding path once Device Flow exists. Normal CLI users should receive a local PAT through `orm-agent-room login`.
 
 `PATCH /api/rooms/:room` should allow users with `manage` access to update:
 
@@ -655,6 +774,15 @@ Persistence changes should be internal product behavior, not a normal shared-roo
 10. Restrict or remove unauthenticated `room:update --persistence persistent`.
 
 During migration, existing rooms without a D1 row should be treated as guest-created rooms with `link_access = 'edit'` and `persistence = 'ephemeral'` until claimed.
+
+Device Flow can ship as a follow-up migration:
+
+1. Enable Device Flow in the GitHub OAuth App settings.
+2. Add the `oauth_device_flows` D1 table.
+3. Add `/api/auth/github/device/start` and `/api/auth/github/device/poll`.
+4. Add `orm-agent-room login`, `logout`, and `whoami`.
+5. Store the returned local `orm_pat_...` token in CLI config or the OS credential store.
+6. Keep manual `--token` and `ORM_ROOM_TOKEN` support for CI and debugging.
 
 ## Deployment Configuration
 
@@ -704,6 +832,14 @@ wrangler secret put INTERNAL_AUTH_SECRET
 
 `INTERNAL_AUTH_SECRET` signs Worker-to-DO auth headers and control requests. Rotating it invalidates in-flight WebSocket auth headers, so active clients should reconnect after rotation.
 
+GitHub app settings:
+
+- Production OAuth callback URL: `https://map.mgt.moe/api/auth/github/callback`
+- Local/dev OAuth callback URL: `http://localhost:5173/api/auth/github/callback`
+- Enable Device Flow for the OAuth App before using `orm-agent-room login`.
+
+Device Flow does not require a separate callback URL, but it does require the same GitHub client id used by the web OAuth flow.
+
 ## Open Decisions
 
 - Signed-in room default sharing: recommended `link_access = restricted`; alternative `link_access = view`.
@@ -731,6 +867,7 @@ This feature needs coverage at several layers because the risky behavior is most
 - `users.github_id` is unique and immutable for authorization purposes.
 - `room_grants.role` only accepts `view`, `edit`, and `manage`.
 - `pending_room_grants.github_id` is required and the primary key includes `(room_id, github_id)`.
+- `oauth_device_flows` expires device login attempts and links completed flows to the issued local token id.
 - Deleting, revoking, or archiving records does not accidentally remove room content from the DO.
 - Existing rooms without D1 rows are backfilled or interpreted as guest-created rooms with `link_access = 'edit'` and `persistence = 'ephemeral'`.
 
@@ -742,6 +879,11 @@ This feature needs coverage at several layers because the risky behavior is most
 - GitHub login rename updates display metadata without changing the local `user_id`.
 - Session cookies are HttpOnly, Secure, SameSite=Lax, and contain only opaque session ids.
 - Logout revokes the session and clears the cookie.
+- Device start returns an opaque local `flowId`, GitHub `userCode`, verification URL, expiry, and poll interval, but never returns the raw `device_code`.
+- Device poll handles GitHub `authorization_pending`, `slow_down`, `expired_token`, `access_denied`, and success states.
+- Device poll enforces the GitHub-provided interval server-side so a broken CLI cannot hammer GitHub.
+- Device success upserts the GitHub account, claims pending grants by immutable `github_id`, issues one local PAT, and returns the raw PAT only once.
+- Re-polling a completed or expired device flow does not mint additional tokens.
 
 ### Authorization Tests
 
@@ -800,6 +942,10 @@ This feature needs coverage at several layers because the risky behavior is most
 ### CLI And Agent Tests
 
 - CLI can authenticate with a PAT and connect as `client_type = agent`.
+- CLI `login` starts Device Flow, displays the GitHub verification URL/code, polls until success, and stores the returned local PAT.
+- CLI `login` handles denied, expired, slow-down, network failure, and user-cancelled flows with actionable messages.
+- CLI `whoami` verifies the stored token against the server and displays the GitHub identity.
+- CLI `logout` deletes the local stored token and can optionally revoke the server token.
 - PAT is stored and sent securely by the CLI; raw token is not logged.
 - PAT-authenticated agent inherits the user's room role.
 - Agent with `view` can snapshot but cannot mutate.

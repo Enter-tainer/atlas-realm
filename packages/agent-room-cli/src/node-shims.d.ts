@@ -18,14 +18,18 @@ declare module 'node:crypto' {
 }
 
 declare module 'node:fs/promises' {
+  export function mkdir(path: string, options?: unknown): Promise<void>;
   export function readFile(path: string, encoding: string): Promise<string>;
   export function readFile(path: string): Promise<any>;
+  export function rm(path: string, options?: unknown): Promise<void>;
   export function writeFile(path: string, data: string | Uint8Array, options?: unknown): Promise<void>;
 }
 
 declare module 'node:path' {
   export function basename(path: string, suffix?: string): string;
+  export function dirname(path: string): string;
   export function extname(path: string): string;
+  export function join(...paths: string[]): string;
 }
 
 declare module 'node:zlib' {

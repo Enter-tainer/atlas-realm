@@ -1,12 +1,14 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildFeatureFromParts } from '../src/annotation-feature.js';
+import { getStoredToken, saveStoredToken } from '../src/auth.js';
 import { buildFileLayerAssetFromText } from '../src/file-layer-asset.js';
 import { buildApiUrl, buildSocketUrl, createConfig } from '../src/config.js';
 import { executeCommand } from '../src/commands.js';
 import { RoomClient } from '../src/room-client.js';
+import { runCli } from '../src/cli.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -245,6 +247,44 @@ function routeGeoJson() {
   };
 }
 
+const originalFetch = globalThis.fetch;
+const originalWebSocket = globalThis.WebSocket;
+const originalTokenStore = process.env.ORM_AGENT_ROOM_TOKEN_STORE;
+const originalRoomClientId = process.env.ORM_ROOM_CLIENT_ID;
+
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+  globalThis.WebSocket = originalWebSocket;
+  FakeWebSocket.urls = [];
+  if (originalTokenStore === undefined) delete process.env.ORM_AGENT_ROOM_TOKEN_STORE;
+  else process.env.ORM_AGENT_ROOM_TOKEN_STORE = originalTokenStore;
+  if (originalRoomClientId === undefined) delete process.env.ORM_ROOM_CLIENT_ID;
+  else process.env.ORM_ROOM_CLIENT_ID = originalRoomClientId;
+});
+
+function captureIo() {
+  const lines: string[] = [];
+  return {
+    lines,
+    io: {
+      log(value?: unknown) {
+        lines.push(String(value ?? ''));
+      },
+    } as Console,
+  };
+}
+
+async function withTokenStore<T>(callback: (path: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-auth-'));
+  const path = join(dir, 'tokens.json');
+  process.env.ORM_AGENT_ROOM_TOKEN_STORE = path;
+  try {
+    return await callback(path);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
 describe('agent-room CLI package', () => {
   it('builds PartyServer WebSocket URLs from config', () => {
     const config = createConfig({
@@ -292,6 +332,174 @@ describe('agent-room CLI package', () => {
     expect(buildApiUrl({ host: 'https://example.com/app/' }, '/api/rooms')).toBe('https://example.com/app/api/rooms');
     expect(buildApiUrl({ host: 'localhost:5173' }, '/api/rooms')).toBe('http://localhost:5173/api/rooms');
     expect(buildApiUrl({ host: 'wss://example.com/live' }, '/api/rooms')).toBe('https://example.com/live/api/rooms');
+  });
+
+  it('requires a stable client id for room commands', async () => {
+    delete process.env.ORM_ROOM_CLIENT_ID;
+
+    await expect(
+      runCli(['snapshot', '--host', 'https://example.com', '--room', 'trip-room', '--json'], captureIo().io),
+    ).rejects.toThrow('Room commands require --client-id <id> or ORM_ROOM_CLIENT_ID.');
+    expect(FakeWebSocket.urls).toHaveLength(0);
+  });
+
+  it('logs in with GitHub Device Flow and stores the returned local PAT', async () => {
+    await withTokenStore(async (storePath) => {
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        if (String(url).endsWith('/api/auth/github/device/start')) {
+          return Response.json(
+            {
+              flowId: 'flow_cli',
+              userCode: 'ABCD-EFGH',
+              verificationUri: 'https://github.com/login/device',
+              verificationUriComplete: 'https://github.com/login/device?user_code=ABCD-EFGH',
+              expiresAt: Date.now() + 60_000,
+              intervalSeconds: 5,
+            },
+            { status: 201 },
+          );
+        }
+        if (String(url).endsWith('/api/auth/github/device/poll')) {
+          return Response.json({
+            status: 'complete',
+            token: 'orm_pat_device',
+            user: { githubLogin: 'octocat', displayName: 'Octocat' },
+            accessToken: { tokenId: 'tok_1', name: 'CLI' },
+          });
+        }
+        throw new Error(`Unexpected fetch: ${url}`);
+      };
+      const { io, lines } = captureIo();
+
+      await runCli(
+        ['login', '--host', 'https://example.com/app', '--token-name', 'Laptop CLI', '--poll-delay', '0'],
+        io,
+      );
+
+      expect(fetchCalls.map((call) => call.url)).toEqual([
+        'https://example.com/app/api/auth/github/device/start',
+        'https://example.com/app/api/auth/github/device/poll',
+      ]);
+      expect(JSON.parse(String(fetchCalls[0].init?.body))).toEqual({ name: 'Laptop CLI' });
+      expect(JSON.parse(String(fetchCalls[1].init?.body))).toEqual({ flowId: 'flow_cli' });
+      expect(lines.join('\n')).toContain('Open https://github.com/login/device?user_code=ABCD-EFGH');
+      expect(lines.join('\n')).toContain('Logged in as octocat');
+      expect(await getStoredToken('https://example.com/app', storePath)).toBe('orm_pat_device');
+      expect(await readFile(storePath, 'utf8')).toContain('octocat');
+    });
+  });
+
+  it('continues Device Flow login after slow_down and reports denied or expired flows', async () => {
+    await withTokenStore(async () => {
+      let pollCount = 0;
+      globalThis.fetch = async (url: RequestInfo | URL) => {
+        if (String(url).endsWith('/api/auth/github/device/start')) {
+          return Response.json({
+            flowId: 'flow_cli',
+            userCode: 'ABCD-EFGH',
+            verificationUri: 'https://github.com/login/device',
+            expiresAt: Date.now() + 60_000,
+            intervalSeconds: 5,
+          });
+        }
+        pollCount += 1;
+        return pollCount === 1
+          ? Response.json({ status: 'slow_down', intervalSeconds: 10, retryAfterSeconds: 0 })
+          : Response.json({ status: 'complete', token: 'orm_pat_after_slow', user: { githubLogin: 'octocat' } });
+      };
+
+      await runCli(['login', '--host', 'https://example.com', '--poll-delay', '0'], captureIo().io);
+      expect(pollCount).toBe(2);
+      expect(await getStoredToken('https://example.com')).toBe('orm_pat_after_slow');
+    });
+
+    await withTokenStore(async () => {
+      globalThis.fetch = async (url: RequestInfo | URL) =>
+        String(url).endsWith('/device/start')
+          ? Response.json({
+              flowId: 'flow_cli',
+              userCode: 'ABCD-EFGH',
+              verificationUri: 'https://github.com/login/device',
+              expiresAt: Date.now() + 60_000,
+              intervalSeconds: 5,
+            })
+          : Response.json({ status: 'denied' });
+      await expect(
+        runCli(['login', '--host', 'https://example.com', '--poll-delay', '0'], captureIo().io),
+      ).rejects.toThrow('denied');
+    });
+
+    await withTokenStore(async () => {
+      globalThis.fetch = async (url: RequestInfo | URL) =>
+        String(url).endsWith('/device/start')
+          ? Response.json({
+              flowId: 'flow_cli',
+              userCode: 'ABCD-EFGH',
+              verificationUri: 'https://github.com/login/device',
+              expiresAt: Date.now() + 60_000,
+              intervalSeconds: 5,
+            })
+          : Response.json({ status: 'expired' });
+      await expect(
+        runCli(['login', '--host', 'https://example.com', '--poll-delay', '0'], captureIo().io),
+      ).rejects.toThrow('expired');
+    });
+  });
+
+  it('prints whoami from a stored token and removes it on logout', async () => {
+    await withTokenStore(async (storePath) => {
+      await saveStoredToken('https://example.com/app', 'orm_pat_saved', { githubLogin: 'octocat' }, storePath);
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        return Response.json({ user: { userId: 'user_1', githubLogin: 'octocat', displayName: 'Octocat' } });
+      };
+
+      const who = captureIo();
+      await runCli(['whoami', '--host', 'https://example.com/app'], who.io);
+      expect(who.lines).toEqual(['octocat']);
+      expect(fetchCalls[0]).toMatchObject({ url: 'https://example.com/app/api/auth/me' });
+      expect(fetchCalls[0].init?.headers).toMatchObject({ Authorization: 'Bearer orm_pat_saved' });
+
+      const out = captureIo();
+      await runCli(['logout', '--host', 'https://example.com/app'], out.io);
+      expect(out.lines[0]).toContain('Removed stored token');
+      expect(await getStoredToken('https://example.com/app', storePath)).toBe('');
+    });
+  });
+
+  it('uses stored login tokens for room commands when no token option is passed', async () => {
+    await withTokenStore(async (storePath) => {
+      await saveStoredToken('https://example.com/app', 'orm_pat_saved', { githubLogin: 'octocat' }, storePath);
+      const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+      globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+        fetchCalls.push({ url: String(url), init });
+        return Response.json({});
+      };
+      globalThis.WebSocket = FakeWebSocket as never;
+      const { io } = captureIo();
+
+      await runCli(
+        [
+          'snapshot',
+          '--host',
+          'https://example.com/app',
+          '--room',
+          'trip-room',
+          '--client-id',
+          'agent-a',
+          '--client-type',
+          'query',
+          '--json',
+        ],
+        io,
+      );
+
+      expect(fetchCalls[0].init?.headers).toMatchObject({ Authorization: 'Bearer orm_pat_saved' });
+      expect(new URL(FakeWebSocket.urls[0]).searchParams.get('token')).toBe('orm_pat_saved');
+    });
   });
 
   it('prepares the room registry with PAT auth before opening the WebSocket', async () => {

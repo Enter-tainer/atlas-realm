@@ -23,28 +23,42 @@ pnpm agent:room --host <app-origin> --room <room> --client-id <id> <command> --j
 
 Always prefer `--json` for agent automation. Use `--pretty` only for human-readable inspection.
 
-`--client-id` is mandatory and must be a unique identifier for this CLI process/session (e.g. `agent-planner`, `layer-sync-v2`). It is used for connection-level presence and agent identity tracking.
+For room commands, `--client-id` is required by this skill. Use a stable, unique identifier for the agent/process/session (e.g. `agent-planner`, `layer-sync-v2`). It is used for connection-level presence and agent identity tracking, so stable ids make it clear which agent made a change. Account commands such as `login`, `whoami`, and `logout` do not need `--client-id`.
 
 Host default order: `ORM_ROOM_HOST` env var → `ROOM_HOST` env var → `http://localhost:5173`.
 
 Production host: `https://map.mgt.moe`
 
-### Authentication (PAT)
+### Authentication
 
-For rooms with access controls enabled, pass a Personal Access Token:
+For rooms with access controls enabled, sign in once with GitHub Device Flow:
+
+```bash
+orm-agent-room login --host <host>
+```
+
+After login, normal commands automatically use the stored local token:
+
+```bash
+orm-agent-room --host <host> --room <room> --client-id <id> <command> --json
+```
+
+Useful account commands:
+
+```bash
+orm-agent-room whoami --host <host>
+orm-agent-room logout --host <host>
+```
+
+Manual PAT usage remains available for CI and debugging:
 
 ```bash
 orm-agent-room --host <host> --room <room> --client-id <id> --token orm_pat_... <command> --json
-```
-
-Or set the `ORM_ROOM_TOKEN` environment variable:
-
-```bash
 export ORM_ROOM_TOKEN=orm_pat_...
 orm-agent-room --host <host> --room <room> --client-id <id> <command> --json
 ```
 
-The token authenticates the agent as its owning user. Room access is computed by the server from link-access settings and explicit grants, same as for browser sessions.
+The token authenticates the agent as its owning GitHub user. Room access is computed by the server from link-access settings and explicit grants, same as for browser sessions.
 
 By default, CLI calls identify as `--client-type agent` and refresh that agent's recent activity in the room. Use `--client-type query` for read-only checks that should not update agent activity.
 
@@ -71,8 +85,8 @@ Example: `https://map.mgt.moe/?room=niutoushan`
 Presence shows live human users from current WebSocket connections and recent agent users from server-maintained room state.
 
 ```bash
-orm-agent-room --host <host> --room <room> presence --json
-orm-agent-room --host <host> --room <room> --client-type query presence --json
+orm-agent-room --host <host> --room <room> --client-id <id> presence --json
+orm-agent-room --host <host> --room <room> --client-id <id> --client-type query presence --json
 ```
 
 Use `presence --json` before context-sensitive edits when you need to know whether users are currently in the room, where they are looking, or which agents were active recently. Do not infer a human user is still online from agent recent activity; humans and agents are separate lists.
@@ -82,9 +96,9 @@ Use `presence --json` before context-sensitive edits when you need to know wheth
 Room metadata includes persistence. Ephemeral rooms expire after inactivity; persistent rooms do not expire on the normal room alarm.
 
 ```bash
-orm-agent-room --host <host> --room <room> room status --json
-orm-agent-room --host <host> --room <room> room update --persistence persistent --json
-orm-agent-room --host <host> --room <room> room update --persistence ephemeral --json
+orm-agent-room --host <host> --room <room> --client-id <id> room status --json
+orm-agent-room --host <host> --room <room> --client-id <id> room update --persistence persistent --json
+orm-agent-room --host <host> --room <room> --client-id <id> room update --persistence ephemeral --json
 ```
 
 ## Layers
@@ -92,18 +106,18 @@ orm-agent-room --host <host> --room <room> room update --persistence ephemeral -
 Layers are uploaded map files, usually GeoJSON or GPX.
 
 ```bash
-orm-agent-room --host <host> --room <room> layers list --json
-orm-agent-room --host <host> --room <room> layers get trip-route --json
-orm-agent-room --host <host> --room <room> layers metadata trip-route --json
-orm-agent-room --host <host> --room <room> layers content trip-route --json
-orm-agent-room --host <host> --room <room> layers export trip-route --out ./route.geojson --json
-orm-agent-room --host <host> --room <room> layers add ./route.geojson --id trip-route --name "Trip route" --json
-orm-agent-room --host <host> --room <room> layers add ./route.geojson --id trip-route --persistence persistent --json
-orm-agent-room --host <host> --room <room> layers update trip-route --name "Morning route" --visible false --json
-orm-agent-room --host <host> --room <room> layers hide trip-route --json
-orm-agent-room --host <host> --room <room> layers show trip-route --json
-orm-agent-room --host <host> --room <room> layers delete trip-route --json
-orm-agent-room --host <host> --room <room> layers reorder layer-a layer-b --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers list --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers get trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers metadata trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers content trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers export trip-route --out ./route.geojson --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --name "Trip route" --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --persistence persistent --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers update trip-route --name "Morning route" --visible false --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers hide trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers show trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers delete trip-route --json
+orm-agent-room --host <host> --room <room> --client-id <id> layers reorder layer-a layer-b --json
 ```
 
 `layers get` and `layers content` return the layer row plus its contents: annotation layers include `annotations`, file layers include decoded `content` (GeoJSON object or GPX text).
@@ -137,25 +151,25 @@ Annotations are editable planning objects in the shared annotation model.
 Point:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add point --id hotel --lng 121.5 --lat 31.2 --label "Hotel" --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations add point --id hotel --lng 121.5 --lat 31.2 --label "Hotel" --json
 ```
 
 Text:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
 ```
 
 Path:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --line-style dashed --opacity 0.8 --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --line-style dashed --opacity 0.8 --json
 ```
 
 Polygon:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
 ```
 
 Line, route, and polygon outline style options:
@@ -167,10 +181,10 @@ Line, route, and polygon outline style options:
 Update/delete:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations update hotel --label "Updated hotel" --json
-orm-agent-room --host <host> --room <room> annotations delete hotel --json
-orm-agent-room --host <host> --room <room> annotations clear --layer-id annotation-default --json
-orm-agent-room --host <host> --room <room> annotations clear --layer-id annotation-default --hide-layer --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations update hotel --label "Updated hotel" --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations delete hotel --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --hide-layer --json
 ```
 
 For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
@@ -178,11 +192,11 @@ For complex features, pass full JSON with `--feature-file` / `--feature-json`; f
 Annotation layers:
 
 ```bash
-orm-agent-room --host <host> --room <room> annotations layers list --json
-orm-agent-room --host <host> --room <room> annotations layers add notes --name "Notes" --json
-orm-agent-room --host <host> --room <room> annotations layers hide notes --json
-orm-agent-room --host <host> --room <room> annotations layers clear notes --json
-orm-agent-room --host <host> --room <room> annotations layers delete notes --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations layers list --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations layers add notes --name "Notes" --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations layers hide notes --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations layers clear notes --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations layers delete notes --json
 ```
 
 ## Travel Planning Conventions

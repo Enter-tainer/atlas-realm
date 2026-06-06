@@ -1,18 +1,23 @@
 import {
   bearerTokenFromRequest,
+  completeOAuthDeviceFlow,
   createSession,
   createAccessToken,
+  createOAuthDeviceFlow,
   expiredOAuthReturnCookie,
   expiredOAuthStateCookie,
   expiredSessionCookie,
   getAccessTokenUser,
+  getOAuthDeviceFlow,
   getSessionUser,
   listAccessTokens,
+  markOAuthDeviceFlowTerminal,
   oauthReturnCookie,
   oauthReturnToFromRequest,
   oauthStateCookie,
   oauthStateFromRequest,
   randomToken,
+  recordOAuthDeviceFlowPoll,
   revokeSession,
   revokeAccessToken,
   sessionCookie,
@@ -42,6 +47,18 @@ interface GitHubOAuthTokenResponse {
   access_token?: string;
   token_type?: string;
   error?: string;
+  error_description?: string;
+}
+
+interface GitHubDeviceCodeResponse {
+  device_code?: string;
+  user_code?: string;
+  verification_uri?: string;
+  verification_uri_complete?: string;
+  expires_in?: number;
+  interval?: number;
+  error?: string;
+  error_description?: string;
 }
 
 interface GitHubOAuthProfile {
@@ -106,6 +123,12 @@ function sanitizeTokenName(value: unknown): string {
   if (typeof value !== 'string') return 'CLI token';
   const name = value.replace(/\s+/g, ' ').trim();
   return name ? name.slice(0, 80) : 'CLI token';
+}
+
+function sanitizeFlowId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const flowId = value.trim();
+  return /^flow_[0-9a-f]{64}$/.test(flowId) ? flowId : null;
 }
 
 function safeReturnTo(value: string | null): string {
@@ -230,6 +253,50 @@ async function exchangeGitHubCode(env: Cloudflare.Env, code: string): Promise<st
   return data.access_token;
 }
 
+async function startGitHubDeviceCode(env: Cloudflare.Env): Promise<GitHubDeviceCodeResponse> {
+  const response = await fetch('https://github.com/login/device/code', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'orm-pmtiles-demo',
+    },
+    body: new URLSearchParams({
+      client_id: env.GITHUB_CLIENT_ID || '',
+    }),
+  });
+  if (!response.ok) throw new Error('GitHub device flow start failed');
+  const data = (await response.json()) as GitHubDeviceCodeResponse;
+  if (
+    !data.device_code ||
+    !data.user_code ||
+    !data.verification_uri ||
+    typeof data.expires_in !== 'number' ||
+    data.error
+  ) {
+    throw new Error(data.error_description || data.error || 'Invalid GitHub device flow response');
+  }
+  return data;
+}
+
+async function checkGitHubDeviceToken(env: Cloudflare.Env, deviceCode: string): Promise<GitHubOAuthTokenResponse> {
+  const response = await fetch('https://github.com/login/oauth/access_token', {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'orm-pmtiles-demo',
+    },
+    body: new URLSearchParams({
+      client_id: env.GITHUB_CLIENT_ID || '',
+      device_code: deviceCode,
+      grant_type: 'urn:ietf:params:oauth:grant-type:device_code',
+    }),
+  });
+  if (!response.ok) throw new Error('GitHub device flow poll failed');
+  return (await response.json()) as GitHubOAuthTokenResponse;
+}
+
 async function fetchGitHubOAuthProfile(accessToken: string): Promise<GitHubOAuthProfile> {
   const response = await fetch('https://api.github.com/user', {
     headers: {
@@ -252,7 +319,7 @@ export async function handleAccountApiRequest(request: Request, env: Cloudflare.
   if (!env.ACCOUNTS_DB) return jsonResponse({ error: 'accounts-db-not-configured' }, { status: 501 });
 
   if (request.method === 'GET' && url.pathname === '/api/auth/me') {
-    const user = await getSessionUser(env.ACCOUNTS_DB, request);
+    const user = await getRequestUser(env.ACCOUNTS_DB, request);
     return jsonResponse({ user });
   }
 
@@ -301,6 +368,132 @@ export async function handleAccountApiRequest(request: Request, env: Cloudflare.
       return redirectResponse(oauthReturnToFromRequest(request), { headers });
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : 'github-oauth-failed' }, { status: 502 });
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/auth/github/device/start') {
+    if (!env.GITHUB_CLIENT_ID) {
+      return jsonResponse({ error: 'github-oauth-not-configured' }, { status: 501 });
+    }
+    const body = parseJsonRecord(await request.text());
+    const tokenName = sanitizeTokenName(body?.name);
+
+    try {
+      const device = await startGitHubDeviceCode(env);
+      const intervalSeconds = Math.max(5, Math.min(60, Math.floor(device.interval || 5)));
+      const expiresAt = Date.now() + Math.max(1, Math.floor(device.expires_in || 900)) * 1000;
+      const flow = await createOAuthDeviceFlow(env.ACCOUNTS_DB, {
+        deviceCode: device.device_code as string,
+        userCode: device.user_code as string,
+        verificationUri: device.verification_uri as string,
+        verificationUriComplete: device.verification_uri_complete || null,
+        tokenName,
+        intervalSeconds,
+        expiresAt,
+      });
+      return jsonResponse(
+        {
+          flowId: flow.flowId,
+          userCode: flow.userCode,
+          verificationUri: flow.verificationUri,
+          verificationUriComplete: flow.verificationUriComplete,
+          expiresAt: flow.expiresAt,
+          intervalSeconds: flow.intervalSeconds,
+        },
+        { status: 201 },
+      );
+    } catch (error) {
+      return jsonResponse(
+        { error: error instanceof Error ? error.message : 'github-device-start-failed' },
+        { status: 502 },
+      );
+    }
+  }
+
+  if (request.method === 'POST' && url.pathname === '/api/auth/github/device/poll') {
+    if (!env.GITHUB_CLIENT_ID) {
+      return jsonResponse({ error: 'github-oauth-not-configured' }, { status: 501 });
+    }
+    const body = parseJsonRecord(await request.text());
+    const flowId = sanitizeFlowId(body?.flowId);
+    if (!flowId) return jsonResponse({ error: 'invalid-device-flow' }, { status: 400 });
+
+    const flow = await getOAuthDeviceFlow(env.ACCOUNTS_DB, flowId);
+    if (!flow) return jsonResponse({ error: 'device-flow-not-found' }, { status: 404 });
+    if (flow.status === 'complete') {
+      return jsonResponse({ status: 'complete', token: null, intervalSeconds: flow.intervalSeconds });
+    }
+    if (flow.status === 'denied') return jsonResponse({ status: 'denied', intervalSeconds: flow.intervalSeconds });
+    if (flow.status === 'expired') return jsonResponse({ status: 'expired', intervalSeconds: flow.intervalSeconds });
+
+    const now = Date.now();
+    if (flow.expiresAt <= now) {
+      await markOAuthDeviceFlowTerminal(env.ACCOUNTS_DB, flow.flowId, 'expired', now);
+      return jsonResponse({ status: 'expired', intervalSeconds: flow.intervalSeconds });
+    }
+
+    const retryAt = (flow.lastPollAt || 0) + flow.intervalSeconds * 1000;
+    if (flow.lastPollAt && retryAt > now) {
+      return jsonResponse({
+        status: 'slow_down',
+        intervalSeconds: flow.intervalSeconds,
+        retryAfterSeconds: Math.ceil((retryAt - now) / 1000),
+      });
+    }
+
+    try {
+      await recordOAuthDeviceFlowPoll(env.ACCOUNTS_DB, flow.flowId, flow.intervalSeconds, now);
+      const tokenResponse = await checkGitHubDeviceToken(env, flow.deviceCode);
+
+      if (tokenResponse.error === 'authorization_pending') {
+        return jsonResponse({ status: 'pending', intervalSeconds: flow.intervalSeconds });
+      }
+
+      if (tokenResponse.error === 'slow_down') {
+        const intervalSeconds = Math.min(120, flow.intervalSeconds + 5);
+        await recordOAuthDeviceFlowPoll(env.ACCOUNTS_DB, flow.flowId, intervalSeconds, now);
+        return jsonResponse({ status: 'slow_down', intervalSeconds });
+      }
+
+      if (tokenResponse.error === 'expired_token') {
+        await markOAuthDeviceFlowTerminal(env.ACCOUNTS_DB, flow.flowId, 'expired', now);
+        return jsonResponse({ status: 'expired', intervalSeconds: flow.intervalSeconds });
+      }
+
+      if (tokenResponse.error === 'access_denied') {
+        await markOAuthDeviceFlowTerminal(env.ACCOUNTS_DB, flow.flowId, 'denied', now);
+        return jsonResponse({ status: 'denied', intervalSeconds: flow.intervalSeconds });
+      }
+
+      if (!tokenResponse.access_token || tokenResponse.error) {
+        return jsonResponse(
+          { error: tokenResponse.error_description || tokenResponse.error || 'github-device-poll-failed' },
+          { status: 502 },
+        );
+      }
+
+      const profile = await fetchGitHubOAuthProfile(tokenResponse.access_token);
+      if (profile.id === undefined || typeof profile.login !== 'string') throw new Error('Invalid GitHub profile');
+      const user = await upsertGitHubAccount(env.ACCOUNTS_DB, {
+        githubId: String(profile.id),
+        githubLogin: profile.login,
+        displayName: profile.name || profile.login,
+        avatarUrl: profile.avatar_url || null,
+      });
+      await claimPendingRoomGrants(env.ACCOUNTS_DB, user.userId, user.githubId);
+      const created = await createAccessToken(env.ACCOUNTS_DB, user.userId, flow.tokenName, now);
+      await completeOAuthDeviceFlow(env.ACCOUNTS_DB, flow.flowId, created.summary.tokenId, now);
+      return jsonResponse({
+        status: 'complete',
+        token: created.token,
+        accessToken: created.summary,
+        user,
+      });
+    } catch (error) {
+      return jsonResponse(
+        { error: error instanceof Error ? error.message : 'github-device-poll-failed' },
+        { status: 502 },
+      );
     }
   }
 

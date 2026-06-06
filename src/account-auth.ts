@@ -48,6 +48,24 @@ export interface AccessTokenSummary {
   revokedAt: number | null;
 }
 
+export type OAuthDeviceFlowStatus = 'pending' | 'complete' | 'denied' | 'expired';
+
+export interface OAuthDeviceFlow {
+  flowId: string;
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  tokenName: string;
+  intervalSeconds: number;
+  createdAt: number;
+  expiresAt: number;
+  lastPollAt: number | null;
+  completedAt: number | null;
+  accessTokenId: string | null;
+  status: OAuthDeviceFlowStatus;
+}
+
 interface AccessTokenRow {
   tokenId: string;
   name: string;
@@ -55,6 +73,22 @@ interface AccessTokenRow {
   lastUsedAt: number | null;
   expiresAt: number | null;
   revokedAt: number | null;
+}
+
+interface OAuthDeviceFlowRow {
+  flowId: string;
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete: string | null;
+  tokenName: string;
+  intervalSeconds: number;
+  createdAt: number;
+  expiresAt: number;
+  lastPollAt: number | null;
+  completedAt: number | null;
+  accessTokenId: string | null;
+  status: OAuthDeviceFlowStatus;
 }
 
 export function randomToken(prefix = ''): string {
@@ -236,6 +270,141 @@ export async function createAccessToken(
       revokedAt: null,
     },
   };
+}
+
+export async function createOAuthDeviceFlow(
+  db: D1Database,
+  input: {
+    deviceCode: string;
+    userCode: string;
+    verificationUri: string;
+    verificationUriComplete?: string | null;
+    tokenName: string;
+    intervalSeconds: number;
+    expiresAt: number;
+  },
+  now: number = Date.now(),
+): Promise<OAuthDeviceFlow> {
+  const flowId = randomToken('flow_');
+  await db
+    .prepare(
+      `
+      INSERT INTO oauth_device_flows (
+        flow_id, device_code, user_code, verification_uri, verification_uri_complete,
+        token_name, interval_seconds, created_at, expires_at, status
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'pending')
+    `,
+    )
+    .bind(
+      flowId,
+      input.deviceCode,
+      input.userCode,
+      input.verificationUri,
+      input.verificationUriComplete || null,
+      input.tokenName,
+      input.intervalSeconds,
+      now,
+      input.expiresAt,
+    )
+    .run();
+  return {
+    flowId,
+    deviceCode: input.deviceCode,
+    userCode: input.userCode,
+    verificationUri: input.verificationUri,
+    verificationUriComplete: input.verificationUriComplete || null,
+    tokenName: input.tokenName,
+    intervalSeconds: input.intervalSeconds,
+    createdAt: now,
+    expiresAt: input.expiresAt,
+    lastPollAt: null,
+    completedAt: null,
+    accessTokenId: null,
+    status: 'pending',
+  };
+}
+
+export async function getOAuthDeviceFlow(db: D1Database, flowId: string): Promise<OAuthDeviceFlow | null> {
+  const row = await db
+    .prepare(
+      `
+      SELECT
+        flow_id AS flowId,
+        device_code AS deviceCode,
+        user_code AS userCode,
+        verification_uri AS verificationUri,
+        verification_uri_complete AS verificationUriComplete,
+        token_name AS tokenName,
+        interval_seconds AS intervalSeconds,
+        created_at AS createdAt,
+        expires_at AS expiresAt,
+        last_poll_at AS lastPollAt,
+        completed_at AS completedAt,
+        access_token_id AS accessTokenId,
+        status
+      FROM oauth_device_flows
+      WHERE flow_id = ?1
+      LIMIT 1
+    `,
+    )
+    .bind(flowId)
+    .first<OAuthDeviceFlowRow>();
+  return row || null;
+}
+
+export async function recordOAuthDeviceFlowPoll(
+  db: D1Database,
+  flowId: string,
+  intervalSeconds: number,
+  now: number = Date.now(),
+): Promise<void> {
+  await db
+    .prepare(
+      `
+      UPDATE oauth_device_flows
+      SET last_poll_at = ?2, interval_seconds = ?3
+      WHERE flow_id = ?1 AND status = 'pending'
+    `,
+    )
+    .bind(flowId, now, intervalSeconds)
+    .run();
+}
+
+export async function completeOAuthDeviceFlow(
+  db: D1Database,
+  flowId: string,
+  accessTokenId: string,
+  now: number = Date.now(),
+): Promise<void> {
+  await db
+    .prepare(
+      `
+      UPDATE oauth_device_flows
+      SET status = 'complete', completed_at = ?2, access_token_id = ?3
+      WHERE flow_id = ?1 AND status = 'pending'
+    `,
+    )
+    .bind(flowId, now, accessTokenId)
+    .run();
+}
+
+export async function markOAuthDeviceFlowTerminal(
+  db: D1Database,
+  flowId: string,
+  status: Exclude<OAuthDeviceFlowStatus, 'pending' | 'complete'>,
+  now: number = Date.now(),
+): Promise<void> {
+  await db
+    .prepare(
+      `
+      UPDATE oauth_device_flows
+      SET status = ?2, completed_at = ?3
+      WHERE flow_id = ?1 AND status = 'pending'
+    `,
+    )
+    .bind(flowId, status, now)
+    .run();
 }
 
 export async function revokeAccessToken(
