@@ -3,6 +3,7 @@
   "name": "orm-pmtiles-demo",
   "main": "src/worker.ts",
   "compatibility_date": "2025-09-27",
+  "workers_dev": false,
   "observability": {
     "enabled": true,
   },
