@@ -8,6 +8,22 @@ Atlas Realm turns a map into a shared document. People can import tracks, organi
 
 The original idea was Google Docs on top of a map. The useful extension is that the document is not only for people. It is structured enough for agents to read, edit, and keep in sync.
 
+## Install The Skill
+
+Install the Atlas Realm skill for Codex:
+
+```bash
+npx skills add Enter-tainer/atlas-realm --skill atlas-realm --agent codex --global --yes --full-depth
+```
+
+Then give an agent a room URL such as `https://map.mgt.moe/?room=your-room-id` and ask it to inspect layers, add annotations, or maintain the shared map context.
+
+Useful companion skills:
+
+- [AMap LBS Skill](https://github.com/AMap-Web/amap-lbs-skill): China-focused POI search, route planning, travel planning, nearby search, and map visualization. It uses AMap Web Service APIs, so configure an AMap Web Service Key before using it.
+- [Norikae Guide Skill](https://github.com/Enter-tainer/norikae-guide-skill): Japan transit planning with Yahoo! 乗換案内, including station-name normalization, live route-page fetching, and route extraction.
+- [Hermes Maps Skill](https://github.com/NousResearch/hermes-agent/blob/main/skills/productivity/maps/SKILL.md): OpenStreetMap/OSRM-based geocoding, reverse geocoding, nearby POI search, travel distance, directions, timezone lookup, and bounding-box search without an API key.
+
 ## Screenshots
 
 This screenshot set follows a fixed Shanghai city walk story. The group meets near Wukang Mansion, walks through Wukang Road and Anfu Road, takes the metro toward East Nanjing Road, photographs the Bund, and finishes with dinner at Rockbund.
@@ -124,12 +140,6 @@ Useful agent tasks include:
 - Organize a set of research points into separate layers.
 - Review missing notes or unnamed features and fill them in.
 - Keep a shared room maintained as new material arrives.
-
-Install the Atlas Realm skill for Codex:
-
-```bash
-npx skills add Enter-tainer/atlas-realm --skill atlas-realm --agent codex --global --yes --full-depth
-```
 
 For local development from this repository:
 
