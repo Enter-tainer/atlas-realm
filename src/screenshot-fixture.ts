@@ -16,6 +16,7 @@ type ScreenshotFixtureView = {
   center: [number, number];
   zoom: number;
 };
+type ScreenshotFixtureLocale = 'en' | 'zh';
 type DemoFeaturePayload =
   | Omit<AnnotationPointPayload, 'createdAt' | 'updatedAt' | 'updatedBy'>
   | Omit<AnnotationPathPayload, 'createdAt' | 'updatedAt' | 'updatedBy'>
@@ -37,6 +38,17 @@ export const SCREENSHOT_FIXTURE_VIEW = {
   center: [121.4562, 31.22727] as [number, number],
   zoom: 13.55,
 };
+
+function screenshotFixtureLocale(): ScreenshotFixtureLocale {
+  const params = new URLSearchParams(window.location.search);
+  const explicit = params.get('screenshotLocale') || params.get('locale');
+  const locale = explicit || navigator.languages?.[0] || navigator.language || 'en-US';
+  return /^zh\b/i.test(locale) ? 'zh' : 'en';
+}
+
+function fixtureText(en: string, zh: string) {
+  return screenshotFixtureLocale() === 'zh' ? zh : en;
+}
 
 const FRENCH_CONCESSION_AREA: [number, number][] = [
   [121.456183, 31.215327],
@@ -158,8 +170,11 @@ const MEET_WUKANG_MANSION: DemoFeaturePayload = {
   id: 'meet-wukang-mansion',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '📍 武康大楼 · 集合点',
-  note: '14:00 在淮海中路地标建筑旁集合，先确认当天的 city walk 节奏。',
+  label: fixtureText('Meet at Wukang Mansion', '武康大楼 · 集合点'),
+  note: fixtureText(
+    'Meet at 14:00 beside the Huaihai Road landmark and agree on the city walk pace.',
+    '14:00 在淮海中路地标建筑旁集合，先确认当天的 city walk 节奏。',
+  ),
   color: '#4caf50',
   coordinate: WUKANG_MANSION,
 };
@@ -168,8 +183,11 @@ const COFFEE_ANFU: DemoFeaturePayload = {
   id: 'coffee-anfu',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '☕ 安福路 · 咖啡 & 拍照',
-  note: '武康路散步后在安福路休息，顺手拍梧桐树影和街景。',
+  label: fixtureText('Coffee and photos on Anfu Road', '安福路 · 咖啡 & 拍照'),
+  note: fixtureText(
+    'Pause after Wukang Road for coffee, plane-tree shade, and street photos.',
+    '武康路散步后在安福路休息，顺手拍梧桐树影和街景。',
+  ),
   color: '#ff9800',
   coordinate: ANFU_ROAD,
 };
@@ -178,8 +196,11 @@ const DINNER_BUND_ORIGIN: DemoFeaturePayload = {
   id: 'dinner-bund-origin',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '🍽️ 外滩源 · 晚餐',
-  note: '外滩拍完照后步行到圆明园路附近吃晚饭。',
+  label: fixtureText('Dinner at Rockbund', '外滩源 · 晚餐'),
+  note: fixtureText(
+    'Walk toward Yuanmingyuan Road for dinner after the Bund photo stop.',
+    '外滩拍完照后步行到圆明园路附近吃晚饭。',
+  ),
   color: '#e91e63',
   coordinate: BUND_ORIGIN,
 };
@@ -188,8 +209,11 @@ const BUND_LIGHTS: DemoFeaturePayload = {
   id: 'bund-lights',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '🌃 外滩 · 开灯拍照',
-  note: '傍晚蓝调时间在外滩沿江平台拍浦东天际线。',
+  label: fixtureText('Bund skyline photos', '外滩 · 开灯拍照'),
+  note: fixtureText(
+    'Use blue hour on the riverside platform to photograph the Pudong skyline.',
+    '傍晚蓝调时间在外滩沿江平台拍浦东天际线。',
+  ),
   color: '#ffd700',
   coordinate: BUND_LIGHTS_COORDINATE,
 };
@@ -198,8 +222,11 @@ const WALK_WUKANG_ANFU: DemoFeaturePayload = {
   id: 'walk-wukang-anfu',
   layerId: CITYWALK_LAYER_ID,
   type: 'path',
-  label: '🚶 武康路 City Walk',
-  note: '从武康大楼出发，路过巴金故居、罗密欧阳台，走到安福路。',
+  label: fixtureText('Wukang Road city walk', '武康路 City Walk'),
+  note: fixtureText(
+    'Start at Wukang Mansion, pass Ba Jin Residence and Romeo Balcony, then walk to Anfu Road.',
+    '从武康大楼出发，路过巴金故居、罗密欧阳台，走到安福路。',
+  ),
   color: '#4caf50',
   points: WALK_WUKANG_ANFU_POINTS,
   directed: true,
@@ -212,8 +239,11 @@ const METRO_LINE10: DemoFeaturePayload = {
   id: 'metro-line10',
   layerId: CITYWALK_LAYER_ID,
   type: 'path',
-  label: '🚇 10号线 · 上海图书馆→南京东路',
-  note: '从衡复街区切到外滩段，中间坐地铁换场景。',
+  label: fixtureText('Metro Line 10: Shanghai Library to East Nanjing Road', '10号线 · 上海图书馆→南京东路'),
+  note: fixtureText(
+    'Use the metro to move from the former French Concession segment to the Bund segment.',
+    '从衡复街区切到外滩段，中间坐地铁换场景。',
+  ),
   color: '#9c27b0',
   points: METRO_LINE10_POINTS,
   directed: true,
@@ -226,8 +256,11 @@ const METRO_NANJING_EAST_ROAD: DemoFeaturePayload = {
   id: 'metro-nanjing-east-road',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '🚇 南京东路站 · 出站点',
-  note: '出站后沿南京东路步行到和平饭店和外滩。',
+  label: fixtureText('East Nanjing Road station exit', '南京东路站 · 出站点'),
+  note: fixtureText(
+    'Exit the station and walk along East Nanjing Road toward the Peace Hotel and the Bund.',
+    '出站后沿南京东路步行到和平饭店和外滩。',
+  ),
   color: '#9c27b0',
   coordinate: NANJING_EAST_ROAD,
 };
@@ -236,8 +269,11 @@ const WALK_NANJING_BUND: DemoFeaturePayload = {
   id: 'walk-nanjing-bund',
   layerId: CITYWALK_LAYER_ID,
   type: 'path',
-  label: '🚶 南京东路 → 和平饭店 → 外滩源',
-  note: '先到和平饭店和外滩拍照，再往北走到外滩源吃饭。',
+  label: fixtureText('East Nanjing Road to the Bund', '南京东路 → 和平饭店 → 外滩源'),
+  note: fixtureText(
+    'Stop by the Peace Hotel and the Bund for photos, then continue north to Rockbund for dinner.',
+    '先到和平饭店和外滩拍照，再往北走到外滩源吃饭。',
+  ),
   color: '#4caf50',
   points: WALK_NANJING_BUND_POINTS,
   directed: true,
@@ -250,8 +286,11 @@ const ROMEO_BALCONY: DemoFeaturePayload = {
   id: 'romeo-balcony',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '🏛️ 罗密欧阳台',
-  note: '武康路上的西班牙式住宅，适合做中途停留点。',
+  label: fixtureText('Romeo Balcony', '罗密欧阳台'),
+  note: fixtureText(
+    'A Spanish-style residence on Wukang Road that works well as a mid-route stop.',
+    '武康路上的西班牙式住宅，适合做中途停留点。',
+  ),
   color: '#ab47bc',
   coordinate: [121.4348, 31.2095],
 };
@@ -260,8 +299,11 @@ const BAJIN_RESIDENCE: DemoFeaturePayload = {
   id: 'bajin-residence',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '📚 巴金故居',
-  note: '武康路沿线的人文停留点，和武康大楼同属第一段步行。',
+  label: fixtureText('Ba Jin Residence', '巴金故居'),
+  note: fixtureText(
+    'A literary stop on Wukang Road, grouped with the first walking segment.',
+    '武康路沿线的人文停留点，和武康大楼同属第一段步行。',
+  ),
   color: '#ab47bc',
   coordinate: [121.435, 31.2102],
 };
@@ -270,8 +312,11 @@ const GARDEN_BRIDGE: DemoFeaturePayload = {
   id: 'garden-bridge',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '🌉 外白渡桥',
-  note: '外滩源附近的经典桥梁机位，晚饭前可以顺路经过。',
+  label: fixtureText('Waibaidu Bridge', '外白渡桥'),
+  note: fixtureText(
+    'A classic bridge viewpoint near Rockbund, easy to visit before dinner.',
+    '外滩源附近的经典桥梁机位，晚饭前可以顺路经过。',
+  ),
   color: '#ab47bc',
   coordinate: GARDEN_BRIDGE_COORDINATE,
 };
@@ -280,8 +325,11 @@ const PHOTO_WUKANG_MANSION: DemoFeaturePayload = {
   id: 'photo-wukang-mansion',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '📷 武康大楼机位',
-  note: '兴国路与淮海中路路口附近，适合拍完整楼体。',
+  label: fixtureText('Wukang Mansion photo spot', '武康大楼机位'),
+  note: fixtureText(
+    'Near Xingguo Road and Huaihai Road, with a good angle for the full building.',
+    '兴国路与淮海中路路口附近，适合拍完整楼体。',
+  ),
   color: '#ff5722',
   coordinate: [121.4333, 31.2058],
 };
@@ -290,8 +338,11 @@ const PHOTO_ANFU_STREET: DemoFeaturePayload = {
   id: 'photo-anfu-street',
   layerId: CITYWALK_LAYER_ID,
   type: 'point',
-  label: '📷 安福路街景机位',
-  note: '梧桐树、老房子和街拍氛围比较集中。',
+  label: fixtureText('Anfu Road street photo spot', '安福路街景机位'),
+  note: fixtureText(
+    'Plane trees, old houses, and street-photo texture are concentrated here.',
+    '梧桐树、老房子和街拍氛围比较集中。',
+  ),
   color: '#ff5722',
   coordinate: [121.4365, 31.2145],
 };
@@ -300,8 +351,11 @@ const FRENCH_CONCESSION: DemoFeaturePayload = {
   id: 'french-concession-v2',
   layerId: CITYWALK_LAYER_ID,
   type: 'polygon',
-  label: '🌳 湖南路历史风貌区',
-  note: '衡复风貌区的一段梧桐街区，用来圈出第一段 city walk 的主要活动范围。',
+  label: fixtureText('Hunan Road historic area', '湖南路历史风貌区'),
+  note: fixtureText(
+    'A plane-tree neighborhood in the Hengfu historic district that bounds the first city walk segment.',
+    '衡复风貌区的一段梧桐街区，用来圈出第一段 city walk 的主要活动范围。',
+  ),
   color: '#66bb6a',
   points: FRENCH_CONCESSION_AREA,
   width: 2,
@@ -314,8 +368,11 @@ const WUKANG_BUILDING: DemoFeaturePayload = {
   id: 'wukang-building',
   layerId: CITYWALK_LAYER_ID,
   type: 'polygon',
-  label: '🏢 武康大楼轮廓',
-  note: '把地标建筑轮廓标出来，方便大家确认集合点和拍摄角度。',
+  label: fixtureText('Wukang Mansion footprint', '武康大楼轮廓'),
+  note: fixtureText(
+    'Trace the landmark footprint so everyone can confirm the meeting point and photo angles.',
+    '把地标建筑轮廓标出来，方便大家确认集合点和拍摄角度。',
+  ),
   color: '#4caf50',
   points: WUKANG_BUILDING_AREA,
   width: 2,
@@ -328,8 +385,11 @@ const PEACE_HOTEL_BUILDING: DemoFeaturePayload = {
   id: 'peace-hotel-building',
   layerId: CITYWALK_LAYER_ID,
   type: 'polygon',
-  label: '🏨 和平饭店轮廓',
-  note: '外滩段的关键地标，作为从南京东路走向外滩的参照。',
+  label: fixtureText('Peace Hotel footprint', '和平饭店轮廓'),
+  note: fixtureText(
+    'A key Bund landmark used as the reference point from East Nanjing Road to the river.',
+    '外滩段的关键地标，作为从南京东路走向外滩的参照。',
+  ),
   color: '#ab47bc',
   points: PEACE_HOTEL_AREA,
   width: 2,
@@ -342,8 +402,11 @@ const CUSTOMS_BUILDING: DemoFeaturePayload = {
   id: 'customs-building',
   layerId: CITYWALK_LAYER_ID,
   type: 'polygon',
-  label: '🕰️ 海关大楼轮廓',
-  note: '外滩钟楼地标，拍照路线经过这里。',
+  label: fixtureText('Customs House footprint', '海关大楼轮廓'),
+  note: fixtureText(
+    'The Bund clock tower landmark sits directly on the evening photo route.',
+    '外滩钟楼地标，拍照路线经过这里。',
+  ),
   color: '#ab47bc',
   points: CUSTOMS_BUILDING_AREA,
   width: 2,
@@ -471,9 +534,13 @@ function viewportCorners(center: [number, number], widthLng: number, aspectRatio
 export function installScreenshotFixtureData(layerStore: LayerStore, mode: ScreenshotFixtureMode) {
   if (mode === 'layers') {
     layerStore.setLayerList([
-      annotationLayer(ROUTE_LAYER_ID, '🚶 路线：武康路、地铁、外滩', 0),
-      annotationLayer(STOPS_LAYER_ID, '📍 停留点：集合、咖啡、拍照、晚餐', 1),
-      annotationLayer(LANDMARKS_LAYER_ID, '🏛️ 地标和历史建筑', 2),
+      annotationLayer(ROUTE_LAYER_ID, fixtureText('Routes: Wukang Road, metro, Bund', '路线：武康路、地铁、外滩'), 0),
+      annotationLayer(
+        STOPS_LAYER_ID,
+        fixtureText('Stops: meetup, coffee, photos, dinner', '停留点：集合、咖啡、拍照、晚餐'),
+        1,
+      ),
+      annotationLayer(LANDMARKS_LAYER_ID, fixtureText('Landmarks and historic buildings', '地标和历史建筑'), 2),
     ]);
     layerStore.setAnnotationFeatureList([
       featureFromPayload(WALK_WUKANG_ANFU, 0, ROUTE_LAYER_ID),
@@ -497,7 +564,9 @@ export function installScreenshotFixtureData(layerStore: LayerStore, mode: Scree
     return;
   }
 
-  layerStore.setLayerList([annotationLayer(CITYWALK_LAYER_ID, '上海周末 City Walk', 0)]);
+  layerStore.setLayerList([
+    annotationLayer(CITYWALK_LAYER_ID, fixtureText('Shanghai weekend city walk', '上海周末 City Walk'), 0),
+  ]);
   const features =
     mode === 'overview'
       ? citywalkFeatures(OVERVIEW_FEATURES)
@@ -519,7 +588,7 @@ export function createScreenshotCollaborationFixture(
   const currentUser: NonNullable<CollaborationFixtureState['currentUser']> = {
     userId: 'user-demo-owner',
     githubLogin: 'shanghai-planner',
-    displayName: '上海周末计划',
+    displayName: fixtureText('Shanghai Weekend Plan', '上海周末计划'),
     avatarUrl: null,
   };
   const peers: Peer[] =
@@ -527,7 +596,7 @@ export function createScreenshotCollaborationFixture(
       ? [
           {
             id: 'peer-lin',
-            user: { id: 'peer-lin', name: '阿林', color: '#2563eb' },
+            user: { id: 'peer-lin', name: fixtureText('Lin', '阿林'), color: '#2563eb' },
             viewport: {
               center: [121.486, 31.2408] as [number, number],
               zoom: view.zoom,
@@ -541,7 +610,7 @@ export function createScreenshotCollaborationFixture(
           },
           {
             id: 'peer-mei',
-            user: { id: 'peer-mei', name: '小梅', color: '#dc2626' },
+            user: { id: 'peer-mei', name: fixtureText('Mei', '小梅'), color: '#dc2626' },
             viewport: {
               center: [121.4359, 31.2124] as [number, number],
               zoom: view.zoom,
@@ -562,7 +631,7 @@ export function createScreenshotCollaborationFixture(
           },
           {
             id: 'peer-chen',
-            user: { id: 'peer-chen', name: '陈同学', color: '#0f766e' },
+            user: { id: 'peer-chen', name: fixtureText('Chen', '陈同学'), color: '#0f766e' },
             viewport: {
               center: [121.4802, 31.2396] as [number, number],
               zoom: view.zoom,
@@ -586,7 +655,7 @@ export function createScreenshotCollaborationFixture(
             active: true,
             lastSeenAt: nowMs,
             expiresAt: nowMs + 60_000,
-            lastAction: '整理了武康路和外滩段标注',
+            lastAction: fixtureText('Organized the Wukang Road and Bund annotations', '整理了武康路和外滩段标注'),
           },
         ]
       : [];
@@ -610,21 +679,21 @@ export function createScreenshotCollaborationFixture(
       {
         userId: 'user-mei',
         githubLogin: 'mei-citywalk',
-        displayName: '小梅',
+        displayName: fixtureText('Mei', '小梅'),
         avatarUrl: null,
         role: 'edit',
       },
       {
         userId: 'user-lin',
         githubLogin: 'lin-camera',
-        displayName: '阿林',
+        displayName: fixtureText('Lin', '阿林'),
         avatarUrl: null,
         role: 'view',
       },
       {
         userId: 'user-chen',
         githubLogin: 'chen-metro',
-        displayName: '陈同学',
+        displayName: fixtureText('Chen', '陈同学'),
         avatarUrl: null,
         role: 'view',
       },

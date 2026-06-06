@@ -55,7 +55,7 @@ function coordArray(name, points) {
 
 async function main() {
   const output = await run('pnpm', [
-    'agent:room',
+    'atlas:realm',
     '--host',
     host,
     '--room',

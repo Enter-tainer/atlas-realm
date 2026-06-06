@@ -1,9 +1,9 @@
 {
-  "name": "@orm-pmtiles-demo/agent-room-cli",
+  "name": "@atlas-realm/cli",
   "version": "0.1.0",
-  "description": "CLI for agents to join ORM map collaboration rooms and manage layers and annotations.",
+  "description": "CLI for agents to join Atlas Realm collaboration rooms and manage layers and annotations.",
   "bin": {
-    "orm-agent-room": "./bin/orm-agent-room.mjs"
+    "atlas-realm": "./bin/atlas-realm.mjs"
   },
   "files": [
     "bin",
@@ -24,7 +24,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "rm -rf dist",
     "prepack": "pnpm run build",
-    "test": "vitest run --root ../.. --config vitest.config.js packages/agent-room-cli/test/commands.test.ts"
+    "test": "vitest run --root ../.. --config vitest.config.js packages/atlas-realm-cli/test/commands.test.ts"
   },
   "dependencies": {
     "yargs": "^17.7.2"

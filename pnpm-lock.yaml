@@ -57,6 +57,9 @@ importers:
       oxlint:
         specifier: ^1.66.0
         version: 1.66.0
+      sharp:
+        specifier: ^0.34.5
+        version: 0.34.5
       typescript:
         specifier: ^6.0.3
         version: 6.0.3
@@ -73,7 +76,7 @@ importers:
         specifier: ^2.8.2
         version: 2.8.4
 
-  packages/agent-room-cli:
+  packages/atlas-realm-cli:
     dependencies:
       yargs:
         specifier: ^17.7.2

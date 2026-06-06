@@ -72,20 +72,20 @@ export function createConfig(
   env: Record<string, string | undefined> = process.env,
   configOptions: CreateConfigOptions = {},
 ): AgentRoomConfig {
-  const rawClientId = options.clientId || env.ORM_ROOM_CLIENT_ID;
+  const rawClientId = options.clientId || env.ATLAS_REALM_CLIENT_ID;
   const clientId = normalizeId(rawClientId, '');
   if (configOptions.requireClientId && !clientId) {
-    throw new Error('Room commands require --client-id <id> or ORM_ROOM_CLIENT_ID.');
+    throw new Error('Room commands require --client-id <id> or ATLAS_REALM_CLIENT_ID.');
   }
   const clientType = options.clientType === 'query' || options.headless === true ? 'query' : 'agent';
   return {
-    host: String(options.host || env.ORM_ROOM_HOST || env.ROOM_HOST || DEFAULT_HOST),
+    host: String(options.host || env.ATLAS_REALM_HOST || env.ROOM_HOST || DEFAULT_HOST),
     room: normalizeId(options.room, DEFAULT_ROOM),
     party: normalizeId(options.party, DEFAULT_PARTY),
     clientId: clientId || randomId('agent'),
     agentName: normalizeName(options.agentName, DEFAULT_AGENT_NAME, 32),
     agentColor: normalizeColor(options.agentColor, DEFAULT_AGENT_COLOR),
-    accessToken: String(options.token || options.accessToken || env.ORM_ROOM_TOKEN || ''),
+    accessToken: String(options.token || options.accessToken || env.ATLAS_REALM_TOKEN || ''),
     clientType,
     timeoutMs: clamp(options.timeout, 1000, 120_000, 10_000),
   };

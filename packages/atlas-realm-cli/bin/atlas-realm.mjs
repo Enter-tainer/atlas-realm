@@ -5,7 +5,7 @@ import { existsSync } from 'node:fs';
 const compiledCliUrl = new URL('../dist/cli.js', import.meta.url);
 
 if (!existsSync(compiledCliUrl)) {
-  console.error('Missing compiled CLI. Run `pnpm --filter @orm-pmtiles-demo/agent-room-cli build` first.');
+  console.error('Missing compiled CLI. Run `pnpm --filter @atlas-realm/cli build` first.');
   process.exit(1);
 }
 

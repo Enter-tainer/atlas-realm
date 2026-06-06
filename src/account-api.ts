@@ -223,7 +223,7 @@ async function resolveGitHubUser(login: string): Promise<GitHubUserLookup | null
   const response = await fetch(`https://api.github.com/users/${encodeURIComponent(login)}`, {
     headers: {
       Accept: 'application/vnd.github+json',
-      'User-Agent': 'orm-pmtiles-demo',
+      'User-Agent': 'atlas-realm',
     },
   });
   if (response.status === 404) return null;
@@ -239,7 +239,7 @@ async function exchangeGitHubCode(env: Cloudflare.Env, code: string): Promise<st
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      'User-Agent': 'orm-pmtiles-demo',
+      'User-Agent': 'atlas-realm',
     },
     body: JSON.stringify({
       client_id: env.GITHUB_CLIENT_ID,
@@ -259,7 +259,7 @@ async function startGitHubDeviceCode(env: Cloudflare.Env): Promise<GitHubDeviceC
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'orm-pmtiles-demo',
+      'User-Agent': 'atlas-realm',
     },
     body: new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID || '',
@@ -285,7 +285,7 @@ async function checkGitHubDeviceToken(env: Cloudflare.Env, deviceCode: string): 
     headers: {
       Accept: 'application/json',
       'Content-Type': 'application/x-www-form-urlencoded',
-      'User-Agent': 'orm-pmtiles-demo',
+      'User-Agent': 'atlas-realm',
     },
     body: new URLSearchParams({
       client_id: env.GITHUB_CLIENT_ID || '',
@@ -302,7 +302,7 @@ async function fetchGitHubOAuthProfile(accessToken: string): Promise<GitHubOAuth
     headers: {
       Accept: 'application/vnd.github+json',
       Authorization: `Bearer ${accessToken}`,
-      'User-Agent': 'orm-pmtiles-demo',
+      'User-Agent': 'atlas-realm',
     },
   });
   if (!response.ok) throw new Error('GitHub profile fetch failed');

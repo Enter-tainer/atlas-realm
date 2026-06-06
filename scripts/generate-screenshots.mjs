@@ -1,8 +1,9 @@
 import { createServer } from 'node:http';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { extname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
+import sharp from 'sharp';
 
 const root = resolve(new URL('..', import.meta.url).pathname);
 const distDir = join(root, 'dist/client');
@@ -16,35 +17,43 @@ const port = Number(process.env.SCREENSHOT_PORT || 4177);
 const host = '127.0.0.1';
 const externalBaseUrl = String(process.env.SCREENSHOT_BASE_URL || '').trim();
 const useStaticServer = process.env.SCREENSHOT_SERVER === 'static';
+const requestedLocale = String(process.env.SCREENSHOT_LOCALE || '').trim();
+const webpQuality = Number(process.env.SCREENSHOT_WEBP_QUALITY || 82);
+const screenshotLocales = requestedLocale
+  ? [{ locale: requestedLocale, dir: localeOutputDir(requestedLocale) }]
+  : [
+      { locale: 'en-US', dir: 'en' },
+      { locale: 'zh-CN', dir: 'zh-CN' },
+    ];
 
 const shots = [
   {
     mode: 'overview',
-    file: 'overview-desktop.png',
+    file: 'overview-desktop.webp',
     label: 'Desktop overview',
     viewport: [1440, 960],
   },
   {
     mode: 'overview',
-    file: 'overview-mobile.png',
+    file: 'overview-mobile.webp',
     label: 'Mobile overview',
     viewport: [390, 844],
   },
   {
     mode: 'layers',
-    file: 'layers.png',
+    file: 'layers.webp',
     label: 'Layer manager',
     viewport: [1280, 860],
   },
   {
     mode: 'annotations',
-    file: 'annotations.png',
+    file: 'annotations.webp',
     label: 'Annotation tools',
     viewport: [1280, 860],
   },
   {
     mode: 'sharing',
-    file: 'sharing.png',
+    file: 'sharing.webp',
     label: 'Room sharing',
     viewport: [1280, 860],
   },
@@ -80,16 +89,35 @@ function run(command, args, options = {}) {
   });
 }
 
-function agentBrowser(args) {
-  return run(agentBrowserBin, ['--session', 'orm-screenshots', ...args], { stdio: 'inherit' });
+function localeOutputDir(locale) {
+  return /^zh\b/i.test(locale) ? 'zh-CN' : 'en';
 }
 
-function screenshotUrl(mode) {
+function agentBrowser(locale, args) {
+  return run(
+    agentBrowserBin,
+    ['--session', `atlas-realm-screenshots-${localeOutputDir(locale)}`, '--args', `--lang=${locale}`, ...args],
+    { stdio: 'inherit' },
+  );
+}
+
+function screenshotUrl(mode, locale) {
   const url = new URL(externalBaseUrl || `http://${host}:${port}/`);
   url.searchParams.set('screenshot', mode);
+  url.searchParams.set('screenshotLocale', locale);
   url.searchParams.set('room', url.searchParams.get('room') || 'demo');
   url.hash = '';
   return url.href;
+}
+
+async function captureScreenshot(locale, url, output) {
+  const pngOutput = `${output}.tmp.png`;
+  await agentBrowser(locale, ['open', url]);
+  await agentBrowser(locale, ['wait', '--fn', "document.body.dataset.screenshotReady === 'true'"]);
+  await agentBrowser(locale, ['wait', '250']);
+  await agentBrowser(locale, ['screenshot', pngOutput]);
+  await sharp(pngOutput).webp({ quality: webpQuality }).toFile(output);
+  await rm(pngOutput, { force: true });
 }
 
 async function waitForHttp(url, timeoutMs = 45_000) {
@@ -161,7 +189,7 @@ function startServer() {
 async function writeScreenshotWorkerConfig() {
   const builtConfig = JSON.parse(await readFile(workerBuildConfig, 'utf8'));
   const screenshotConfig = {
-    name: builtConfig.name || 'orm-pmtiles-demo',
+    name: builtConfig.name || 'atlas-realm',
     main: 'index.js',
     compatibility_date: builtConfig.compatibility_date,
     compatibility_flags: builtConfig.compatibility_flags,
@@ -276,20 +304,22 @@ async function main() {
   const server = externalBaseUrl ? null : useStaticServer ? await startServer() : await startWorkerServer();
 
   try {
-    await agentBrowser(['set', 'media', 'light', 'reduced-motion']);
+    for (const { locale, dir } of screenshotLocales) {
+      const localeOutputDirPath = join(outputDir, dir);
+      await mkdir(localeOutputDirPath, { recursive: true });
+      await agentBrowser(locale, ['close']).catch(() => {});
+      await agentBrowser(locale, ['set', 'media', 'light', 'reduced-motion']);
 
-    for (const shot of shots) {
-      await agentBrowser(['set', 'viewport', String(shot.viewport[0]), String(shot.viewport[1])]);
-      const url = screenshotUrl(shot.mode);
-      const output = join(outputDir, shot.file);
-      console.log(`Capturing ${shot.label}: ${output}`);
-      await agentBrowser(['open', url]);
-      await agentBrowser(['wait', '--fn', "document.body.dataset.screenshotReady === 'true'"]);
-      await agentBrowser(['wait', '250']);
-      await agentBrowser(['screenshot', output]);
+      for (const shot of shots) {
+        await agentBrowser(locale, ['set', 'viewport', String(shot.viewport[0]), String(shot.viewport[1])]);
+        const url = screenshotUrl(shot.mode, locale);
+        const output = join(localeOutputDirPath, shot.file);
+        console.log(`Capturing ${shot.label} (${locale}): ${output}`);
+        await captureScreenshot(locale, url, output);
+      }
     }
   } finally {
-    await agentBrowser(['close']).catch(() => {});
+    for (const { locale } of screenshotLocales) await agentBrowser(locale, ['close']).catch(() => {});
     if (server) await server.close();
   }
 }

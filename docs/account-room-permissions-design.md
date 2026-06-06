@@ -558,13 +558,13 @@ When room metadata changes in D1, send a control message or direct DO call to up
 
 ## Agents And CLI
 
-The current agent-room CLI identifies through query parameters. That is acceptable for presence identity, but not for write authorization.
+The current atlas-realm CLI identifies through query parameters. That is acceptable for presence identity, but not for write authorization.
 
 Use GitHub Device Flow as the primary CLI login experience in v1, backed by local Personal Access Tokens.
 
 The important distinction:
 
-- Product interaction: users run `orm-agent-room login`, authorize with GitHub in a browser, and the CLI stores the resulting local credential.
+- Product interaction: users run `atlas-realm login`, authorize with GitHub in a browser, and the CLI stores the resulting local credential.
 - Server credential: the Worker issues an `orm_pat_...` token after GitHub Device Flow succeeds.
 - Authorization model: the token authenticates as the owning `user_id`; room permissions still come from owner, explicit grants, and link access.
 
@@ -591,7 +591,7 @@ Token format should make the token type obvious, for example `orm_pat_...`. Stor
 Recommended CLI login:
 
 ```text
-orm-agent-room login --host https://map.mgt.moe
+atlas-realm login --host https://map.mgt.moe
 ```
 
 Example CLI output:
@@ -606,15 +606,15 @@ Logged in as octocat. Token saved for https://map.mgt.moe.
 CLI usage:
 
 ```text
-orm-agent-room --host <host> --room <room> snapshot --json
-orm-agent-room --host <host> --room <room> layers add route.geojson --json
+atlas-realm --host <host> --room <room> snapshot --json
+atlas-realm --host <host> --room <room> layers add route.geojson --json
 ```
 
 Manual token usage should remain supported for automation and CI:
 
 ```text
-orm-agent-room --host <host> --room <room> --token <token> snapshot --json
-ORM_ROOM_TOKEN=<token> orm-agent-room --host <host> --room <room> snapshot --json
+atlas-realm --host <host> --room <room> --token <token> snapshot --json
+ATLAS_REALM_TOKEN=<token> atlas-realm --host <host> --room <room> snapshot --json
 ```
 
 The CLI should store tokens outside the repository, preferably in an OS credential store when available. A file fallback is acceptable if permissions are restricted to the current user. The CLI must never write the raw token to logs, room state, snapshots, or command output except for explicit debug modes that are disabled by default.
@@ -749,7 +749,7 @@ DELETE /api/tokens/:tokenId
 
 `/_control/*` routes are internal Worker-to-DO routes, not public client APIs. They must require the internal control signature.
 
-`/api/tokens` remains useful for advanced token management and future account settings, but it is not the primary v1 CLI onboarding path once Device Flow exists. Normal CLI users should receive a local PAT through `orm-agent-room login`.
+`/api/tokens` remains useful for advanced token management and future account settings, but it is not the primary v1 CLI onboarding path once Device Flow exists. Normal CLI users should receive a local PAT through `atlas-realm login`.
 
 `PATCH /api/rooms/:room` should allow users with `manage` access to update:
 
@@ -780,9 +780,9 @@ Device Flow can ship as a follow-up migration:
 1. Enable Device Flow in the GitHub OAuth App settings.
 2. Add the `oauth_device_flows` D1 table.
 3. Add `/api/auth/github/device/start` and `/api/auth/github/device/poll`.
-4. Add `orm-agent-room login`, `logout`, and `whoami`.
+4. Add `atlas-realm login`, `logout`, and `whoami`.
 5. Store the returned local `orm_pat_...` token in CLI config or the OS credential store.
-6. Keep manual `--token` and `ORM_ROOM_TOKEN` support for CI and debugging.
+6. Keep manual `--token` and `ATLAS_REALM_TOKEN` support for CI and debugging.
 
 ## Deployment Configuration
 
@@ -836,7 +836,7 @@ GitHub app settings:
 
 - Production OAuth callback URL: `https://map.mgt.moe/api/auth/github/callback`
 - Local/dev OAuth callback URL: `http://localhost:5173/api/auth/github/callback`
-- Enable Device Flow for the OAuth App before using `orm-agent-room login`.
+- Enable Device Flow for the OAuth App before using `atlas-realm login`.
 
 Device Flow does not require a separate callback URL, but it does require the same GitHub client id used by the web OAuth flow.
 

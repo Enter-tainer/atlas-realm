@@ -249,17 +249,17 @@ function routeGeoJson() {
 
 const originalFetch = globalThis.fetch;
 const originalWebSocket = globalThis.WebSocket;
-const originalTokenStore = process.env.ORM_AGENT_ROOM_TOKEN_STORE;
-const originalRoomClientId = process.env.ORM_ROOM_CLIENT_ID;
+const originalTokenStore = process.env.ATLAS_REALM_TOKEN_STORE;
+const originalRoomClientId = process.env.ATLAS_REALM_CLIENT_ID;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
   globalThis.WebSocket = originalWebSocket;
   FakeWebSocket.urls = [];
-  if (originalTokenStore === undefined) delete process.env.ORM_AGENT_ROOM_TOKEN_STORE;
-  else process.env.ORM_AGENT_ROOM_TOKEN_STORE = originalTokenStore;
-  if (originalRoomClientId === undefined) delete process.env.ORM_ROOM_CLIENT_ID;
-  else process.env.ORM_ROOM_CLIENT_ID = originalRoomClientId;
+  if (originalTokenStore === undefined) delete process.env.ATLAS_REALM_TOKEN_STORE;
+  else process.env.ATLAS_REALM_TOKEN_STORE = originalTokenStore;
+  if (originalRoomClientId === undefined) delete process.env.ATLAS_REALM_CLIENT_ID;
+  else process.env.ATLAS_REALM_CLIENT_ID = originalRoomClientId;
 });
 
 function captureIo() {
@@ -275,9 +275,9 @@ function captureIo() {
 }
 
 async function withTokenStore<T>(callback: (path: string) => Promise<T>): Promise<T> {
-  const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-auth-'));
+  const dir = await mkdtemp(join(tmpdir(), 'atlas-realm-cli-auth-'));
   const path = join(dir, 'tokens.json');
-  process.env.ORM_AGENT_ROOM_TOKEN_STORE = path;
+  process.env.ATLAS_REALM_TOKEN_STORE = path;
   try {
     return await callback(path);
   } finally {
@@ -285,7 +285,7 @@ async function withTokenStore<T>(callback: (path: string) => Promise<T>): Promis
   }
 }
 
-describe('agent-room CLI package', () => {
+describe('atlas-realm CLI package', () => {
   it('builds PartyServer WebSocket URLs from config', () => {
     const config = createConfig({
       host: 'https://example.com/app/',
@@ -314,7 +314,7 @@ describe('agent-room CLI package', () => {
     expect(url.searchParams.get('token')).toBe('orm_pat_secret');
   });
 
-  it('reads PAT tokens from ORM_ROOM_TOKEN', () => {
+  it('reads PAT tokens from ATLAS_REALM_TOKEN', () => {
     const config = createConfig(
       {
         host: 'https://example.com',
@@ -322,7 +322,7 @@ describe('agent-room CLI package', () => {
         party: 'map-collaboration',
         clientId: 'agent-a',
       },
-      { ORM_ROOM_TOKEN: 'orm_pat_env' },
+      { ATLAS_REALM_TOKEN: 'orm_pat_env' },
     );
 
     expect(new URL(buildSocketUrl(config)).searchParams.get('token')).toBe('orm_pat_env');
@@ -335,11 +335,11 @@ describe('agent-room CLI package', () => {
   });
 
   it('requires a stable client id for room commands', async () => {
-    delete process.env.ORM_ROOM_CLIENT_ID;
+    delete process.env.ATLAS_REALM_CLIENT_ID;
 
     await expect(
       runCli(['snapshot', '--host', 'https://example.com', '--room', 'trip-room', '--json'], captureIo().io),
-    ).rejects.toThrow('Room commands require --client-id <id> or ORM_ROOM_CLIENT_ID.');
+    ).rejects.toThrow('Room commands require --client-id <id> or ATLAS_REALM_CLIENT_ID.');
     expect(FakeWebSocket.urls).toHaveLength(0);
   });
 
@@ -769,7 +769,7 @@ describe('agent-room CLI package', () => {
   });
 
   it('reads multiline annotation text from files', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-text-'));
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-realm-cli-text-'));
     const noteFile = join(dir, 'note.txt');
     await writeFile(noteFile, 'Line 1\nLine 2\nLine 3', 'utf8');
 
@@ -804,7 +804,7 @@ describe('agent-room CLI package', () => {
   });
 
   it('rejects ambiguous inline and file text options', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-text-'));
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-realm-cli-text-'));
     const labelFile = join(dir, 'label.txt');
     await writeFile(labelFile, 'File label', 'utf8');
     try {
@@ -827,7 +827,7 @@ describe('agent-room CLI package', () => {
   });
 
   it('sends file content upload followed by layer:create for file layers', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-'));
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-realm-cli-'));
     const file = join(dir, 'route.geojson');
     await writeFile(
       file,
@@ -933,7 +933,7 @@ describe('agent-room CLI package', () => {
   });
 
   it('exports decoded file layer content to disk', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-export-'));
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-realm-cli-export-'));
     const out = join(dir, 'route-export.geojson');
     const client = new FakeRoomClient();
     const { geojson } = addFakeFileLayer(client);

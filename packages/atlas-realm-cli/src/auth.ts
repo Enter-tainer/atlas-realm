@@ -33,11 +33,11 @@ export interface DevicePollResponse extends JsonRecord {
 }
 
 function homeDir(env: Record<string, string | undefined> = process.env): string {
-  return env.ORM_AGENT_ROOM_CONFIG_DIR || env.XDG_CONFIG_HOME || (env.HOME ? join(env.HOME, '.config') : '.');
+  return env.ATLAS_REALM_CONFIG_DIR || env.XDG_CONFIG_HOME || (env.HOME ? join(env.HOME, '.config') : '.');
 }
 
 export function tokenStorePath(env: Record<string, string | undefined> = process.env): string {
-  return env.ORM_AGENT_ROOM_TOKEN_STORE || join(homeDir(env), 'orm-agent-room', 'tokens.json');
+  return env.ATLAS_REALM_TOKEN_STORE || join(homeDir(env), 'atlas-realm', 'tokens.json');
 }
 
 function normalizeHostKey(host: string): string {

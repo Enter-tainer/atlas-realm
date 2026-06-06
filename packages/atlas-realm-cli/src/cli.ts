@@ -18,12 +18,12 @@ const FEATURE_TYPES = ['point', 'text', 'path', 'polygon', 'route'];
 
 export function buildParser(argv: readonly string[] = []) {
   return yargs(argv)
-    .scriptName('orm-agent-room')
+    .scriptName('atlas-realm')
     .usage('$0 <command> [options]')
     .option('host', {
       type: 'string',
       describe: 'App origin or WebSocket host',
-      default: process.env.ORM_ROOM_HOST || process.env.ROOM_HOST || 'http://localhost:5173',
+      default: process.env.ATLAS_REALM_HOST || process.env.ROOM_HOST || 'http://localhost:5173',
     })
     .option('room', {
       type: 'string',
@@ -52,7 +52,7 @@ export function buildParser(argv: readonly string[] = []) {
     .option('token', {
       type: 'string',
       describe: 'Personal access token for authenticated rooms',
-      default: process.env.ORM_ROOM_TOKEN || '',
+      default: process.env.ATLAS_REALM_TOKEN || '',
     })
     .option('client-type', {
       choices: ['agent', 'query'],
@@ -188,7 +188,7 @@ async function runLogin(args: JsonRecord): Promise<void> {
           `Open ${value.verificationUrl}`,
           `Enter code: ${value.userCode}`,
           `Device flow: ${value.flowId}`,
-          `After approving, run: orm-agent-room login --host ${value.host} --flow-id ${value.flowId}`,
+          `After approving, run: atlas-realm login --host ${value.host} --flow-id ${value.flowId}`,
         ].join('\n'),
       ),
     );
@@ -309,7 +309,7 @@ async function runLogout(args: JsonRecord): Promise<void> {
 async function runWhoami(args: JsonRecord): Promise<void> {
   const config = createConfig(args);
   const token = config.accessToken || (await getStoredToken(config.host));
-  if (!token) throw new Error(`No token configured for ${config.host}. Run orm-agent-room login first.`);
+  if (!token) throw new Error(`No token configured for ${config.host}. Run atlas-realm login first.`);
   const data = await fetchCurrentTokenUser(config.host, token);
   const user = data.user as JsonRecord | null;
   if (!user) throw new Error('Stored token is not valid.');

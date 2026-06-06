@@ -1,31 +1,31 @@
 ---
-name: agent-room
-description: Use the ORM agent room CLI to join a live map collaboration room, inspect shared layers and annotations, upload GeoJSON/GPX layers, and create/update/delete travel-planning annotations for users.
+name: atlas-realm
+description: Use the Atlas Realm CLI to join a live map collaboration room, inspect shared layers and annotations, upload GeoJSON/GPX layers, and create/update/delete travel-planning annotations for users.
 ---
 
-# Agent Room
+# Atlas Realm
 
-Use this skill when a user asks you to work inside an ORM map collaboration room: add itinerary markers, draw route/path/polygon annotations, upload GeoJSON or GPX layers, rename or hide layers, delete stale map content, or inspect the current shared state.
+Use this skill when a user asks you to work inside an Atlas Realm collaboration room: add itinerary markers, draw route/path/polygon annotations, upload GeoJSON or GPX layers, rename or hide layers, delete stale map content, or inspect the current shared state.
 
 ## CLI
 
 Run the packaged CLI:
 
 ```bash
-orm-agent-room --host <app-origin> --room <room> --client-id <id> <command> --json
+atlas-realm --host <app-origin> --room <room> --client-id <id> <command> --json
 ```
 
 If working from this repo before package publishing, use:
 
 ```bash
-pnpm agent:room --host <app-origin> --room <room> --client-id <id> <command> --json
+pnpm atlas:realm --host <app-origin> --room <room> --client-id <id> <command> --json
 ```
 
 Always prefer `--json` for agent automation. Use `--pretty` only for human-readable inspection.
 
 For room commands, `--client-id` is required by this skill. Use a stable, unique identifier for the agent/process/session (e.g. `agent-planner`, `layer-sync-v2`). It is used for connection-level presence and agent identity tracking, so stable ids make it clear which agent made a change. Account commands such as `login`, `whoami`, and `logout` do not need `--client-id`.
 
-Host default order: `ORM_ROOM_HOST` env var → `ROOM_HOST` env var → `http://localhost:5173`.
+Host default order: `ATLAS_REALM_HOST` env var → `ROOM_HOST` env var → `http://localhost:5173`.
 
 Production host: `https://map.mgt.moe`
 
@@ -34,35 +34,35 @@ Production host: `https://map.mgt.moe`
 For rooms with access controls enabled, sign in once with GitHub Device Flow:
 
 ```bash
-orm-agent-room login --host <host>
+atlas-realm login --host <host>
 ```
 
 When running as an agent in a non-interactive terminal, avoid keeping the login process open while a human authorizes in the browser. Start the flow, show the user the returned `verificationUrl` and `userCode`, then resume with the returned `flowId` after authorization:
 
 ```bash
-orm-agent-room login --host <host> --start-only --json
-orm-agent-room login --host <host> --flow-id <flowId> --json
+atlas-realm login --host <host> --start-only --json
+atlas-realm login --host <host> --flow-id <flowId> --json
 ```
 
 After login, normal commands automatically use the stored local token:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> <command> --json
+atlas-realm --host <host> --room <room> --client-id <id> <command> --json
 ```
 
 Useful account commands:
 
 ```bash
-orm-agent-room whoami --host <host>
-orm-agent-room logout --host <host>
+atlas-realm whoami --host <host>
+atlas-realm logout --host <host>
 ```
 
 Manual PAT usage remains available for CI and debugging:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> --token orm_pat_... <command> --json
-export ORM_ROOM_TOKEN=orm_pat_...
-orm-agent-room --host <host> --room <room> --client-id <id> <command> --json
+atlas-realm --host <host> --room <room> --client-id <id> --token orm_pat_... <command> --json
+export ATLAS_REALM_TOKEN=orm_pat_...
+atlas-realm --host <host> --room <room> --client-id <id> <command> --json
 ```
 
 The token authenticates the agent as its owning GitHub user. Room access is computed by the server from link-access settings and explicit grants, same as for browser sessions.
@@ -92,8 +92,8 @@ Example: `https://map.mgt.moe/?room=niutoushan`
 Presence shows live human users from current WebSocket connections and recent agent users from server-maintained room state.
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> presence --json
-orm-agent-room --host <host> --room <room> --client-id <id> --client-type query presence --json
+atlas-realm --host <host> --room <room> --client-id <id> presence --json
+atlas-realm --host <host> --room <room> --client-id <id> --client-type query presence --json
 ```
 
 Use `presence --json` before context-sensitive edits when you need to know whether users are currently in the room, where they are looking, or which agents were active recently. Do not infer a human user is still online from agent recent activity; humans and agents are separate lists.
@@ -103,9 +103,9 @@ Use `presence --json` before context-sensitive edits when you need to know wheth
 Room metadata includes persistence. Ephemeral rooms expire after inactivity; persistent rooms do not expire on the normal room alarm.
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> room status --json
-orm-agent-room --host <host> --room <room> --client-id <id> room update --persistence persistent --json
-orm-agent-room --host <host> --room <room> --client-id <id> room update --persistence ephemeral --json
+atlas-realm --host <host> --room <room> --client-id <id> room status --json
+atlas-realm --host <host> --room <room> --client-id <id> room update --persistence persistent --json
+atlas-realm --host <host> --room <room> --client-id <id> room update --persistence ephemeral --json
 ```
 
 ## Layers
@@ -113,18 +113,18 @@ orm-agent-room --host <host> --room <room> --client-id <id> room update --persis
 Layers are uploaded map files, usually GeoJSON or GPX.
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> layers list --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers get trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers metadata trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers content trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers export trip-route --out ./route.geojson --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --name "Trip route" --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --persistence persistent --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers update trip-route --name "Morning route" --visible false --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers hide trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers show trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers delete trip-route --json
-orm-agent-room --host <host> --room <room> --client-id <id> layers reorder layer-a layer-b --json
+atlas-realm --host <host> --room <room> --client-id <id> layers list --json
+atlas-realm --host <host> --room <room> --client-id <id> layers get trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers metadata trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers content trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers export trip-route --out ./route.geojson --json
+atlas-realm --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --name "Trip route" --json
+atlas-realm --host <host> --room <room> --client-id <id> layers add ./route.geojson --id trip-route --persistence persistent --json
+atlas-realm --host <host> --room <room> --client-id <id> layers update trip-route --name "Morning route" --visible false --json
+atlas-realm --host <host> --room <room> --client-id <id> layers hide trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers show trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers delete trip-route --json
+atlas-realm --host <host> --room <room> --client-id <id> layers reorder layer-a layer-b --json
 ```
 
 `layers get` and `layers content` return the layer row plus its contents: annotation layers include `annotations`, file layers include decoded `content` (GeoJSON object or GPX text).
@@ -158,26 +158,26 @@ Annotations are editable planning objects in the shared annotation model.
 Point:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations add point --id hotel --lng 121.5 --lat 31.2 --label "Hotel" --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add point --id hotel --lng 121.5 --lat 31.2 --label "Hotel" --json
 ```
 
 Text:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note-file ./plan-note.txt --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note-file ./plan-note.txt --json
 ```
 
 Path:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --line-style dashed --opacity 0.8 --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add path --id walk-a --points "121.5,31.2;121.51,31.21" --label "Walk" --line-style dashed --opacity 0.8 --json
 ```
 
 Polygon:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
 ```
 
 Line, route, and polygon outline style options:
@@ -189,10 +189,10 @@ Line, route, and polygon outline style options:
 Update/delete:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations update hotel --label "Updated hotel" --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations delete hotel --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --hide-layer --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations update hotel --label "Updated hotel" --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations delete hotel --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --hide-layer --json
 ```
 
 For multiline labels or notes, prefer UTF-8 files with `--label-file` / `--note-file` so shell quoting does not alter line breaks. For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
@@ -200,11 +200,11 @@ For multiline labels or notes, prefer UTF-8 files with `--label-file` / `--note-
 Annotation layers:
 
 ```bash
-orm-agent-room --host <host> --room <room> --client-id <id> annotations layers list --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations layers add notes --name "Notes" --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations layers hide notes --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations layers clear notes --json
-orm-agent-room --host <host> --room <room> --client-id <id> annotations layers delete notes --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers list --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers add notes --name "Notes" --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers hide notes --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers clear notes --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers delete notes --json
 ```
 
 ## Travel Planning Conventions
