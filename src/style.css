@@ -169,8 +169,32 @@ body,
 }
 
 .collab-agent-avatar {
+  position: relative;
   border-style: dashed;
+  overflow: visible;
   opacity: 0.86;
+  cursor: default;
+}
+
+.collab-agent-avatar::after {
+  content: '🤖';
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  border: 1.5px solid #fff;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.16);
+  font-family: 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif;
+  font-size: 9px;
+  line-height: 1;
+  pointer-events: none;
 }
 
 .collab-compact-summary {
