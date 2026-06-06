@@ -16,6 +16,7 @@ export default defineConfig({
   plugins: [cloudflare()],
   define: {
     __STYLE_HASH__: JSON.stringify(fileHash('public/orm/style/standard.json')),
+    __SCREENSHOT_FIXTURES__: JSON.stringify(process.env.SCREENSHOT_FIXTURES === '1'),
   },
   server: {
     host: true,

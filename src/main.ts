@@ -16,6 +16,7 @@ import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-read
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
+import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -87,6 +88,12 @@ type ToggleControl = maplibregl.IControl & {
   _enabled: boolean;
   setEnabled(enabled: boolean, options?: ToggleOptions): void;
 };
+type ScreenshotFixture = typeof ScreenshotFixtureModule;
+
+async function loadScreenshotFixture() {
+  if (!__SCREENSHOT_FIXTURES__) return null;
+  return (await import('./screenshot-fixture.js')) as ScreenshotFixture;
+}
 
 function absoluteUrl(path: string) {
   return `${window.location.origin}${path}`;
@@ -420,6 +427,16 @@ function installSpriteFallback(map: maplibregl.Map, atlases: SpriteAtlas[]) {
 
 async function init() {
   try {
+    const screenshotFixtureModule = await loadScreenshotFixture();
+    const screenshotFixtureMode = screenshotFixtureModule?.getScreenshotFixtureMode() ?? null;
+    const screenshotFixtureView =
+      screenshotFixtureModule && screenshotFixtureMode
+        ? screenshotFixtureModule.getScreenshotFixtureView(screenshotFixtureMode)
+        : null;
+    const screenshotFixture =
+      screenshotFixtureModule && screenshotFixtureMode
+        ? screenshotFixtureModule.createScreenshotCollaborationFixture(screenshotFixtureMode)
+        : null;
     const demSource = new mlcontour.DemSource({
       url: MAPTERHORN_TERRAIN_URL,
       encoding: 'terrarium',
@@ -433,8 +450,8 @@ async function init() {
     const map = new maplibregl.Map({
       container: 'map',
       style: style as maplibregl.StyleSpecification,
-      center: [105, 35],
-      zoom: 4,
+      center: screenshotFixtureView ? screenshotFixtureView.center : [105, 35],
+      zoom: screenshotFixtureView ? screenshotFixtureView.zoom : 4,
       hash: true,
       attributionControl: {} as maplibregl.AttributionControlOptions,
       renderWorldCopies: false,
@@ -481,9 +498,15 @@ async function init() {
     installPhotonSearch(map, maplibregl);
     installWeatherPointPicker(map, maplibregl);
     installOsrmRouting(map, maplibregl);
+    if (screenshotFixtureModule && screenshotFixtureMode) {
+      screenshotFixtureModule.installScreenshotFixtureData(layerStore, screenshotFixtureMode);
+    }
     installAnnotationRenderer(map, layerStore);
     installAnnotationTools(map, layerStore);
     installLayerManager(map, layerStore);
+    if (screenshotFixtureModule && screenshotFixtureMode) {
+      screenshotFixtureModule.installScreenshotFixtureMapLayers(map, screenshotFixtureMode);
+    }
 
     installSpriteFallback(map, atlases);
 
@@ -493,7 +516,7 @@ async function init() {
 
     // Load GPX from URL parameters (?gpx=url1&gpx=url2)
     // Compatible with MapLibre's hash-based URL sync (hash and query string are independent)
-    const gpxUrls = new URLSearchParams(window.location.search).getAll('gpx');
+    const gpxUrls = screenshotFixtureMode ? [] : new URLSearchParams(window.location.search).getAll('gpx');
     if (gpxUrls.length > 0) {
       (async () => {
         let bounds: Bounds | null = null;
@@ -516,7 +539,7 @@ async function init() {
 
     // Load GeoJSON from URL parameters (?geojson=url1&geojson=url2)
     // Supports both LineString (tracks) and Point (waypoints) features
-    const geojsonUrls = new URLSearchParams(window.location.search).getAll('geojson');
+    const geojsonUrls = screenshotFixtureMode ? [] : new URLSearchParams(window.location.search).getAll('geojson');
     if (geojsonUrls.length > 0) {
       (async () => {
         let bounds: Bounds | null = null;
@@ -666,7 +689,10 @@ async function init() {
       satelliteControl?.setEnabled(Boolean(viewState?.satellite), { silent: true });
       if (!options.silent) emitCollaborationViewState();
     };
-    installMapCollaboration(map, layerStore);
+    installMapCollaboration(map, layerStore, { fixture: screenshotFixture });
+    if (screenshotFixtureModule && screenshotFixtureMode) {
+      screenshotFixtureModule.applyScreenshotFixtureScene(screenshotFixtureMode, map);
+    }
 
     let didRunMapReadySetup = false;
     const runMapReadySetup = () => {

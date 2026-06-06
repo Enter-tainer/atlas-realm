@@ -1,0 +1,97 @@
+html[data-screenshot-fixture] .poi-search,
+html[data-screenshot-fixture] .maplibregl-ctrl-geolocate,
+html[data-screenshot-fixture] .maplibregl-ctrl-fullscreen,
+html[data-screenshot-fixture] .maplibregl-ctrl-weather,
+html[data-screenshot-fixture] .maplibregl-ctrl-terrain,
+html[data-screenshot-fixture] .maplibregl-ctrl-satellite {
+  display: none;
+}
+
+html[data-screenshot-fixture] .maplibregl-ctrl-top-right {
+  top: 18px;
+  right: 18px;
+}
+
+html[data-screenshot-fixture='layers'] .collab-panel,
+html[data-screenshot-fixture='annotations'] .collab-panel {
+  top: 18px;
+  left: 18px;
+  align-items: flex-start;
+  transform: none;
+}
+
+html[data-screenshot-fixture='overview'] .collab-panel,
+html[data-screenshot-fixture='sharing'] .collab-panel {
+  top: 18px;
+}
+
+html[data-screenshot-fixture='overview'] .collab-compact-toggle,
+html[data-screenshot-fixture='sharing'] .collab-compact-toggle {
+  min-height: 42px;
+  padding: 5px 13px 5px 5px;
+}
+
+html[data-screenshot-fixture='overview'] .collab-compact-avatar,
+html[data-screenshot-fixture='sharing'] .collab-compact-avatar,
+html[data-screenshot-fixture='sharing'] .collab-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 12px;
+}
+
+html[data-screenshot-fixture='overview'] .collab-cursor-label,
+html[data-screenshot-fixture='overview'] .collab-location-label,
+html[data-screenshot-fixture='overview'] .collab-viewport-label,
+html[data-screenshot-fixture='sharing'] .collab-cursor-label,
+html[data-screenshot-fixture='sharing'] .collab-location-label,
+html[data-screenshot-fixture='sharing'] .collab-viewport-label {
+  font-size: 14px;
+  stroke-width: 5;
+}
+
+html[data-screenshot-fixture='overview'] .collab-cursor-pointer,
+html[data-screenshot-fixture='sharing'] .collab-cursor-pointer {
+  stroke-width: 2.5;
+}
+
+html[data-screenshot-fixture='layers'] .layer-manager-panel,
+html[data-screenshot-fixture='annotations'] .annotation-panel {
+  top: 24px;
+  right: 76px;
+  width: min(420px, calc(100vw - 112px));
+  max-height: calc(100vh - 48px);
+}
+
+html[data-screenshot-fixture='sharing'] .collab-panel-body {
+  width: min(360px, calc(100vw - 24px));
+}
+
+html[data-screenshot-fixture='sharing'] .collab-panel {
+  left: 50%;
+}
+
+html[data-screenshot-fixture='overview'] .collab-viewport,
+html[data-screenshot-fixture='sharing'] .collab-viewport {
+  stroke-width: 3;
+  stroke-dasharray: 10 5;
+}
+
+@media (max-width: 760px) {
+  html[data-screenshot-fixture='overview'] .collab-panel {
+    right: 8px;
+    bottom: calc(8px + env(safe-area-inset-bottom));
+    left: 8px;
+  }
+
+  html[data-screenshot-fixture='overview'] .collab-compact-toggle {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 4px;
+  }
+
+  html[data-screenshot-fixture='overview'] .collab-compact-avatar {
+    width: 26px;
+    height: 26px;
+    font-size: 10px;
+  }
+}

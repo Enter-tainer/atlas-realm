@@ -35,15 +35,15 @@ type EaseToOptions = {
   essential: boolean;
 };
 type UserProfile = { userId: string; name: string; color: string; avatarUrl?: string | null };
-type AccountUser = {
+export type AccountUser = {
   userId: string;
   githubLogin: string;
   displayName: string | null;
   avatarUrl: string | null;
 };
-type RoomRole = 'view' | 'edit' | 'manage';
-type LinkAccess = 'restricted' | 'view' | 'edit';
-type RoomAccessState = {
+export type RoomRole = 'view' | 'edit' | 'manage';
+export type LinkAccess = 'restricted' | 'view' | 'edit';
+export type RoomAccessState = {
   role: RoomRole | 'none';
   canView: boolean;
   canEdit: boolean;
@@ -55,15 +55,15 @@ type RoomAccessState = {
     persistence: 'ephemeral' | 'persistent';
   };
 };
-type RoomGrantMember = {
+export type RoomGrantMember = {
   userId: string;
   githubLogin: string;
   displayName: string | null;
   avatarUrl: string | null;
   role: RoomRole;
 };
-type PeerUser = { id?: string; name: string; color: string; avatarUrl?: string | null };
-type AgentParticipant = {
+export type PeerUser = { id?: string; name: string; color: string; avatarUrl?: string | null };
+export type AgentParticipant = {
   id: string;
   user: PeerUser;
   clientType: 'agent';
@@ -72,8 +72,8 @@ type AgentParticipant = {
   expiresAt: number;
   lastAction: string;
 };
-type CursorState = { visible: boolean; lngLat: LngLatTuple | null };
-type LocationState = {
+export type CursorState = { visible: boolean; lngLat: LngLatTuple | null };
+export type LocationState = {
   enabled: boolean;
   lngLat: LngLatTuple | null;
   accuracy: number | null;
@@ -81,7 +81,7 @@ type LocationState = {
   speed: number | null;
   updatedAt: number | null;
 };
-type ViewportSnapshot = {
+export type ViewportSnapshot = {
   center: LngLatTuple;
   zoom: number;
   bearing: number;
@@ -89,7 +89,7 @@ type ViewportSnapshot = {
   corners: LngLatTuple[];
 };
 type CollaborationViewState = { terrain?: boolean; satellite?: boolean };
-type Peer = {
+export type Peer = {
   id: string;
   user: PeerUser;
   viewport?: ViewportSnapshot;
@@ -98,6 +98,19 @@ type Peer = {
   followingId?: string | null;
   viewState?: CollaborationViewState;
   updatedAt?: number;
+};
+export type CollaborationFixtureState = {
+  roomId: string;
+  currentUser: AccountUser | null;
+  roomAccess: RoomAccessState;
+  grants?: RoomGrantMember[];
+  peers?: Peer[];
+  agents?: AgentParticipant[];
+  connectionState?: 'live' | 'idle' | 'connecting' | 'offline';
+  connectionLabel?: string;
+};
+export type MapCollaborationOptions = {
+  fixture?: CollaborationFixtureState | null;
 };
 type LocalFileLayer = JsonRecord & {
   id: string;
@@ -602,8 +615,13 @@ function applyViewState(map: CollaborationMap, viewState: CollaborationViewState
   );
 }
 
-export function installMapCollaboration(map: CollaborationMap, layerStore?: LayerStore) {
+export function installMapCollaboration(
+  map: CollaborationMap,
+  layerStore?: LayerStore,
+  options: MapCollaborationOptions = {},
+) {
   const mapContainer = map.getContainer();
+  const fixture = options.fixture || null;
   const clientId = getSessionId();
   const profile = getProfile();
   const peers = new Map<string, Peer>();
@@ -617,8 +635,8 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   const knownLocalFileLayers = new Map<string, LocalFileLayer>();
   const uploadedLocalFileLayerHashes = new Map<string, string>();
 
-  let socket: PartySocket | null = null;
-  let currentRoom = getInitialRoom();
+  let socket: Pick<PartySocket, 'readyState' | 'send' | 'close'> | null = null;
+  let currentRoom = fixture?.roomId || getInitialRoom();
   let localCursor: CursorState = { visible: false, lngLat: null };
   let localLocation: LocationState = { ...EMPTY_LOCATION };
   let ownConnectionId = clientId;
@@ -1200,6 +1218,27 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     renderPresenceSummary();
     renderCompactAvatars();
     renderCompactSummary();
+  }
+
+  function installFixtureState(state: CollaborationFixtureState) {
+    currentUser = state.currentUser;
+    roomAccess = state.roomAccess;
+    roomAccessLoaded = true;
+    roomGrants.clear();
+    for (const grant of state.grants || []) roomGrants.set(grant.userId, grant);
+    peers.clear();
+    for (const peer of state.peers || []) peers.set(peer.id, peer);
+    agents.clear();
+    for (const agent of state.agents || []) agents.set(agent.id, agent);
+    socket = {
+      readyState: WebSocket.OPEN,
+      send() {},
+      close() {},
+    };
+    renderAccessUi();
+    renderPeople();
+    scheduleOverlayRender();
+    setStatus(state.connectionLabel || 'Live', state.connectionState || 'live');
   }
 
   function createAvatarNode(peer: Peer, className = 'collab-avatar') {
@@ -2215,11 +2254,15 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   mapContainer.appendChild(panel);
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
-  refreshAuth().catch((error) => {
-    console.error('Failed to refresh account:', error);
-  });
-  renderPeople();
-  if (currentRoom) {
+  if (fixture) {
+    installFixtureState(fixture);
+  } else {
+    refreshAuth().catch((error) => {
+      console.error('Failed to refresh account:', error);
+    });
+    renderPeople();
+  }
+  if (!fixture && currentRoom) {
     connect(currentRoom).catch((error) => {
       console.error('Failed to connect collaboration room:', error);
       setStatus('Offline', 'offline');
