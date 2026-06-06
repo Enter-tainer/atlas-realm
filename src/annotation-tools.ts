@@ -1054,7 +1054,7 @@ class AnnotationToolsControl {
     const next: AnnotationFeaturePayload = {
       ...feature,
       label: sanitizeAnnotationText(this._labelInput.value, 120),
-      note: sanitizeAnnotationText(this._noteInput.value, 1200),
+      note: sanitizeAnnotationText(this._noteInput.value, 1200, { preserveLineBreaks: true }),
       color: this._color,
       updatedAt: Date.now(),
     } as AnnotationFeaturePayload;
@@ -1082,7 +1082,7 @@ class AnnotationToolsControl {
     const next: AnnotationFeaturePayload = {
       ...feature,
       label: sanitizeAnnotationText(this._editorLabelInput?.value || '', 120),
-      note: sanitizeAnnotationText(this._editorNoteInput?.value || '', 1200),
+      note: sanitizeAnnotationText(this._editorNoteInput?.value || '', 1200, { preserveLineBreaks: true }),
       color: /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR,
       updatedAt: Date.now(),
     } as AnnotationFeaturePayload;

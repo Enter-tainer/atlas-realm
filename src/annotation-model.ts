@@ -137,8 +137,21 @@ export function createAnnotationId(prefix: string) {
   return `${prefix}-${id.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 72)}`;
 }
 
-export function sanitizeAnnotationText(value: unknown, maxLength: number) {
-  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxLength) : '';
+export function sanitizeAnnotationText(
+  value: unknown,
+  maxLength: number,
+  options: { preserveLineBreaks?: boolean } = {},
+) {
+  if (typeof value !== 'string') return '';
+  const normalized = value.replace(/\r\n?/g, '\n');
+  const text = options.preserveLineBreaks
+    ? normalized
+        .split('\n')
+        .map((line) => line.replace(/[^\S\n]+/g, ' ').trim())
+        .join('\n')
+        .trim()
+    : normalized.replace(/\s+/g, ' ').trim();
+  return text.slice(0, maxLength);
 }
 
 export function sanitizeAnnotationColor(value: unknown, fallback = DEFAULT_ANNOTATION_COLOR) {
@@ -226,8 +239,8 @@ function baseFeature(value: JsonRecord, type: AnnotationFeatureType, now: number
     id,
     layerId: sanitizeAnnotationId(value.layerId, ANNOTATION_DEFAULT_LAYER_ID),
     type,
-    label: sanitizeAnnotationText(value.label ?? value.name, 120),
-    note: sanitizeAnnotationText(value.note ?? value.description, 1200),
+    label: sanitizeAnnotationText(value.label ?? value.name, 120, { preserveLineBreaks: true }),
+    note: sanitizeAnnotationText(value.note ?? value.description, 1200, { preserveLineBreaks: true }),
     color: sanitizeAnnotationColor(value.color ?? style.color),
     createdAt: sanitizeNumber(value.createdAt, 0, Number.MAX_SAFE_INTEGER, now),
     updatedAt: sanitizeNumber(value.updatedAt, 0, Number.MAX_SAFE_INTEGER, now),

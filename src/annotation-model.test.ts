@@ -89,6 +89,21 @@ describe('annotation model', () => {
     });
   });
 
+  it('preserves line breaks in annotation labels and notes', () => {
+    expect(
+      sanitizeAnnotationFeaturePayload({
+        ...pointFeature(),
+        label: '  First line  \nSecond\tline  ',
+        note: 'Plan A\r\nPlan B\r\n\r\nPlan C',
+        updatedBy: 'Agent\nName',
+      }),
+    ).toMatchObject({
+      label: 'First line\nSecond line',
+      note: 'Plan A\nPlan B\n\nPlan C',
+      updatedBy: 'Agent Name',
+    });
+  });
+
   it('projects annotation features to annotation GeoJSON properties', () => {
     const geojson = annotationFeaturePayloadsToGeoJson([pathFeature()]);
 

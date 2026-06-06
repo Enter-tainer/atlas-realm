@@ -165,6 +165,7 @@ Text:
 
 ```bash
 orm-agent-room --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
+orm-agent-room --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note-file ./plan-note.txt --json
 ```
 
 Path:
@@ -194,7 +195,7 @@ orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --
 orm-agent-room --host <host> --room <room> --client-id <id> annotations clear --layer-id annotation-default --hide-layer --json
 ```
 
-For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
+For multiline labels or notes, prefer UTF-8 files with `--label-file` / `--note-file` so shell quoting does not alter line breaks. For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
 
 Annotation layers:
 

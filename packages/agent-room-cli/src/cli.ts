@@ -363,7 +363,9 @@ function annotationBuilder(y: any): any {
     .option('id', { type: 'string', describe: 'Annotation or annotation-layer id' })
     .option('layer-id', { type: 'string', describe: 'Annotation layer id' })
     .option('label', { type: 'string', describe: 'Annotation label' })
+    .option('label-file', { type: 'string', describe: 'Read annotation label from a UTF-8 text file' })
     .option('note', { type: 'string', describe: 'Annotation note' })
+    .option('note-file', { type: 'string', describe: 'Read annotation note from a UTF-8 text file' })
     .option('color', { type: 'string', describe: 'Annotation color hex' })
     .option('lng', { type: 'number', describe: 'Point/text longitude' })
     .option('lat', { type: 'number', describe: 'Point/text latitude' })
@@ -482,7 +484,9 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     type: undefined,
     layerId: args.layerId,
     label: args.label,
+    labelFile: args.labelFile,
     note: args.note,
+    noteFile: args.noteFile,
     color: args.color,
     lng: args.lng,
     lat: args.lat,

@@ -29,7 +29,11 @@ export async function buildFeatureFromOptions(
 ): Promise<AnnotationFeaturePayload> {
   const fullFeature = await readJsonOption(options.featureFile, options.featureJson, 'feature');
   const patch = await readJsonOption(options.patchFile, options.patchJson, 'patch');
-  return buildFeatureFromParts({ options, config, typeHint, existing, fullFeature, patch, now });
+  const resolvedOptions = {
+    ...options,
+    ...(await readTextFileOptions(options)),
+  };
+  return buildFeatureFromParts({ options: resolvedOptions, config, typeHint, existing, fullFeature, patch, now });
 }
 
 export function buildFeatureFromParts({
@@ -136,4 +140,17 @@ async function readJsonOption(file: unknown, json: unknown, label: string): Prom
   if (file) return parseJson(await readFile(String(file), 'utf8'), `${label}-file`);
   if (json) return parseJson(String(json), `${label}-json`);
   return null;
+}
+
+async function readTextFileOptions(options: JsonRecord): Promise<JsonRecord> {
+  const resolved: JsonRecord = {};
+  if (options.labelFile) {
+    if (options.label !== undefined) throw new Error('Use either --label or --label-file, not both.');
+    resolved.label = await readFile(String(options.labelFile), 'utf8');
+  }
+  if (options.noteFile) {
+    if (options.note !== undefined) throw new Error('Use either --note or --note-file, not both.');
+    resolved.note = await readFile(String(options.noteFile), 'utf8');
+  }
+  return resolved;
 }

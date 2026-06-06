@@ -768,6 +768,64 @@ describe('agent-room CLI package', () => {
     });
   });
 
+  it('reads multiline annotation text from files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-text-'));
+    const noteFile = join(dir, 'note.txt');
+    await writeFile(noteFile, 'Line 1\nLine 2\nLine 3', 'utf8');
+
+    try {
+      const client = new FakeRoomClient();
+      await executeCommand(client, {
+        subject: 'annotations',
+        action: 'add',
+        featureType: 'text',
+        type: 'text',
+        id: 'plan-note',
+        coordinate: '121.5,31.2',
+        label: 'Plan',
+        noteFile,
+      });
+
+      expect(client.sentJson[0]).toMatchObject({
+        type: 'annotation-feature:upsert',
+        feature: {
+          id: 'plan-note',
+          featureType: 'text',
+          payload: {
+            type: 'text',
+            label: 'Plan',
+            note: 'Line 1\nLine 2\nLine 3',
+          },
+        },
+      });
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous inline and file text options', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-text-'));
+    const labelFile = join(dir, 'label.txt');
+    await writeFile(labelFile, 'File label', 'utf8');
+    try {
+      const client = new FakeRoomClient();
+      await expect(
+        executeCommand(client, {
+          subject: 'annotations',
+          action: 'add',
+          featureType: 'text',
+          type: 'text',
+          id: 'plan-note',
+          coordinate: '121.5,31.2',
+          label: 'Inline',
+          labelFile,
+        }),
+      ).rejects.toThrow('Use either --label or --label-file, not both.');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
   it('sends file content upload followed by layer:create for file layers', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'agent-room-cli-'));
     const file = join(dir, 'route.geojson');
