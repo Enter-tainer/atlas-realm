@@ -10,10 +10,10 @@ The original idea was Google Docs on top of a map. The useful extension is that 
 
 ## Install The Skill
 
-Install the Atlas Realm skill for Codex:
+Install the Atlas Realm skill for your agent:
 
 ```bash
-npx skills add Enter-tainer/atlas-realm --skill atlas-realm --agent codex --global --yes --full-depth
+npx skills add Enter-tainer/atlas-realm --skill atlas-realm --global --yes --full-depth
 ```
 
 Then give an agent a room URL such as `https://map.mgt.moe/?room=your-room-id` and ask it to inspect layers, add annotations, or maintain the shared map context.
@@ -132,7 +132,7 @@ Signed-in users can grant GitHub users `view`, `edit`, or `manage` access. Agent
 
 ### Bring an Agent Into the Room
 
-The Atlas Realm skill lets Codex connect to a room, read the current map state, inspect layer contents, and add points, routes, areas, or notes. The agent can work from a room URL instead of a detached prompt, so it has shared spatial context and can leave its changes in the same document.
+The Atlas Realm skill lets agents connect to a room, read the current map state, inspect layer contents, and add points, routes, areas, or notes. The agent can work from a room URL instead of a detached prompt, so it has shared spatial context and can leave its changes in the same document.
 
 Useful agent tasks include:
 
@@ -144,7 +144,7 @@ Useful agent tasks include:
 For local development from this repository:
 
 ```bash
-npx skills add . --skill atlas-realm --agent codex --global --yes --full-depth
+npx skills add . --skill atlas-realm --global --yes --full-depth
 ```
 
 Skill documentation lives in [packages/atlas-realm-cli/skills/atlas-realm/SKILL.md](packages/atlas-realm-cli/skills/atlas-realm/SKILL.md).
@@ -160,7 +160,7 @@ src/
   annotation-*               # Annotation model, tools, and renderer
   account-* / room-*         # Login, room, and permission APIs
 
-packages/atlas-realm-cli/     # Atlas Realm CLI and Codex skill
+packages/atlas-realm-cli/     # Atlas Realm CLI and agent skill
 migrations/                  # D1 database migrations
 scripts/styles/              # OpenRailwayMap style generation scripts
 scripts/                     # Automation and style tooling
