@@ -15,7 +15,11 @@ declare global {
     interface Env {
       ASSETS: Fetcher;
       ORM_BUCKET: R2Bucket;
+      ACCOUNTS_DB?: D1Database;
       MapCollaboration: DurableObjectNamespace;
+      INTERNAL_AUTH_SECRET?: string;
+      GITHUB_CLIENT_ID?: string;
+      GITHUB_CLIENT_SECRET?: string;
     }
   }
 }

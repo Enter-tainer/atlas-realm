@@ -1,5 +1,8 @@
 import { PMTiles, ResolvedValueCache, type RangeResponse, type Source, TileType } from 'pmtiles';
 import { routePartykitRequest, Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
+import { handleAccountApiRequest } from './account-api.js';
+import { getRoomAccessSnapshot } from './room-access.js';
+import { preparePartyWebSocketRequest } from './room-ws-auth.js';
 import {
   createDefaultAnnotationLayer,
   sanitizeAnnotationFeature,
@@ -15,6 +18,7 @@ import {
   sortAnnotationFeatures,
   sortLayers,
 } from './layer-sync.js';
+import { canEdit, canManage, effectiveRoomRole, type RoomRole } from './room-permissions.js';
 
 const TILE_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\/(?<z>\d+)\/(?<x>\d+)\/(?<y>\d+)\.(?<ext>[a-z]+)$/;
 const TILEJSON_RE = /^\/tiles\/(?<name>[0-9a-zA-Z/!\-_.*'()]+)\.json$/;
@@ -64,7 +68,26 @@ interface UserProfile {
   id: string;
   name: string;
   color: string;
+  avatarUrl?: string | null;
 }
+
+interface AuthContext {
+  userId: string;
+  role: RoomRole;
+  issuedAt: number;
+  clientId: string;
+  agentId: string | null;
+  authKind: 'anonymous' | 'user' | 'token';
+  displayName: string;
+  avatarUrl: string | null;
+}
+
+interface AccessRefreshUpdate {
+  userId: string;
+  role: RoomRole | null;
+}
+
+type AccessRefreshMode = 'users' | 'room';
 
 type ClientType = 'human' | 'agent' | 'query';
 
@@ -107,6 +130,7 @@ interface ViewportState {
 
 interface PeerState {
   user?: UserProfile;
+  auth?: AuthContext;
   clientType?: ClientType;
   presenceVisible?: boolean;
   viewport?: ViewportState | null;
@@ -172,6 +196,7 @@ const EPHEMERAL_ROOM_TTL_MS = 24 * 60 * 60 * 1000;
 const UNREFERENCED_FILE_CONTENT_TTL_MS = 60 * 60 * 1000;
 const AGENT_RECENT_TTL_MS = 5 * 60 * 1000;
 const AGENT_TOUCH_THROTTLE_MS = 5 * 1000;
+const AUTH_HEADER_MAX_AGE_MS = 60_000;
 const SQL_READY_KEY = '__layer_sql_ready_v2_clean_break';
 const textDecoder = new TextDecoder();
 const textEncoder = new TextEncoder();
@@ -250,11 +275,14 @@ function sanitizeUser(value: unknown, fallback?: UserProfile): UserProfile {
       id: base.id || '',
       name: base.name || 'Guest',
       color: base.color || PROFILE_COLORS[0],
+      avatarUrl: base.avatarUrl || null,
     };
+  const avatarUrl = sanitizeText(value.avatarUrl, base.avatarUrl || '', 512) || null;
   return {
     id: base.id || '',
     name: sanitizeText(value.name, base.name || 'Guest', 32),
     color: sanitizeColor(value.color, base.color || PROFILE_COLORS[0]),
+    avatarUrl,
   };
 }
 
@@ -270,6 +298,37 @@ function sanitizePeerId(value: unknown): string | null {
   if (typeof value !== 'string') return null;
   const id = value.trim();
   return /^[0-9a-zA-Z_-]{1,96}$/.test(id) ? id : null;
+}
+
+function sanitizeRoomRole(value: unknown): RoomRole | null {
+  return value === 'view' || value === 'edit' || value === 'manage' ? value : null;
+}
+
+function sanitizeAuthKind(value: unknown): AuthContext['authKind'] | null {
+  return value === 'anonymous' || value === 'user' || value === 'token' ? value : null;
+}
+
+function sanitizeAccessRefreshMode(value: unknown): AccessRefreshMode | null {
+  return value === 'users' || value === 'room' ? value : null;
+}
+
+function sanitizeAccessRefreshUpdate(value: unknown): AccessRefreshUpdate | null {
+  if (!isRecord(value)) return null;
+  const userId = sanitizePeerId(value.userId);
+  const role = value.role === null || value.role === 'none' ? null : sanitizeRoomRole(value.role);
+  if (!userId || (role === null && value.role !== null && value.role !== 'none')) return null;
+  return { userId, role };
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function hex(bytes: ArrayBuffer): string {
+  return [...new Uint8Array(bytes)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
 function sanitizeLngLat(value: unknown): LngLatTuple | null {
@@ -354,10 +413,195 @@ function encodeMessage(message: unknown): string {
   return JSON.stringify(message);
 }
 
+function parseJsonRecord(value: string): JsonRecord | null {
+  try {
+    const parsed = JSON.parse(value);
+    return isRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 export class MapCollaboration extends Server<Cloudflare.Env> {
   static options = {
     hibernate: true,
   };
+
+  async _verifyAuthHeaders(request: Request): Promise<AuthContext | null> {
+    const secret = this.env.INTERNAL_AUTH_SECRET;
+    if (!secret) return null;
+
+    const userId = sanitizePeerId(request.headers.get('x-orm-auth-user-id'));
+    const role = sanitizeRoomRole(request.headers.get('x-orm-room-role'));
+    const clientId = sanitizePeerId(request.headers.get('x-orm-client-id'));
+    const agentId = sanitizePeerId(request.headers.get('x-orm-agent-id')) || '';
+    const authKind = sanitizeAuthKind(request.headers.get('x-orm-auth-kind'));
+    const issuedAt = Number(request.headers.get('x-orm-auth-issued-at'));
+    const signature = String(request.headers.get('x-orm-auth-signature') || '').toLowerCase();
+    if (!userId || !role || !clientId || !authKind || !Number.isFinite(issuedAt) || !/^[0-9a-f]{64}$/.test(signature)) {
+      throw new Error('Unauthorized room connection');
+    }
+
+    const now = Date.now();
+    if (Math.abs(now - issuedAt) > AUTH_HEADER_MAX_AGE_MS) {
+      throw new Error('Unauthorized room connection');
+    }
+
+    const payload = `${this.name}\n${userId}\n${role}\n${clientId}\n${agentId}\n${authKind}\n${issuedAt}`;
+    const key = await crypto.subtle.importKey(
+      'raw',
+      textEncoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const expected = hex(await crypto.subtle.sign('HMAC', key, textEncoder.encode(payload)));
+    if (!timingSafeEqualHex(expected, signature)) {
+      throw new Error('Unauthorized room connection');
+    }
+
+    const displayName = sanitizeText(request.headers.get('x-orm-auth-user-name'), userId, 80);
+    const avatarUrl = sanitizeText(request.headers.get('x-orm-auth-user-avatar'), '', 512) || null;
+    return {
+      userId,
+      role,
+      issuedAt,
+      clientId,
+      agentId: agentId || null,
+      authKind,
+      displayName,
+      avatarUrl,
+    };
+  }
+
+  async _verifyControlRequest(request: Request, body: string): Promise<string> {
+    const secret = this.env.INTERNAL_AUTH_SECRET;
+    if (!secret) throw new Error('Unauthorized control request');
+
+    const action = sanitizeAction(request.headers.get('x-orm-control-action'), '');
+    const issuedAt = Number(request.headers.get('x-orm-control-issued-at'));
+    const signature = String(request.headers.get('x-orm-control-signature') || '').toLowerCase();
+    if (!action || !Number.isFinite(issuedAt) || !/^[0-9a-f]{64}$/.test(signature)) {
+      throw new Error('Unauthorized control request');
+    }
+    if (Math.abs(Date.now() - issuedAt) > AUTH_HEADER_MAX_AGE_MS) {
+      throw new Error('Unauthorized control request');
+    }
+
+    const payload = `${this.name}\n${action}\n${issuedAt}\n${body}`;
+    const key = await crypto.subtle.importKey(
+      'raw',
+      textEncoder.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['sign'],
+    );
+    const expected = hex(await crypto.subtle.sign('HMAC', key, textEncoder.encode(payload)));
+    if (!timingSafeEqualHex(expected, signature)) {
+      throw new Error('Unauthorized control request');
+    }
+    return action;
+  }
+
+  _refreshConnectionAccess(connection: Connection<PeerState>, role: RoomRole | null): void {
+    const state = connection.state;
+    if (!state?.auth) return;
+    if (!role) {
+      connection.send(encodeMessage({ type: 'access:revoked' }));
+      connection.close(4003, 'access revoked');
+      return;
+    }
+    const nextAuth = { ...state.auth, role };
+    connection.setState({ ...state, auth: nextAuth });
+    connection.send(
+      encodeMessage({
+        type: 'access:updated',
+        role,
+        canView: true,
+        canEdit: canEdit(role),
+        canManage: canManage(role),
+      }),
+    );
+  }
+
+  _applyAccessRefresh(
+    updates: AccessRefreshUpdate[],
+    connections: Iterable<Connection<PeerState>> = this.getConnections<PeerState>(),
+  ): number {
+    let count = 0;
+    for (const connection of connections) {
+      const auth = connection.state?.auth;
+      if (!auth) continue;
+      const update = updates.find((candidate) => candidate.userId === auth.userId);
+      if (!update) continue;
+      this._refreshConnectionAccess(connection, update.role);
+      count += 1;
+    }
+    return count;
+  }
+
+  async _applyRoomAccessRefresh(
+    connections: Iterable<Connection<PeerState>> = this.getConnections<PeerState>(),
+  ): Promise<number> {
+    const connectionList = [...connections];
+    if (!this.env.ACCOUNTS_DB) {
+      let fallbackCount = 0;
+      for (const connection of connectionList) {
+        if (!connection.state?.auth) continue;
+        this._refreshConnectionAccess(connection, connection.state.auth.role);
+        fallbackCount += 1;
+      }
+      return fallbackCount;
+    }
+
+    const snapshot = await getRoomAccessSnapshot(this.env.ACCOUNTS_DB, this.name);
+    let count = 0;
+    for (const connection of connectionList) {
+      const auth = connection.state?.auth;
+      if (!auth) continue;
+      const accountUserId = auth.authKind === 'anonymous' ? null : auth.userId;
+      const computedRole = snapshot
+        ? effectiveRoomRole({
+            isOwner: Boolean(accountUserId && snapshot.ownerUserId === accountUserId),
+            grantRole: accountUserId ? snapshot.grantsByUserId.get(accountUserId) || null : null,
+            linkAccess: snapshot.linkAccess,
+          })
+        : 'none';
+      const role = computedRole === 'none' ? null : computedRole;
+      this._refreshConnectionAccess(connection, role);
+      count += 1;
+    }
+    return count;
+  }
+
+  async _applyAccessRefreshPayload(
+    payload: JsonRecord | null,
+    connections: Iterable<Connection<PeerState>> = this.getConnections<PeerState>(),
+  ): Promise<number | null> {
+    const refresh = isRecord(payload?.refresh) ? payload.refresh : null;
+    const mode = sanitizeAccessRefreshMode(refresh?.mode);
+    if (mode === 'room') return this._applyRoomAccessRefresh(connections);
+
+    const updates = Array.isArray(payload?.updates)
+      ? payload.updates
+          .map(sanitizeAccessRefreshUpdate)
+          .filter((update): update is AccessRefreshUpdate => Boolean(update))
+      : [];
+    if (updates.length === 0) return null;
+    return this._applyAccessRefresh(updates, connections);
+  }
+
+  _roleFor(connection: Connection<PeerState>): RoomRole {
+    return connection.state?.auth?.role || (this.env.INTERNAL_AUTH_SECRET ? 'view' : 'manage');
+  }
+
+  _canEdit(connection: Connection<PeerState>): boolean {
+    return canEdit(this._roleFor(connection));
+  }
+
+  _canManage(connection: Connection<PeerState>): boolean {
+    return canManage(this._roleFor(connection));
+  }
 
   async _ensureLayerStorage(): Promise<void> {
     if (await this.ctx.storage.get(SQL_READY_KEY)) return;
@@ -547,6 +791,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         id: agentId,
         name: sanitizeText(user.name, 'Agent', 32),
         color: sanitizeColor(user.color, PROFILE_COLORS[7]),
+        avatarUrl: user.avatarUrl || null,
       };
       this.sql`
         INSERT OR REPLACE INTO agent_participants (agent_id, user_json, last_seen_at, expires_at, last_action)
@@ -771,6 +1016,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 
   async onConnect(connection: Connection<PeerState>, { request }: ConnectionContext): Promise<void> {
+    const auth = await this._verifyAuthHeaders(request);
     await this._touchRoom();
     const url = new URL(request.url);
     const clientType = sanitizeClientType(url.searchParams.get('clientType'));
@@ -782,14 +1028,16 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       ],
     );
     const user = {
-      id: sanitizeText(url.searchParams.get('userId'), connection.id, 80),
-      name: sanitizeText(url.searchParams.get('name'), `Guest ${connection.id.slice(0, 4)}`, 32),
+      id: auth?.clientId || sanitizeText(url.searchParams.get('userId'), connection.id, 80),
+      name: sanitizeText(auth?.displayName || url.searchParams.get('name'), `Guest ${connection.id.slice(0, 4)}`, 32),
       color,
+      avatarUrl: auth?.avatarUrl || null,
     };
     const agent = clientType === 'agent' ? this._touchAgentParticipant(user, 'connect') : null;
 
     connection.setState({
       user,
+      auth: auth || undefined,
       clientType,
       presenceVisible,
       viewport: null,
@@ -853,6 +1101,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     await this._touchRoom();
 
     if (typeof message !== 'string') {
+      if (!this._canEdit(connection)) {
+        connection.send(encodeMessage({ type: 'permission:denied', action: 'file:content:upload' }));
+        return;
+      }
       const frame = decodeFileContentFrame(message);
       if (!frame) return;
       const contentBuffer = toArrayBuffer(frame.content);
@@ -889,6 +1141,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     }
 
     if (payload.type === 'room:update') {
+      if (!this._canManage(connection)) {
+        connection.send(encodeMessage({ type: 'permission:denied', action: 'room:update' }));
+        return;
+      }
       const persistence =
         payload.persistence === 'persistent' ? 'persistent' : payload.persistence === 'ephemeral' ? 'ephemeral' : null;
       if (!persistence) return;
@@ -906,6 +1162,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (layerMessage.type === 'layer:create') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'layer:create' }));
+          return;
+        }
         const existing = this._getLayer(layerMessage.layer.id);
         const layer = sanitizeLayer(
           {
@@ -936,6 +1196,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (layerMessage.type === 'layer:update') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'layer:update' }));
+          return;
+        }
         const existing = this._getLayer(layerMessage.layerId);
         if (!existing) return;
         const patchPayload = isRecord(layerMessage.patch.payload) ? layerMessage.patch.payload : {};
@@ -968,6 +1232,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (layerMessage.type === 'layer:delete') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'layer:delete' }));
+          return;
+        }
         const existing = this._getLayer(layerMessage.layerId);
         if (!existing) return;
         this.sql`DELETE FROM annotation_features WHERE layer_id = ${layerMessage.layerId}`;
@@ -978,6 +1246,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (layerMessage.type === 'layer:reorder') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'layer:reorder' }));
+          return;
+        }
         for (const update of layerMessage.updates) {
           const existing = this._getLayer(update.layerId);
           if (!existing) continue;
@@ -1007,6 +1279,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (annotationMessage.type === 'annotation-feature:upsert') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'annotation-feature:upsert' }));
+          return;
+        }
         const parent = this._getLayer(annotationMessage.feature.layerId);
         if (!parent || parent.kind !== 'annotation') {
           connection.send(
@@ -1046,6 +1322,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (annotationMessage.type === 'annotation-feature:delete') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'annotation-feature:delete' }));
+          return;
+        }
         this.sql`DELETE FROM annotation_features WHERE feature_id = ${annotationMessage.featureId}`;
         connection.send(encodeMessage({ type: 'annotation-feature:deleted', featureId: annotationMessage.featureId }));
         this.broadcast(encodeMessage({ type: 'annotation-feature:deleted', featureId: annotationMessage.featureId }), [
@@ -1054,6 +1334,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
         return;
       }
       if (annotationMessage.type === 'annotation-feature:reorder') {
+        if (!this._canEdit(connection)) {
+          connection.send(encodeMessage({ type: 'permission:denied', action: 'annotation-feature:reorder' }));
+          return;
+        }
         for (const update of annotationMessage.updates) {
           this.sql`
             UPDATE annotation_features
@@ -1101,7 +1385,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     if (previous.clientType !== 'human' || previous.presenceVisible === false) return;
 
     const followingId = sanitizePeerId(payload.followingId);
-    const next = {
+    const next: PeerState = {
+      ...previous,
       user: sanitizeUser(payload.user, previous.user),
       clientType: previous.clientType,
       presenceVisible: previous.presenceVisible,
@@ -1138,7 +1423,40 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     );
   }
 
-  onRequest(): Response {
+  async onRequest(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+    if (url.pathname.endsWith('/_control/access-refresh')) {
+      const body = await request.text();
+      try {
+        const action = await this._verifyControlRequest(request, body);
+        if (action !== 'access-refresh') return new Response('Unknown control action', { status: 404 });
+        const payload = parseJsonRecord(body);
+        const refreshed = await this._applyAccessRefreshPayload(payload);
+        if (refreshed === null) return new Response('Invalid access refresh', { status: 400 });
+        return Response.json({ ok: true, refreshed });
+      } catch {
+        return new Response('Unauthorized control request', { status: 403 });
+      }
+    }
+    if (url.pathname.endsWith('/_control/room-persistence')) {
+      const body = await request.text();
+      try {
+        const action = await this._verifyControlRequest(request, body);
+        if (action !== 'room-persistence') return new Response('Unknown control action', { status: 404 });
+        const payload = parseJsonRecord(body);
+        const persistence =
+          payload?.persistence === 'persistent'
+            ? 'persistent'
+            : payload?.persistence === 'ephemeral'
+              ? 'ephemeral'
+              : null;
+        if (!persistence) return new Response('Invalid room persistence', { status: 400 });
+        const status = await this._setRoomPersistence(persistence);
+        return Response.json({ ok: true, status });
+      } catch {
+        return new Response('Unauthorized control request', { status: 403 });
+      }
+    }
     return new Response('Map collaboration room is ready.', {
       headers: { 'Content-Type': 'text/plain; charset=utf-8' },
     });
@@ -1219,6 +1537,14 @@ async function handleTileRequest(
 
 export default {
   async fetch(request: Request, env: Cloudflare.Env, ctx: ExecutionContext): Promise<Response> {
+    const preparedPartyRequest = await preparePartyWebSocketRequest(request, env);
+    if (preparedPartyRequest instanceof Response) return preparedPartyRequest;
+    if (preparedPartyRequest) {
+      const partyResponse = await routePartykitRequest(preparedPartyRequest.request, env, { cors: true });
+      if (partyResponse) return partyResponse;
+      return new Response('Room route not found', { status: 404 });
+    }
+
     const partyResponse = await routePartykitRequest(request, env, { cors: true });
     if (partyResponse) return partyResponse;
 
@@ -1234,6 +1560,9 @@ export default {
 
     const url = new URL(request.url);
 
+    const apiResponse = await handleAccountApiRequest(request, env);
+    if (apiResponse) return apiResponse;
+
     // /tiles/* → PMTiles from R2
     if (url.pathname.startsWith('/tiles/')) {
       try {
@@ -1245,7 +1574,10 @@ export default {
       }
     }
 
-    // Everything else → static assets (SPA)
-    return env.ASSETS.fetch(request);
+    // Everything else → static assets with SPA fallback
+    const assetResponse = await env.ASSETS.fetch(request);
+    if (assetResponse.status !== 404) return assetResponse;
+    const spaResponse = await env.ASSETS.fetch(new Request(new URL('/', request.url), request));
+    return spaResponse.status !== 404 ? spaResponse : new Response('Not Found', { status: 404 });
   },
 } satisfies ExportedHandler<Cloudflare.Env>;

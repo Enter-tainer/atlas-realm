@@ -12,16 +12,39 @@ Use this skill when a user asks you to work inside an ORM map collaboration room
 Run the packaged CLI:
 
 ```bash
-orm-agent-room --host <app-origin> --room <room> <command> --json
+orm-agent-room --host <app-origin> --room <room> --client-id <id> <command> --json
 ```
 
 If working from this repo before package publishing, use:
 
 ```bash
-pnpm agent:room --host <app-origin> --room <room> <command> --json
+pnpm agent:room --host <app-origin> --room <room> --client-id <id> <command> --json
 ```
 
 Always prefer `--json` for agent automation. Use `--pretty` only for human-readable inspection.
+
+`--client-id` is mandatory and must be a unique identifier for this CLI process/session (e.g. `agent-planner`, `layer-sync-v2`). It is used for connection-level presence and agent identity tracking.
+
+Host default order: `ORM_ROOM_HOST` env var → `ROOM_HOST` env var → `http://localhost:5173`.
+
+Production host: `https://map.mgt.moe`
+
+### Authentication (PAT)
+
+For rooms with access controls enabled, pass a Personal Access Token:
+
+```bash
+orm-agent-room --host <host> --room <room> --client-id <id> --token orm_pat_... <command> --json
+```
+
+Or set the `ORM_ROOM_TOKEN` environment variable:
+
+```bash
+export ORM_ROOM_TOKEN=orm_pat_...
+orm-agent-room --host <host> --room <room> --client-id <id> <command> --json
+```
+
+The token authenticates the agent as its owning user. Room access is computed by the server from link-access settings and explicit grants, same as for browser sessions.
 
 By default, CLI calls identify as `--client-type agent` and refresh that agent's recent activity in the room. Use `--client-type query` for read-only checks that should not update agent activity.
 

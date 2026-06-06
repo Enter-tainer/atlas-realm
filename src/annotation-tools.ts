@@ -27,6 +27,11 @@ import {
 import { buildRouteUrl, formatDistance, formatDuration, normalizeEndpoint } from './routing.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
+import {
+  collaborationCanEdit,
+  COLLABORATION_ACCESS_EVENT,
+  type CollaborationAccessDetail,
+} from './collaboration-permissions.js';
 import type { AnnotationDraftMode } from './annotation-draft.js';
 import type {
   AnnotationFeaturePayload,
@@ -218,14 +223,16 @@ export function isAnnotationPickerInteractionActive({
   expanded,
   layerVisible,
   annotationReady,
+  canEdit = true,
   mode,
 }: {
   expanded: boolean;
   layerVisible: boolean;
   annotationReady: boolean;
+  canEdit?: boolean;
   mode: string;
 }) {
-  return Boolean(expanded && layerVisible && annotationReady && mode !== 'select');
+  return Boolean(canEdit && expanded && layerVisible && annotationReady && mode !== 'select');
 }
 
 function profileFromValue(value: string): AnnotationRouteProfile {
@@ -327,11 +334,13 @@ class AnnotationToolsControl {
   _opacity = DEFAULT_LINE_OPACITY;
   _fillOpacity = DEFAULT_FILL_OPACITY;
   _abortController: AbortController | null = null;
+  _canEdit = true;
   _boundMapClick: (event: AnnotationMapClickEvent) => void;
   _boundMapDblClick: (event: AnnotationMapDblClickEvent) => void;
   _boundFeatureClick: (event: Event) => void;
   _boundFeatureDblClick: (event: Event) => void;
   _boundKeydown: (event: KeyboardEvent) => void;
+  _boundAccessChange: (event: Event) => void;
   _boundOverlayPanelOpen: () => void;
   _boundRoutingPanelOpen: () => void;
   _boundAnnotationOpen: (event: Event) => void;
@@ -347,6 +356,10 @@ class AnnotationToolsControl {
     this._boundFeatureClick = (event) => this._handleFeatureClick(event);
     this._boundFeatureDblClick = (event) => this._handleFeatureDblClick(event);
     this._boundKeydown = (event) => this._handleKeydown(event);
+    this._boundAccessChange = (event) => {
+      const detail = (event as CustomEvent<CollaborationAccessDetail>).detail;
+      this._setCanEdit(detail?.canEdit !== false);
+    };
     this._boundOverlayPanelOpen = () => this.setExpanded(false);
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
     this._boundAnnotationOpen = (event) => {
@@ -561,6 +574,8 @@ class AnnotationToolsControl {
     map.getContainer().addEventListener('annotation:open', this._boundAnnotationOpen);
     map.getContainer().addEventListener(ANNOTATION_ACTIVE_LAYER_EVENT, this._boundActiveLayerChange);
     map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
+    map.getContainer().addEventListener(COLLABORATION_ACCESS_EVENT, this._boundAccessChange);
+    this._canEdit = collaborationCanEdit(map.getContainer());
     window.addEventListener('keydown', this._boundKeydown);
     this._sync();
     return this._control;
@@ -578,6 +593,7 @@ class AnnotationToolsControl {
     this._map.getContainer().removeEventListener('annotation:open', this._boundAnnotationOpen);
     this._map.getContainer().removeEventListener(ANNOTATION_ACTIVE_LAYER_EVENT, this._boundActiveLayerChange);
     this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
+    this._map.getContainer().removeEventListener(COLLABORATION_ACCESS_EVENT, this._boundAccessChange);
     window.removeEventListener('keydown', this._boundKeydown);
     this._closeEditor();
     this._removeDraftLayer();
@@ -600,6 +616,12 @@ class AnnotationToolsControl {
     this._modeButtons[mode] = button;
   }
 
+  _setCanEdit(canEdit: boolean) {
+    if (this._canEdit === canEdit) return;
+    this._canEdit = canEdit;
+    this._sync();
+  }
+
   setExpanded(expanded: boolean) {
     this._expanded = Boolean(expanded);
     if (this._expanded) {
@@ -619,6 +641,7 @@ class AnnotationToolsControl {
   }
 
   _setMode(mode: AnnotationMode) {
+    if (!this._canEdit && mode !== 'select') return;
     const previousMode = this._mode;
     this._mode = mode;
     const isDraftMode = mode === 'path' || mode === 'polygon' || mode === 'route';
@@ -653,6 +676,7 @@ class AnnotationToolsControl {
   }
 
   _setColor(color: string) {
+    if (!this._canEdit) return;
     this._color = /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR;
     this._customColor.value = this._color;
     this._updateSelectedFromForm();
@@ -660,6 +684,7 @@ class AnnotationToolsControl {
   }
 
   _setLineStyle(value: string) {
+    if (!this._canEdit) return;
     this._lineStyle = sanitizeAnnotationLineStyle(value);
     this._lineStyleSelect.value = this._lineStyle;
     this._updateSelectedFromForm();
@@ -668,6 +693,7 @@ class AnnotationToolsControl {
   }
 
   _setOpacity(value: number) {
+    if (!this._canEdit) return;
     this._opacity = sanitizeAnnotationOpacity(value);
     this._opacityInput.value = String(Math.round(this._opacity * 100));
     this._updateSelectedFromForm();
@@ -676,6 +702,7 @@ class AnnotationToolsControl {
   }
 
   _setFillOpacity(value: number) {
+    if (!this._canEdit) return;
     this._fillOpacity = sanitizeAnnotationFillOpacity(value);
     this._fillOpacityInput.value = String(Math.round(this._fillOpacity * 100));
     this._updateSelectedFromForm();
@@ -691,13 +718,17 @@ class AnnotationToolsControl {
       }
       if (this._expanded) this.setExpanded(false);
     }
-    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
+    if (this._canEdit && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') {
       if (this._draftPoints.length) {
         event.preventDefault();
         this._undoDraftPoint();
       }
     }
-    if (event.key === 'Enter' && (this._mode === 'path' || this._mode === 'polygon' || this._mode === 'route')) {
+    if (
+      this._canEdit &&
+      event.key === 'Enter' &&
+      (this._mode === 'path' || this._mode === 'polygon' || this._mode === 'route')
+    ) {
       const target = event.target;
       if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) return;
       this._finishDraftLine();
@@ -713,6 +744,7 @@ class AnnotationToolsControl {
       if (this._selectFeatureAt(event.point) && event.originalEvent) event.originalEvent.annotationHandled = true;
       return;
     }
+    if (!this._canEdit) return;
     if (!this._annotationReady) {
       this._setStatus('Map style loading...');
       return;
@@ -736,6 +768,7 @@ class AnnotationToolsControl {
   }
 
   _handleMapDblClick(event: AnnotationMapDblClickEvent) {
+    if (!this._canEdit) return;
     if (!this._annotationReady) return;
     const id = this._featureIdAt(event.point);
     if (!id) return;
@@ -753,6 +786,7 @@ class AnnotationToolsControl {
   }
 
   _handleFeatureDblClick(event: Event) {
+    if (!this._canEdit) return;
     const id = (event as CustomEvent<AnnotationFeaturePayloadEventDetail>).detail?.id;
     if (typeof id !== 'string') return;
     this._editFeatureById(id);
@@ -774,6 +808,7 @@ class AnnotationToolsControl {
   }
 
   _editFeatureById(id: string) {
+    if (!this._canEdit) return false;
     const feature = this._store.getAnnotationFeaturePayload(id);
     if (!feature) return false;
     if (!this._expanded) this.setExpanded(true);
@@ -809,6 +844,7 @@ class AnnotationToolsControl {
   }
 
   _addPoint(coordinate: LngLatTuple) {
+    if (!this._canEdit) return;
     const feature = {
       ...this._featureBase('point'),
       type: 'point' as const,
@@ -823,6 +859,7 @@ class AnnotationToolsControl {
   }
 
   _addText(coordinate: LngLatTuple) {
+    if (!this._canEdit) return;
     const feature = {
       ...this._featureBase('text'),
       type: 'text' as const,
@@ -839,6 +876,7 @@ class AnnotationToolsControl {
   }
 
   async _finishDraftLine() {
+    if (!this._canEdit) return;
     if (!isAnnotationDraftMode(this._mode)) return;
     const completion = resolveAnnotationDraftCompletion(this._mode, this._draftPoints.length);
     if (completion.action === 'discard') {
@@ -894,6 +932,7 @@ class AnnotationToolsControl {
   }
 
   async _addRoute(from: LngLatTuple, to: LngLatTuple) {
+    if (!this._canEdit) return;
     this._abortController?.abort();
     this._abortController = new AbortController();
     this._isRouting = true;
@@ -1009,6 +1048,7 @@ class AnnotationToolsControl {
   }
 
   _updateSelectedFromForm() {
+    if (!this._canEdit) return;
     const feature = this._selectedFeature();
     if (!feature || this._mode !== 'select') return;
     const next: AnnotationFeaturePayload = {
@@ -1035,6 +1075,7 @@ class AnnotationToolsControl {
   }
 
   _updateEditingFromEditor() {
+    if (!this._canEdit) return;
     const feature = this._selectedFeature();
     if (!feature || this._editingId !== feature.id) return;
     const color = this._editorColorInput?.value || feature.color || DEFAULT_COLOR;
@@ -1063,6 +1104,7 @@ class AnnotationToolsControl {
   }
 
   _setEditorColor(color: string) {
+    if (!this._canEdit) return;
     const sanitized = /^#[0-9a-fA-F]{6}$/.test(color) ? color.toLowerCase() : DEFAULT_COLOR;
     if (this._editorColorInput) this._editorColorInput.value = sanitized;
     this._updateEditingFromEditor();
@@ -1081,7 +1123,7 @@ class AnnotationToolsControl {
     this._editorOpacityInput = null;
     this._editorFillOpacityInput = null;
     this._editorSwatches = null;
-    if (cleanupBlankText && id) {
+    if (this._canEdit && cleanupBlankText && id) {
       const feature = this._store.getAnnotationFeaturePayload(id);
       if (feature?.type === 'text' && !feature.label && !feature.note) {
         this._store.deleteFeature(id);
@@ -1106,6 +1148,7 @@ class AnnotationToolsControl {
   }
 
   _openEditor(feature: AnnotationFeaturePayload) {
+    if (!this._canEdit) return;
     if (this._editorPopup && this._editorFeatureId === feature.id) {
       this._editorPopup.setLngLat(featureAnchor(feature));
       return;
@@ -1269,6 +1312,7 @@ class AnnotationToolsControl {
   }
 
   _deleteSelected() {
+    if (!this._canEdit) return;
     const id = this._selectedId;
     if (!id) return;
     this._store.deleteFeature(id);
@@ -1280,6 +1324,7 @@ class AnnotationToolsControl {
   }
 
   _undoDraftPoint() {
+    if (!this._canEdit) return;
     this._draftPoints.pop();
     this._syncDraftSource();
     this._sync();
@@ -1401,8 +1446,12 @@ class AnnotationToolsControl {
     if (!this._store.getAnnotationLayer(this._activeLayerId)) this._activeLayerId = this._fallbackActiveLayerId();
     this._syncLayerSelect();
     const layerVisible = this._isActiveLayerVisible();
-    if (!layerVisible && this._mode !== 'select') {
+    if ((!this._canEdit || !layerVisible) && this._mode !== 'select') {
       this._mode = 'select';
+      this._clearDraft();
+      this._editingId = '';
+      this._closeEditor({ cleanupBlankText: true });
+    } else if (!this._canEdit) {
       this._clearDraft();
       this._editingId = '';
       this._closeEditor({ cleanupBlankText: true });
@@ -1423,6 +1472,7 @@ class AnnotationToolsControl {
       expanded: this._expanded,
       layerVisible,
       annotationReady: this._annotationReady,
+      canEdit: this._canEdit,
       mode: this._mode,
     })
       ? 'true'
@@ -1430,7 +1480,12 @@ class AnnotationToolsControl {
 
     for (const [mode, button] of Object.entries(this._modeButtons) as Array<[AnnotationMode, HTMLButtonElement]>) {
       button.classList.toggle('active', mode === this._mode);
-      button.disabled = !this._expanded || this._isRouting || !layerVisible || (mapLoading && mode !== 'select');
+      button.disabled =
+        !this._expanded ||
+        this._isRouting ||
+        !layerVisible ||
+        (mapLoading && mode !== 'select') ||
+        (!this._canEdit && mode !== 'select');
     }
 
     const draftMode = isAnnotationDraftMode(this._mode) ? this._mode : null;
@@ -1442,7 +1497,7 @@ class AnnotationToolsControl {
     const hasLineStyleControls = isLineMode || isLineSelected || isAreaMode || isAreaSelected;
     const isRouteMode = this._mode === 'route' || selected?.type === 'route';
     const isEditingSelected = Boolean(selected && this._editingId === selected.id);
-    const showDraftStyle = this._mode !== 'select' && !isEditingSelected;
+    const showDraftStyle = this._canEdit && this._mode !== 'select' && !isEditingSelected;
     this._selectHint.hidden = this._mode !== 'select' || Boolean(selected);
     this._labelInput.closest<HTMLElement>('.annotation-field').hidden = true;
     this._noteInput.closest<HTMLElement>('.annotation-field').hidden = true;
@@ -1452,13 +1507,24 @@ class AnnotationToolsControl {
     this._fillOpacityInput.closest<HTMLElement>('.annotation-field').hidden = !(isAreaMode || isAreaSelected);
     this._endpointInput.closest<HTMLElement>('.annotation-field').hidden = isEditingSelected || !isRouteMode;
     this._profileSelect.closest<HTMLElement>('.annotation-field').hidden = isEditingSelected || !isRouteMode;
-    const styleDisabled = !this._expanded || this._isRouting || !layerVisible || mapLoading || !hasLineStyleControls;
+    const styleDisabled =
+      !this._canEdit || !this._expanded || this._isRouting || !layerVisible || mapLoading || !hasLineStyleControls;
     this._directedInput.disabled =
-      !this._expanded || this._isRouting || !layerVisible || mapLoading || !(isLineMode || isLineSelected);
+      !this._canEdit ||
+      !this._expanded ||
+      this._isRouting ||
+      !layerVisible ||
+      mapLoading ||
+      !(isLineMode || isLineSelected);
     this._lineStyleSelect.disabled = styleDisabled;
     this._opacityInput.disabled = styleDisabled;
     this._fillOpacityInput.disabled =
-      !this._expanded || this._isRouting || !layerVisible || mapLoading || !(isAreaMode || isAreaSelected);
+      !this._canEdit ||
+      !this._expanded ||
+      this._isRouting ||
+      !layerVisible ||
+      mapLoading ||
+      !(isAreaMode || isAreaSelected);
     this._lineStyleSelect.value = this._lineStyle;
     this._opacityInput.value = String(Math.round(this._opacity * 100));
     this._opacityValue.textContent = `${Math.round(this._opacity * 100)}%`;
@@ -1467,17 +1533,19 @@ class AnnotationToolsControl {
     this._undoButton.hidden = isEditingSelected || !isDraftMode;
     this._doneButton.hidden = isEditingSelected || !isDraftMode;
     this._deleteButton.hidden = !selected || isEditingSelected;
-    this._undoButton.disabled = !this._expanded || this._isRouting || mapLoading || this._draftPoints.length === 0;
+    this._undoButton.disabled =
+      !this._canEdit || !this._expanded || this._isRouting || mapLoading || this._draftPoints.length === 0;
     this._doneButton.disabled =
+      !this._canEdit ||
       !this._expanded ||
       this._isRouting ||
       mapLoading ||
       !draftMode ||
       !canSubmitAnnotationDraft(draftMode, this._draftPoints.length);
-    this._deleteButton.disabled = !this._expanded || this._isRouting || !selected;
-    this._labelInput.disabled = !this._expanded || this._isRouting;
-    this._noteInput.disabled = !this._expanded || this._isRouting;
-    this._customColor.disabled = !this._expanded || this._isRouting || !layerVisible || mapLoading;
+    this._deleteButton.disabled = !this._canEdit || !this._expanded || this._isRouting || !selected;
+    this._labelInput.disabled = !this._canEdit || !this._expanded || this._isRouting;
+    this._noteInput.disabled = !this._canEdit || !this._expanded || this._isRouting;
+    this._customColor.disabled = !this._canEdit || !this._expanded || this._isRouting || !layerVisible || mapLoading;
     this._layerSelect.disabled = !this._expanded || this._isRouting;
     if (this._expanded && mapLoading) this._setStatus('Map style loading...');
     if (!mapLoading && this._status.textContent === 'Map style loading...') this._setStatus('');
@@ -1490,7 +1558,7 @@ class AnnotationToolsControl {
     for (const swatch of this._colorSwatches.querySelectorAll<HTMLElement>('.annotation-swatch')) {
       swatch.classList.toggle('selected', swatch.dataset.color === this._color);
       (swatch as HTMLButtonElement).disabled =
-        !this._expanded || this._isRouting || !this._isActiveLayerVisible() || !this._annotationReady;
+        !this._canEdit || !this._expanded || this._isRouting || !this._isActiveLayerVisible() || !this._annotationReady;
     }
   }
 

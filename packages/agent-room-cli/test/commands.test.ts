@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildFeatureFromParts } from '../src/annotation-feature.js';
 import { buildFileLayerAssetFromText } from '../src/file-layer-asset.js';
-import { buildSocketUrl, createConfig } from '../src/config.js';
+import { buildApiUrl, buildSocketUrl, createConfig } from '../src/config.js';
 import { executeCommand } from '../src/commands.js';
+import { RoomClient } from '../src/room-client.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -139,6 +140,56 @@ class FakeRoomClient {
   }
 }
 
+class FakeWebSocket {
+  static OPEN = 1;
+  static urls: string[] = [];
+  binaryType = 'arraybuffer';
+  readyState = FakeWebSocket.OPEN;
+  listeners = new Map<string, Array<(event: unknown) => void>>();
+
+  constructor(url: string) {
+    FakeWebSocket.urls.push(url);
+    queueMicrotask(() => {
+      this.dispatch('open', {});
+      this.dispatch('message', {
+        data: JSON.stringify({
+          type: 'presence:init',
+          peers: [],
+          agents: [],
+          roomStatus: { type: 'room:status', room: 'trip-room', persistence: 'persistent' },
+        }),
+      });
+      this.dispatch('message', {
+        data: JSON.stringify({ type: 'layer:list', layers: [] }),
+      });
+      this.dispatch('message', {
+        data: JSON.stringify({ type: 'annotation-feature:list', features: [] }),
+      });
+    });
+  }
+
+  addEventListener(type: string, listener: (event: unknown) => void) {
+    const listeners = this.listeners.get(type) || [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: (event: unknown) => void) {
+    this.listeners.set(
+      type,
+      (this.listeners.get(type) || []).filter((item) => item !== listener),
+    );
+  }
+
+  send(_data: unknown) {}
+
+  close() {}
+
+  dispatch(type: string, event: unknown) {
+    for (const listener of this.listeners.get(type) || []) listener(event);
+  }
+}
+
 function addFakeFileLayer(client, geojson = routeGeoJson(), options = {}) {
   const asset = buildFileLayerAssetFromText('route.geojson', JSON.stringify(geojson), {
     id: 'route-layer',
@@ -208,6 +259,80 @@ describe('agent-room CLI package', () => {
     expect(buildSocketUrl(config)).toBe(
       'wss://example.com/app/parties/map-collaboration/trip-room?_pk=agent-a&userId=agent-a&name=Planner&color=%232563eb&clientType=agent',
     );
+  });
+
+  it('adds PAT tokens to WebSocket URLs when configured', () => {
+    const config = createConfig({
+      host: 'https://example.com',
+      room: 'trip-room',
+      party: 'map-collaboration',
+      clientId: 'agent-a',
+      token: 'orm_pat_secret',
+    });
+
+    const url = new URL(buildSocketUrl(config));
+    expect(url.searchParams.get('token')).toBe('orm_pat_secret');
+  });
+
+  it('reads PAT tokens from ORM_ROOM_TOKEN', () => {
+    const config = createConfig(
+      {
+        host: 'https://example.com',
+        room: 'trip-room',
+        party: 'map-collaboration',
+        clientId: 'agent-a',
+      },
+      { ORM_ROOM_TOKEN: 'orm_pat_env' },
+    );
+
+    expect(new URL(buildSocketUrl(config)).searchParams.get('token')).toBe('orm_pat_env');
+  });
+
+  it('builds account API URLs from host config', () => {
+    expect(buildApiUrl({ host: 'https://example.com/app/' }, '/api/rooms')).toBe('https://example.com/app/api/rooms');
+    expect(buildApiUrl({ host: 'localhost:5173' }, '/api/rooms')).toBe('http://localhost:5173/api/rooms');
+    expect(buildApiUrl({ host: 'wss://example.com/live' }, '/api/rooms')).toBe('https://example.com/live/api/rooms');
+  });
+
+  it('prepares the room registry with PAT auth before opening the WebSocket', async () => {
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url: RequestInfo | URL, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init });
+      return new Response('{}', { status: 200 });
+    };
+    FakeWebSocket.urls = [];
+
+    try {
+      const config = createConfig({
+        host: 'https://example.com/app',
+        room: 'trip-room',
+        party: 'map-collaboration',
+        clientId: 'agent-a',
+        token: 'orm_pat_secret',
+        timeoutMs: 1000,
+      });
+      const client = new RoomClient(config, { WebSocketImpl: FakeWebSocket as never });
+
+      await client.connect();
+
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]).toMatchObject({
+        url: 'https://example.com/app/api/rooms',
+        init: {
+          method: 'POST',
+          body: JSON.stringify({ roomId: 'trip-room' }),
+        },
+      });
+      expect(fetchCalls[0].init.headers).toMatchObject({
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer orm_pat_secret',
+      });
+      expect(FakeWebSocket.urls).toHaveLength(1);
+      expect(new URL(FakeWebSocket.urls[0]).searchParams.get('token')).toBe('orm_pat_secret');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('can query live peers and recent agents from the room snapshot', async () => {

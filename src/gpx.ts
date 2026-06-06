@@ -1,3 +1,5 @@
+import { collaborationCanEdit } from './collaboration-permissions.js';
+
 type TrackPoint = { lat: number; lon: number; time: number | null; ele: number | null };
 type Waypoint = { lat: number; lon: number; name: string; ele: number | null };
 type PendingGpxItem = { xml: string; hash: string; options: FileLayerOptions };
@@ -1140,6 +1142,7 @@ export function installGpxDragDrop(map: FileLayerMap) {
   const container = map.getContainer();
 
   container.addEventListener('dragover', (e) => {
+    if (!collaborationCanEdit(container)) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
     container.style.outline = '3px dashed #2563eb';
@@ -1152,6 +1155,7 @@ export function installGpxDragDrop(map: FileLayerMap) {
   container.addEventListener('drop', async (e) => {
     e.preventDefault();
     container.style.outline = '';
+    if (!collaborationCanEdit(container)) return;
 
     const supportedFiles = (Array.from(e.dataTransfer?.files || []) as File[]).filter((f) =>
       /\.(gpx|geojson|json)$/i.test(f.name),

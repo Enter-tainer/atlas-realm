@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { activeAgentParticipants, shouldSyncKnownLocalLayer } from './collaboration.js';
+import { activeAgentParticipants, collaborationCanEditForAccess, shouldSyncKnownLocalLayer } from './collaboration.js';
 import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
 import type { Layer } from './layer-model.js';
 
@@ -54,5 +54,14 @@ describe('collaboration local layer sync', () => {
     expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID), 1)).toBe(true);
     expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID, { revision: 1 }), 0)).toBe(true);
     expect(shouldSyncKnownLocalLayer(annotationLayer('annotation-layer-a'), 0)).toBe(true);
+  });
+});
+
+describe('collaboration access capabilities', () => {
+  it('does not expose editing once access is loaded without view permission', () => {
+    expect(collaborationCanEditForAccess({ canView: false, canEdit: false }, false)).toBe(true);
+    expect(collaborationCanEditForAccess({ canView: false, canEdit: true }, true)).toBe(false);
+    expect(collaborationCanEditForAccess({ canView: true, canEdit: false }, true)).toBe(false);
+    expect(collaborationCanEditForAccess({ canView: true, canEdit: true }, true)).toBe(true);
   });
 });

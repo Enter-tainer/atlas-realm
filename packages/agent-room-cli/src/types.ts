@@ -11,6 +11,7 @@ export interface AgentRoomConfig {
   clientId: string;
   agentName: string;
   agentColor: string;
+  accessToken: string;
   clientType: 'agent' | 'query';
   timeoutMs: number;
 }

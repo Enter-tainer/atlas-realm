@@ -9,6 +9,7 @@ import type { FileLayerContent, FileLayerManifest, FileLayerSyncAsset } from './
 import type { LayerStore } from './layer-store.js';
 import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
 import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
+import { COLLABORATION_ACCESS_EVENT } from './collaboration-permissions.js';
 import { initialSortKey, type Layer } from './layer-model.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
@@ -33,8 +34,35 @@ type EaseToOptions = {
   duration: number;
   essential: boolean;
 };
-type UserProfile = { userId: string; name: string; color: string };
-type PeerUser = { id?: string; name: string; color: string };
+type UserProfile = { userId: string; name: string; color: string; avatarUrl?: string | null };
+type AccountUser = {
+  userId: string;
+  githubLogin: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+};
+type RoomRole = 'view' | 'edit' | 'manage';
+type LinkAccess = 'restricted' | 'view' | 'edit';
+type RoomAccessState = {
+  role: RoomRole | 'none';
+  canView: boolean;
+  canEdit: boolean;
+  canManage: boolean;
+  linkAccess: LinkAccess;
+  room: {
+    ownerUserId: string | null;
+    createdByKind: 'guest' | 'user';
+    persistence: 'ephemeral' | 'persistent';
+  };
+};
+type RoomGrantMember = {
+  userId: string;
+  githubLogin: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+  role: RoomRole;
+};
+type PeerUser = { id?: string; name: string; color: string; avatarUrl?: string | null };
 type AgentParticipant = {
   id: string;
   user: PeerUser;
@@ -96,6 +124,10 @@ type CollaborationMessage = JsonRecord & {
   layerId?: string;
   stackItems?: unknown[];
   revision?: number;
+  role?: RoomRole;
+  canView?: boolean;
+  canEdit?: boolean;
+  canManage?: boolean;
 };
 type CollaborationMap = {
   getContainer(): HTMLElement;
@@ -180,6 +212,7 @@ function getProfile(): UserProfile {
           userId: profile.userId,
           name: profile.name,
           color: profile.color,
+          avatarUrl: typeof profile.avatarUrl === 'string' ? profile.avatarUrl : null,
         };
       }
     } catch {
@@ -189,10 +222,11 @@ function getProfile(): UserProfile {
 
   const userId = randomId('user');
   const color = PROFILE_COLORS[Math.floor(Math.random() * PROFILE_COLORS.length)];
-  const profile = {
+  const profile: UserProfile = {
     userId,
     name: `Guest ${userId.slice(-4)}`,
     color,
+    avatarUrl: null,
   };
   safeSetStorage(localStorage, PROFILE_KEY, JSON.stringify(profile));
   return profile;
@@ -421,6 +455,89 @@ function buildShareUrl(room: string) {
   return url.toString();
 }
 
+function authReturnTo() {
+  return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function defaultRoomAccess(linkAccess: LinkAccess = 'restricted'): RoomAccessState {
+  return {
+    role: 'none',
+    canView: false,
+    canEdit: false,
+    canManage: false,
+    linkAccess,
+    room: {
+      ownerUserId: null,
+      createdByKind: 'guest',
+      persistence: 'ephemeral',
+    },
+  };
+}
+
+function normalizeLinkAccessValue(value: unknown): LinkAccess {
+  return value === 'view' || value === 'edit' ? value : 'restricted';
+}
+
+function normalizeRoomRole(value: unknown): RoomRole | 'none' {
+  return value === 'view' || value === 'edit' || value === 'manage' ? value : 'none';
+}
+
+function accessFromPayload(value: unknown, fallback: RoomAccessState): RoomAccessState {
+  if (!isRecord(value)) return fallback;
+  const role = normalizeRoomRole(value.role);
+  const room = isRecord(value.room) ? value.room : {};
+  return {
+    role,
+    canView: Boolean(value.canView ?? role !== 'none'),
+    canEdit: Boolean(value.canEdit),
+    canManage: Boolean(value.canManage),
+    linkAccess: normalizeLinkAccessValue(room.linkAccess ?? fallback.linkAccess),
+    room: {
+      ownerUserId: typeof room.ownerUserId === 'string' ? room.ownerUserId : fallback.room.ownerUserId,
+      createdByKind:
+        room.createdByKind === 'user' || room.createdByKind === 'guest'
+          ? room.createdByKind
+          : fallback.room.createdByKind,
+      persistence:
+        room.persistence === 'persistent' || room.persistence === 'ephemeral'
+          ? room.persistence
+          : fallback.room.persistence,
+    },
+  };
+}
+
+export function collaborationCanEditForAccess(access: Pick<RoomAccessState, 'canView' | 'canEdit'>, loaded: boolean) {
+  return loaded ? access.canView && access.canEdit : true;
+}
+
+function dispatchCollaborationAccess(container: HTMLElement, access: RoomAccessState, loaded: boolean) {
+  const canEdit = collaborationCanEditForAccess(access, loaded);
+  container.dataset.collaborationCanEdit = canEdit ? 'true' : 'false';
+  container.dispatchEvent(
+    new CustomEvent(COLLABORATION_ACCESS_EVENT, {
+      detail: {
+        canView: loaded ? access.canView : false,
+        canEdit,
+        canManage: loaded ? access.canManage : false,
+        role: loaded ? access.role : 'none',
+      },
+    }),
+  );
+}
+
+async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, {
+    credentials: 'same-origin',
+    ...init,
+    headers: {
+      ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(init?.headers || {}),
+    },
+  });
+  if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+  return (await response.json()) as T;
+}
+
 function readViewState(map: CollaborationMap) {
   return map.getCollaborationViewState?.() || { terrain: false, satellite: false };
 }
@@ -442,6 +559,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   const profile = getProfile();
   const peers = new Map<string, Peer>();
   const agents = new Map<string, AgentParticipant>();
+  const roomGrants = new Map<string, RoomGrantMember>();
   const fileLayerManifests = new Map<string, FileLayerManifest>();
   const fileLayerContentBytes = new Map<string, Uint8Array>();
   const pendingFileLayerAssets = new Map<string, Map<string, FileLayerSyncAsset>>();
@@ -464,7 +582,13 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   let followTimer = 0;
   let lastFollowAt = 0;
   let shareResetTimer = 0;
+  let accessDeniedRetryTimer = 0;
   let panelExpanded = false;
+  let currentUser: AccountUser | null = null;
+  let authLoaded = false;
+  let roomAccess = defaultRoomAccess();
+  let roomAccessLoaded = false;
+  let sharePanelOpen = false;
 
   const overlay = createSvgElement('svg', {
     class: 'collab-overlay',
@@ -497,6 +621,24 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   compactToggle.appendChild(compactSummary);
 
   const panelBody = createElement('div', 'collab-panel-body');
+
+  const accountBar = createElement('div', 'collab-account-bar');
+  const accountIdentity = createElement('div', 'collab-account-identity');
+  const accountAvatar = createElement('span', 'collab-account-avatar');
+  const accountText = createElement('span', 'collab-account-text');
+  const accountName = createElement('span', 'collab-account-name');
+  const accountRoleBadge = createElement('span', 'collab-role-badge', {
+    role: 'status',
+  });
+  accountText.appendChild(accountName);
+  accountText.appendChild(accountRoleBadge);
+  accountIdentity.appendChild(accountAvatar);
+  accountIdentity.appendChild(accountText);
+  const accountButton = createElement('button', 'collab-button collab-account-button', {
+    type: 'button',
+  });
+  accountBar.appendChild(accountIdentity);
+  accountBar.appendChild(accountButton);
 
   const roomForm = createElement('form', 'collab-room-form');
   const nameField = createElement('label', 'collab-field collab-name-field');
@@ -549,8 +691,69 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   });
   shareButton.textContent = 'Copy invite link';
   shareButton.hidden = true;
+  const claimButton = createElement('button', 'collab-button collab-button-secondary collab-claim-button', {
+    type: 'button',
+  });
+  claimButton.textContent = 'Claim room';
+  claimButton.hidden = true;
   actionGroup.appendChild(joinButton);
+  actionGroup.appendChild(claimButton);
   actionGroup.appendChild(shareButton);
+
+  const sharePanel = createElement('div', 'collab-share-panel');
+  sharePanel.hidden = true;
+
+  const linkAccessField = createElement('label', 'collab-field');
+  const linkAccessLabel = createElement('span', 'collab-field-label');
+  linkAccessLabel.textContent = 'General access';
+  const linkAccessSelect = createElement('select', 'collab-select', {
+    'aria-label': 'General access',
+  }) as HTMLSelectElement;
+  for (const [value, label] of [
+    ['restricted', 'Restricted'],
+    ['view', 'Anyone with link can view'],
+    ['edit', 'Anyone with link can edit'],
+  ] as const) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    linkAccessSelect.appendChild(option);
+  }
+  linkAccessField.appendChild(linkAccessLabel);
+  linkAccessField.appendChild(linkAccessSelect);
+
+  const grantForm = createElement('form', 'collab-grant-form');
+  const grantInput = createElement('input', 'collab-name-input', {
+    type: 'text',
+    spellcheck: 'false',
+    autocapitalize: 'none',
+    autocomplete: 'off',
+    placeholder: 'GitHub username',
+    'aria-label': 'GitHub username',
+  }) as HTMLInputElement;
+  const grantRoleSelect = createElement('select', 'collab-select', {
+    'aria-label': 'Grant role',
+  }) as HTMLSelectElement;
+  for (const role of ['view', 'edit', 'manage'] as const) {
+    const option = document.createElement('option');
+    option.value = role;
+    option.textContent = role;
+    grantRoleSelect.appendChild(option);
+  }
+  grantRoleSelect.value = 'edit';
+  const grantAddButton = createElement('button', 'collab-button collab-button-secondary', {
+    type: 'submit',
+  });
+  grantAddButton.textContent = 'Add';
+  grantForm.appendChild(grantInput);
+  grantForm.appendChild(grantRoleSelect);
+  grantForm.appendChild(grantAddButton);
+
+  const grantsList = createElement('div', 'collab-grants-list');
+
+  sharePanel.appendChild(linkAccessField);
+  sharePanel.appendChild(grantForm);
+  sharePanel.appendChild(grantsList);
 
   const presenceBar = createElement('div', 'collab-presence-bar');
   const presenceSummary = createElement('span', 'collab-presence-summary');
@@ -565,10 +768,11 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   followBar.appendChild(followLabel);
   followBar.appendChild(stopFollowButton);
 
-  roomForm.appendChild(nameField);
   roomForm.appendChild(roomField);
   roomForm.appendChild(actionGroup);
+  panelBody.appendChild(accountBar);
   panelBody.appendChild(roomForm);
+  panelBody.appendChild(sharePanel);
   panelBody.appendChild(presenceBar);
   panelBody.appendChild(followBar);
   panel.appendChild(compactToggle);
@@ -576,6 +780,289 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   function isMobileViewport() {
     return window.innerWidth <= 760;
+  }
+
+  function canWriteToRoom() {
+    return roomAccessLoaded && roomAccess.canEdit;
+  }
+
+  function accountDisplayName(user = currentUser) {
+    return user?.displayName || user?.githubLogin || '';
+  }
+
+  function activeProfile(): UserProfile {
+    if (!currentUser) return profile;
+    return {
+      userId: currentUser.userId,
+      name: sanitizeProfileName(accountDisplayName(currentUser), currentUser.githubLogin || profile.name),
+      color: '#111827',
+      avatarUrl: currentUser.avatarUrl || null,
+    };
+  }
+
+  function setAvatarElement(
+    element: HTMLElement,
+    {
+      name,
+      color,
+      avatarUrl,
+    }: {
+      name: string;
+      color: string;
+      avatarUrl?: string | null;
+    },
+  ) {
+    element.textContent = '';
+    if (avatarUrl) {
+      element.style.backgroundImage = `url("${avatarUrl.replace(/"/g, '%22')}")`;
+      element.style.backgroundSize = 'cover';
+      element.style.backgroundPosition = 'center';
+      element.style.removeProperty('--peer-color');
+      return;
+    }
+    element.style.backgroundImage = '';
+    element.style.setProperty('--peer-color', safeColor(color));
+    element.textContent = initials(name);
+  }
+
+  function renderNameField() {
+    if (!authLoaded || currentUser) {
+      nameField.remove();
+      return;
+    }
+    if (nameField.parentElement !== roomForm) roomForm.insertBefore(nameField, roomField);
+  }
+
+  function syncProfileFromAccount() {
+    if (!currentUser) return;
+    nameInput.value = activeProfile().name;
+    nameInput.disabled = false;
+    renderNameField();
+    renderLocalProfile();
+    scheduleSend(true);
+  }
+
+  function syncGuestProfileUi() {
+    if (currentUser) return;
+    nameInput.disabled = false;
+    nameInput.value = profile.name;
+    renderNameField();
+    renderLocalProfile();
+    scheduleSend(true);
+  }
+
+  function renderAccount() {
+    const local = activeProfile();
+    const name = local.name || 'Guest';
+    accountName.textContent = name;
+    setAvatarElement(accountAvatar, {
+      name,
+      color: local.color,
+      avatarUrl: local.avatarUrl || null,
+    });
+    accountButton.textContent = currentUser ? 'Sign out' : 'Sign in with GitHub';
+  }
+
+  function renderRoleBadge() {
+    panel.dataset.role = roomAccess.role;
+    if (!roomAccessLoaded) {
+      accountRoleBadge.textContent = 'Checking';
+      return;
+    }
+    if (!roomAccess.canView) {
+      accountRoleBadge.textContent = currentUser ? 'No access' : 'Sign in';
+    } else if (!roomAccess.canEdit) {
+      accountRoleBadge.textContent = 'View';
+    } else if (roomAccess.canManage) {
+      accountRoleBadge.textContent = roomAccess.room.persistence === 'persistent' ? 'Manage' : 'Manage · temp';
+    } else {
+      accountRoleBadge.textContent = 'Edit';
+    }
+  }
+
+  function renderGrants() {
+    grantsList.replaceChildren();
+    if (!roomAccess.canManage) {
+      const empty = createElement('span', 'collab-empty');
+      empty.textContent = 'No manage access';
+      grantsList.appendChild(empty);
+      return;
+    }
+    if (roomGrants.size === 0) {
+      const empty = createElement('span', 'collab-empty');
+      empty.textContent = 'No named members';
+      grantsList.appendChild(empty);
+      return;
+    }
+    for (const grant of roomGrants.values()) {
+      const row = createElement('div', 'collab-grant-row');
+      const label = createElement('span', 'collab-grant-person');
+      label.textContent = grant.githubLogin;
+      label.title = grant.displayName ? `${grant.displayName} (${grant.githubLogin})` : grant.githubLogin;
+      const roleSelect = grantRoleSelect.cloneNode(true) as HTMLSelectElement;
+      roleSelect.value = grant.role;
+      roleSelect.addEventListener('change', () => {
+        updateGrant(grant.githubLogin, roleSelect.value as RoomRole).catch((error) => {
+          console.error('Failed to update room grant:', error);
+          roleSelect.value = grant.role;
+        });
+      });
+      const removeButton = createElement('button', 'collab-button collab-button-secondary collab-grant-remove', {
+        type: 'button',
+        'aria-label': `Remove ${grant.githubLogin}`,
+        title: 'Remove',
+      });
+      removeButton.textContent = '×';
+      removeButton.addEventListener('click', () => {
+        removeGrant(grant.userId).catch((error) => {
+          console.error('Failed to remove room grant:', error);
+        });
+      });
+      row.appendChild(label);
+      row.appendChild(roleSelect);
+      row.appendChild(removeButton);
+      grantsList.appendChild(row);
+    }
+  }
+
+  function renderSharePanel() {
+    sharePanel.hidden = !sharePanelOpen || !roomAccess.canManage;
+    linkAccessSelect.value = roomAccess.linkAccess;
+    linkAccessSelect.disabled = !roomAccess.canManage;
+    grantInput.disabled = !roomAccess.canManage;
+    grantRoleSelect.disabled = !roomAccess.canManage;
+    grantAddButton.disabled = !roomAccess.canManage;
+    renderGrants();
+  }
+
+  function renderClaimButton() {
+    const canClaim =
+      Boolean(currentUser) &&
+      roomAccessLoaded &&
+      roomAccess.canView &&
+      roomAccess.room.persistence === 'ephemeral' &&
+      !roomAccess.room.ownerUserId;
+    claimButton.hidden = !canClaim;
+    claimButton.disabled = !canClaim;
+  }
+
+  function renderAccessUi() {
+    renderAccount();
+    renderRoleBadge();
+    renderClaimButton();
+    renderSharePanel();
+    updateActionState();
+    dispatchCollaborationAccess(mapContainer, roomAccess, roomAccessLoaded);
+  }
+
+  function setRoomAccess(next: RoomAccessState) {
+    roomAccess = next;
+    roomAccessLoaded = true;
+    renderAccessUi();
+  }
+
+  function clearAccessDeniedRetry() {
+    if (!accessDeniedRetryTimer) return;
+    clearInterval(accessDeniedRetryTimer);
+    accessDeniedRetryTimer = 0;
+  }
+
+  function scheduleAccessDeniedRetry(room: string) {
+    clearAccessDeniedRetry();
+    accessDeniedRetryTimer = window.setInterval(() => {
+      if (destroyed || socket || currentRoom !== room || panel.dataset.connection !== 'offline') {
+        clearAccessDeniedRetry();
+        return;
+      }
+      refreshRoomAccess(room)
+        .then((access) => {
+          if (!access.canView || socket || currentRoom !== room) return;
+          clearAccessDeniedRetry();
+          connect(room).catch((error) => {
+            console.error('Failed to reconnect collaboration room:', error);
+            setStatus('Offline', 'offline');
+          });
+        })
+        .catch(() => {
+          // Keep polling while the room may become accessible through link sharing.
+        });
+    }, 5_000);
+  }
+
+  async function refreshAuth() {
+    try {
+      const data = await fetchJson<{ user: AccountUser | null }>('/api/auth/me');
+      currentUser = data.user || null;
+    } catch {
+      currentUser = null;
+    }
+    authLoaded = true;
+    if (currentUser) syncProfileFromAccount();
+    else syncGuestProfileUi();
+    renderAccessUi();
+  }
+
+  async function ensureRoom(room: string) {
+    await fetchJson('/api/rooms', {
+      method: 'POST',
+      body: JSON.stringify({ roomId: room }),
+    });
+  }
+
+  async function refreshRoomAccess(room: string) {
+    const data = await fetchJson(`/api/rooms/${encodeURIComponent(room)}/access`);
+    setRoomAccess(accessFromPayload(data, roomAccess));
+    return roomAccess;
+  }
+
+  async function claimCurrentRoom() {
+    if (!currentRoom || !currentUser) return;
+    claimButton.disabled = true;
+    await fetchJson(`/api/rooms/${encodeURIComponent(currentRoom)}/claim`, {
+      method: 'POST',
+    });
+    const access = await refreshRoomAccess(currentRoom);
+    if (access.canManage) await refreshGrants();
+  }
+
+  async function refreshGrants() {
+    if (!roomAccess.canManage) {
+      roomGrants.clear();
+      renderSharePanel();
+      return;
+    }
+    const data = await fetchJson<{ grants?: RoomGrantMember[] }>(
+      `/api/rooms/${encodeURIComponent(currentRoom)}/grants`,
+    );
+    roomGrants.clear();
+    for (const grant of data.grants || []) roomGrants.set(grant.userId, grant);
+    renderSharePanel();
+  }
+
+  async function updateLinkAccess(value: LinkAccess) {
+    await fetchJson(`/api/rooms/${encodeURIComponent(currentRoom)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ linkAccess: value }),
+    });
+    await refreshRoomAccess(currentRoom);
+    await refreshGrants();
+  }
+
+  async function updateGrant(githubLogin: string, role: RoomRole) {
+    await fetchJson(`/api/rooms/${encodeURIComponent(currentRoom)}/grants/${encodeURIComponent(githubLogin)}`, {
+      method: 'PUT',
+      body: JSON.stringify({ role }),
+    });
+    await refreshGrants();
+    await refreshRoomAccess(currentRoom);
+  }
+
+  async function removeGrant(userId: string) {
+    await fetchJson(`/api/rooms/${encodeURIComponent(currentRoom)}/grants/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    });
+    roomGrants.delete(userId);
+    renderSharePanel();
   }
 
   function renderCompactSummary() {
@@ -635,6 +1122,10 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   }
 
   function updateProfileName(value: unknown) {
+    if (currentUser) {
+      syncProfileFromAccount();
+      return;
+    }
     const nextName = sanitizeProfileName(value, profile.name);
     nameInput.value = nextName;
     if (profile.name === nextName) return;
@@ -664,6 +1155,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
     shareButton.hidden = !canCopyLink;
     shareButton.disabled = !canCopyLink;
+    shareButton.textContent = roomAccess.canManage ? 'Share' : 'Copy link';
   }
 
   function setPanelExpanded(expanded: boolean) {
@@ -688,8 +1180,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       title: `Follow ${peer.user.name}`,
       'aria-label': `Follow ${peer.user.name}`,
     });
-    avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
-    avatar.textContent = initials(peer.user.name);
+    setAvatarElement(avatar, { name: peer.user.name, color: peer.user.color, avatarUrl: peer.user.avatarUrl });
     avatar.classList.toggle('following', peer.id === followedPeerId);
     avatar.addEventListener('click', () => {
       if (followedPeerId === peer.id) stopFollowing();
@@ -700,23 +1191,25 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
 
   function renderCompactAvatars() {
     compactAvatars.replaceChildren();
+    const localProfile = activeProfile();
 
     const local = createElement('span', 'collab-compact-avatar');
-    local.style.setProperty('--peer-color', safeColor(profile.color));
-    local.textContent = initials(profile.name);
+    setAvatarElement(local, {
+      name: localProfile.name,
+      color: localProfile.color,
+      avatarUrl: localProfile.avatarUrl,
+    });
     compactAvatars.appendChild(local);
 
     for (const peer of [...peers.values()].slice(0, 3)) {
       const avatar = createElement('span', 'collab-compact-avatar');
-      avatar.style.setProperty('--peer-color', safeColor(peer.user.color));
-      avatar.textContent = initials(peer.user.name);
+      setAvatarElement(avatar, { name: peer.user.name, color: peer.user.color, avatarUrl: peer.user.avatarUrl });
       avatar.classList.toggle('following', peer.id === followedPeerId);
       compactAvatars.appendChild(avatar);
     }
     for (const agent of activeAgentParticipants(agents.values()).slice(0, Math.max(0, 3 - peers.size))) {
       const avatar = createElement('span', 'collab-compact-avatar collab-agent-avatar');
-      avatar.style.setProperty('--peer-color', safeColor(agent.user.color));
-      avatar.textContent = initials(agent.user.name);
+      setAvatarElement(avatar, { name: agent.user.name, color: agent.user.color, avatarUrl: agent.user.avatarUrl });
       compactAvatars.appendChild(avatar);
     }
   }
@@ -740,8 +1233,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
           title: `${agent.user.name} · agent active`,
           'aria-label': `${agent.user.name}, agent active`,
         });
-        avatar.style.setProperty('--peer-color', safeColor(agent.user.color));
-        avatar.textContent = initials(agent.user.name);
+        setAvatarElement(avatar, { name: agent.user.name, color: agent.user.color, avatarUrl: agent.user.avatarUrl });
         avatars.appendChild(avatar);
       }
     }
@@ -875,14 +1367,16 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   function sendUpdate() {
     sendTimer = 0;
     if (!socket || destroyed) return;
+    const localProfile = activeProfile();
     lastSentAt = Date.now();
     socket.send(
       JSON.stringify({
         type: 'client:update',
         user: {
-          id: profile.userId,
-          name: profile.name,
-          color: profile.color,
+          id: localProfile.userId,
+          name: localProfile.name,
+          color: localProfile.color,
+          avatarUrl: localProfile.avatarUrl || null,
         },
         viewport: buildViewportSnapshot(map),
         cursor: localCursor,
@@ -900,6 +1394,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   }
 
   function sendLayerMessage(message: JsonRecord) {
+    if (!canWriteToRoom()) return false;
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
     socket.send(JSON.stringify(message));
     return true;
@@ -987,6 +1482,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   async function syncLocalFileLayer(fileLayer: LocalFileLayer | undefined) {
     if (!fileLayer?.id || !fileLayer?.data) return;
     knownLocalFileLayers.set(fileLayer.syncLayerId || fileLayer.remoteLayerId || fileLayer.id, fileLayer);
+    if (!canWriteToRoom()) return;
     if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
     try {
       const asset = await buildFileLayerSyncAsset(fileLayer);
@@ -994,7 +1490,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       const fileLayerId = asset.envelope.manifest.id;
       const previousHash = uploadedLocalFileLayerHashes.get(fileLayerId);
       if (previousHash === asset.envelope.manifest.contentHash) {
-        sendFileLayerMessage({
+        sendLayerMessage({
           type: 'layer:create',
           layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
         });
@@ -1007,6 +1503,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       pendingFileLayerAssets.set(asset.envelope.manifest.contentHash, pendingForHash);
       fileLayerContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
       uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
+      if (!canWriteToRoom()) return;
       socket.send(encodeFileContentMessage(asset.envelope.manifest.contentHash, asset.content));
     } catch (error) {
       console.error('Failed to sync file layer:', error);
@@ -1014,12 +1511,14 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   }
 
   async function syncKnownLocalFileLayers() {
+    if (!canWriteToRoom()) return;
     for (const fileLayer of knownLocalFileLayers.values()) {
       if (!fileLayer.remoteLayerId) await syncLocalFileLayer(fileLayer);
     }
   }
 
   function syncKnownLocalLayers() {
+    if (!canWriteToRoom()) return;
     if (!layerStore) return;
     sendLayerMessage({ type: 'layer:list:request' });
     sendLayerMessage({ type: 'annotation-feature:list:request' });
@@ -1038,7 +1537,8 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     if (!assets) return;
     pendingFileLayerAssets.delete(contentHash);
     for (const asset of assets.values()) {
-      sendFileLayerMessage({
+      if (!canWriteToRoom()) return;
+      sendLayerMessage({
         type: 'layer:create',
         layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
       });
@@ -1197,6 +1697,42 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       return;
     }
 
+    if (message.type === 'access:updated') {
+      const couldEdit = roomAccess.canEdit;
+      setRoomAccess(
+        accessFromPayload(
+          {
+            role: message.role,
+            canView: message.canView,
+            canEdit: message.canEdit,
+            canManage: message.canManage,
+            room: {
+              linkAccess: roomAccess.linkAccess,
+              ownerUserId: roomAccess.room.ownerUserId,
+              createdByKind: roomAccess.room.createdByKind,
+              persistence: roomAccess.room.persistence,
+            },
+          },
+          roomAccess,
+        ),
+      );
+      if (!roomAccess.canManage) {
+        sharePanelOpen = false;
+        roomGrants.clear();
+      }
+      if (!couldEdit && roomAccess.canEdit) {
+        syncKnownLocalFileLayers();
+        syncKnownLocalLayers();
+      }
+      return;
+    }
+
+    if (message.type === 'access:revoked') {
+      setRoomAccess(defaultRoomAccess(roomAccess.linkAccess));
+      setStatus('Access revoked', 'offline');
+      return;
+    }
+
     if (
       message.type === 'layer:list' ||
       message.type === 'layer:created' ||
@@ -1256,11 +1792,12 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     }
   }
 
-  function connect(roomValue: string) {
+  async function connect(roomValue: string) {
     const room = normalizeRoom(roomValue);
     currentRoom = room;
     roomInput.value = room;
     updateRoomUrl(room);
+    setStatus('Connecting', 'connecting');
     peers.clear();
     fileLayerManifests.clear();
     requestedFileLayerContent.clear();
@@ -1273,23 +1810,44 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       socket = null;
     }
 
+    try {
+      await ensureRoom(room);
+      const access = await refreshRoomAccess(room);
+      if (!access.canView) {
+        setStatus('Access denied', 'offline');
+        scheduleAccessDeniedRetry(room);
+        return;
+      }
+      clearAccessDeniedRetry();
+      if (access.canManage) await refreshGrants();
+    } catch (error) {
+      console.error('Failed to prepare collaboration room:', error);
+      roomAccessLoaded = true;
+      roomAccess = defaultRoomAccess();
+      renderAccessUi();
+      setStatus('Offline', 'offline');
+      return;
+    }
+
     const nextSocket = new PartySocket({
       host: window.location.host,
       party: PARTY_NAME,
       room,
       id: clientId,
       protocol: window.location.protocol === 'https:' ? 'wss' : 'ws',
-      query: () => ({
-        userId: profile.userId,
-        name: profile.name,
-        color: profile.color,
-      }),
+      query: () => {
+        const localProfile = activeProfile();
+        return {
+          userId: localProfile.userId,
+          name: localProfile.name,
+          color: localProfile.color,
+        };
+      },
       maxEnqueuedMessages: 32,
       maxReconnectionDelay: 5_000,
     });
     nextSocket.binaryType = 'arraybuffer';
     socket = nextSocket;
-    setStatus('Connecting', 'connecting');
 
     nextSocket.addEventListener('open', () => {
       if (socket !== nextSocket) return;
@@ -1321,6 +1879,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       socket = null;
       closing.close(1000, 'disconnect');
     }
+    clearAccessDeniedRetry();
     clearTimeout(sendTimer);
     clearTimeout(followTimer);
     sendTimer = 0;
@@ -1332,6 +1891,11 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     requestedFileLayerContent.clear();
     localFileLayerIds.clear();
     uploadedLocalFileLayerHashes.clear();
+    roomGrants.clear();
+    roomAccess = defaultRoomAccess();
+    roomAccessLoaded = false;
+    dispatchCollaborationAccess(mapContainer, roomAccess, roomAccessLoaded);
+    sharePanelOpen = false;
     followedPeerId = null;
     localCursor = { visible: false, lngLat: null };
     ownConnectionId = clientId;
@@ -1340,6 +1904,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     cursorLayer.replaceChildren();
     setPanelExpanded(false);
     setStatus('Ready', 'idle');
+    renderAccessUi();
     renderPeople();
   }
 
@@ -1357,7 +1922,10 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       scheduleSend(true);
       return;
     }
-    connect(nextRoom);
+    connect(nextRoom).catch((error) => {
+      console.error('Failed to connect collaboration room:', error);
+      setStatus('Offline', 'offline');
+    });
   });
   const handleDocumentPointerDown = (event: PointerEvent) => {
     if (destroyed || !panelExpanded) return;
@@ -1376,7 +1944,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   });
   roomInput.addEventListener('input', updateActionState);
 
-  shareButton.addEventListener('click', async () => {
+  async function copyCurrentRoomLink(button: HTMLElement) {
     const room = normalizeRoom(roomInput.value);
     currentRoom = room;
     roomInput.value = room;
@@ -1386,13 +1954,72 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     clearTimeout(shareResetTimer);
     try {
       await navigator.clipboard.writeText(url);
-      shareButton.textContent = 'Link copied';
+      button.textContent = 'Link copied';
     } catch {
-      shareButton.textContent = 'Copy failed';
+      button.textContent = 'Copy failed';
     }
     shareResetTimer = window.setTimeout(() => {
-      shareButton.textContent = 'Copy invite link';
+      shareButton.textContent = roomAccess.canManage ? 'Share' : 'Copy link';
     }, 1_300);
+  }
+
+  accountButton.addEventListener('click', async () => {
+    if (!currentUser) {
+      window.location.assign(`/api/auth/github/start?returnTo=${encodeURIComponent(authReturnTo())}`);
+      return;
+    }
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    } finally {
+      currentUser = null;
+      roomGrants.clear();
+      syncGuestProfileUi();
+      disconnect();
+      renderAccessUi();
+    }
+  });
+
+  shareButton.addEventListener('click', () => {
+    if (!roomAccess.canManage) {
+      copyCurrentRoomLink(shareButton).catch((error) => {
+        console.error('Failed to copy room link:', error);
+      });
+      return;
+    }
+    sharePanelOpen = !sharePanelOpen;
+    renderSharePanel();
+    if (sharePanelOpen) {
+      refreshGrants().catch((error) => {
+        console.error('Failed to refresh room grants:', error);
+      });
+    }
+  });
+
+  claimButton.addEventListener('click', () => {
+    claimCurrentRoom().catch((error) => {
+      console.error('Failed to claim room:', error);
+      renderAccessUi();
+    });
+  });
+
+  linkAccessSelect.addEventListener('change', () => {
+    updateLinkAccess(linkAccessSelect.value as LinkAccess).catch((error) => {
+      console.error('Failed to update link access:', error);
+      linkAccessSelect.value = roomAccess.linkAccess;
+    });
+  });
+
+  grantForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const login = grantInput.value.trim();
+    if (!login) return;
+    updateGrant(login, grantRoleSelect.value as RoomRole)
+      .then(() => {
+        grantInput.value = '';
+      })
+      .catch((error) => {
+        console.error('Failed to add room grant:', error);
+      });
   });
 
   stopFollowButton.addEventListener('click', stopFollowing);
@@ -1422,7 +2049,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     if (typeof patch.color === 'string') stylePatch.color = patch.color;
     if (typeof patch.opacity === 'number') stylePatch.opacity = patch.opacity;
     if (typeof patch.lineWidth === 'number') stylePatch.lineWidth = patch.lineWidth;
-    sendFileLayerMessage({
+    sendLayerMessage({
       type: 'layer:update',
       layerId: fileLayerId,
       patch: {
@@ -1476,7 +2103,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
             .filter(Boolean)
         : [];
     if (updates.length === 0) return;
-    sendFileLayerMessage({ type: 'layer:reorder', updates });
+    sendLayerMessage({ type: 'layer:reorder', updates });
   };
   const handleLocalFileLayerDelete = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
@@ -1488,7 +2115,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
     for (const [id, manifest] of fileLayerManifests) {
       if (manifest.id === fileLayerId) fileLayerManifests.delete(id);
     }
-    sendFileLayerMessage({
+    sendLayerMessage({
       type: 'layer:delete',
       layerId: fileLayerId,
     });
@@ -1566,8 +2193,16 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
   mapContainer.appendChild(panel);
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
+  refreshAuth().catch((error) => {
+    console.error('Failed to refresh account:', error);
+  });
   renderPeople();
-  if (currentRoom) connect(currentRoom);
+  if (currentRoom) {
+    connect(currentRoom).catch((error) => {
+      console.error('Failed to connect collaboration room:', error);
+      setStatus('Offline', 'offline');
+    });
+  }
 
   return {
     destroy() {
@@ -1575,6 +2210,7 @@ export function installMapCollaboration(map: CollaborationMap, layerStore?: Laye
       clearTimeout(sendTimer);
       clearTimeout(followTimer);
       clearTimeout(shareResetTimer);
+      clearAccessDeniedRetry();
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
       mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);

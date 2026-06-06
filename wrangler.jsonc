@@ -9,7 +9,7 @@
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application",
+    "not_found_handling": "none",
   },
   "compatibility_flags": ["nodejs_compat"],
   "durable_objects": {
@@ -30,6 +30,14 @@
     {
       "binding": "ORM_BUCKET",
       "bucket_name": "orm",
+    },
+  ],
+  "d1_databases": [
+    {
+      "binding": "ACCOUNTS_DB",
+      "database_name": "orm_accounts",
+      "database_id": "13b68cae-3b59-4ae6-b655-9e15843c7551",
+      "migrations_dir": "migrations",
     },
   ],
 }

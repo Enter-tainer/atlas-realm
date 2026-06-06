@@ -42,6 +42,11 @@ export function buildParser(argv: readonly string[] = []) {
       describe: 'Presence color',
       default: '#4f46e5',
     })
+    .option('token', {
+      type: 'string',
+      describe: 'Personal access token for authenticated rooms',
+      default: process.env.ORM_ROOM_TOKEN || '',
+    })
     .option('client-type', {
       choices: ['agent', 'query'],
       describe: 'Room client identity for this connection',

@@ -10,6 +10,11 @@ import { annotationRenderLayerIdList, annotationRenderSourceId } from './annotat
 import { initialSortKey } from './layer-model.js';
 import { fileLayerManifestPatch } from './file-layer-sync.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
+import {
+  collaborationCanEdit,
+  COLLABORATION_ACCESS_EVENT,
+  type CollaborationAccessDetail,
+} from './collaboration-permissions.js';
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import DownloadIcon from 'lucide/dist/esm/icons/download.mjs';
 import EyeIcon from 'lucide/dist/esm/icons/eye.mjs';
@@ -463,6 +468,7 @@ class LayerManagerControl {
   _isImportingUrl: boolean;
   _dragState: LayerDragState | null;
   _remoteFileLayerOrder: string[];
+  _canEdit: boolean;
   _boundLayerAdded: (event: CustomEvent<LayerItem>) => void;
   _boundFileLayerRemoteAdd: (event: CustomEvent<FileLayerRemoteAddDetail>) => void;
   _boundFileLayerRemoteList: (event: CustomEvent<FileLayerListDetail>) => void;
@@ -471,6 +477,7 @@ class LayerManagerControl {
   _boundReorderPointerMove: (event: PointerEvent) => void;
   _boundReorderPointerUp: (event: PointerEvent) => void;
   _boundReorderPointerCancel: (event: PointerEvent) => void;
+  _boundAccessChange: (event: Event) => void;
   _boundViewportChange: () => void;
   _boundRoutingPanelOpen: () => void;
   _boundActiveLayerChange: (event: Event) => void;
@@ -486,6 +493,7 @@ class LayerManagerControl {
     this._isImportingUrl = false;
     this._dragState = null;
     this._remoteFileLayerOrder = [];
+    this._canEdit = true;
     this._boundLayerAdded = (event) => this._registerLayerItem(event.detail);
     this._boundFileLayerRemoteAdd = (event) => this._addRemoteFileLayer(event.detail);
     this._boundFileLayerRemoteList = (event) => this._applyRemoteFileLayerList(event.detail);
@@ -494,6 +502,10 @@ class LayerManagerControl {
     this._boundReorderPointerMove = (event) => this._updateReorder(event);
     this._boundReorderPointerUp = (event) => this._finishReorder(event);
     this._boundReorderPointerCancel = (event) => this._finishReorder(event);
+    this._boundAccessChange = (event) => {
+      const detail = (event as CustomEvent<CollaborationAccessDetail>).detail;
+      this._setCanEdit(detail?.canEdit !== false);
+    };
     this._boundViewportChange = () => this._syncViewportMode();
     this._boundRoutingPanelOpen = () => this.setExpanded(false);
     this._boundActiveLayerChange = (event) => this._handleActiveLayerChange(event);
@@ -545,7 +557,10 @@ class LayerManagerControl {
     appendIcon(this._dropZone, UploadIcon);
     const dropZoneText = el('span', 'layer-manager-dropzone-label', this._dropZone);
     dropZoneText.textContent = 'Import GPX / GeoJSON';
-    this._dropZone.addEventListener('click', () => this._fileInput.click());
+    this._dropZone.addEventListener('click', () => {
+      if (!this._canEdit) return;
+      this._fileInput.click();
+    });
     this._fileInput = el('input', 'layer-manager-file-input', importRow);
     this._fileInput.type = 'file';
     this._fileInput.accept = '.gpx,.geojson,.json,application/geo+json,application/json';
@@ -660,6 +675,7 @@ class LayerManagerControl {
     this._deleteButton.addEventListener('click', () => this._removeSelected());
 
     this._panel.addEventListener('dragover', (event) => {
+      if (!this._canEdit) return;
       event.preventDefault();
       this._panel.classList.add('layer-manager-dragging');
     });
@@ -667,9 +683,11 @@ class LayerManagerControl {
     this._panel.addEventListener('drop', (event) => {
       event.preventDefault();
       this._panel.classList.remove('layer-manager-dragging');
+      if (!this._canEdit) return;
       this._importFiles(Array.from(event.dataTransfer?.files || []));
     });
 
+    this._canEdit = collaborationCanEdit(map.getContainer());
     map.getContainer().addEventListener('layer:add', this._boundLayerAdded);
     map.getContainer().addEventListener('layer-sync:remote-add', this._boundFileLayerRemoteAdd);
     map.getContainer().addEventListener('layer-sync:remote-list', this._boundFileLayerRemoteList);
@@ -677,6 +695,7 @@ class LayerManagerControl {
     map.getContainer().addEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     map.getContainer().addEventListener(ANNOTATION_ACTIVE_LAYER_EVENT, this._boundActiveLayerChange);
     map.getContainer().addEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
+    map.getContainer().addEventListener(COLLABORATION_ACCESS_EVENT, this._boundAccessChange);
     window.addEventListener('keydown', this._boundKeydown);
     window.addEventListener('resize', this._boundViewportChange, { passive: true });
     this._unsubscribeLayerStore = this._layerStore?.subscribe((event) => this._handleLayerStoreEvent(event)) || null;
@@ -695,6 +714,7 @@ class LayerManagerControl {
     this._map.getContainer().removeEventListener('routing:panelopen', this._boundRoutingPanelOpen);
     this._map.getContainer().removeEventListener(ANNOTATION_ACTIVE_LAYER_EVENT, this._boundActiveLayerChange);
     this._map.getContainer().removeEventListener(UI_PANEL_OPEN_EVENT, this._boundAnyPanelOpen);
+    this._map.getContainer().removeEventListener(COLLABORATION_ACCESS_EVENT, this._boundAccessChange);
     this._cancelReorderListeners();
     window.removeEventListener('keydown', this._boundKeydown);
     window.removeEventListener('resize', this._boundViewportChange);
@@ -721,20 +741,55 @@ class LayerManagerControl {
     this._syncDetails();
   }
 
+  _setCanEdit(canEdit: boolean) {
+    if (this._canEdit === canEdit) return;
+    this._canEdit = canEdit;
+    if (!canEdit) this._cancelReorder();
+    this._syncPanelInteractivity();
+    this._render();
+  }
+
   _syncPanelInteractivity() {
     if (!this._panel) return;
     for (const element of this._panel.querySelectorAll('button, input, select, textarea')) {
       (element as Element & { disabled: boolean }).disabled = !this._expanded;
     }
-    if (this._expanded && this._isImportingUrl) {
-      this._urlInput.disabled = true;
-      this._urlSubmit.disabled = true;
+    if (!this._expanded) return;
+
+    const selected = this._selectedLayerItem();
+    const mutationDisabled = !this._canEdit;
+    this._closeButton.disabled = false;
+    this._importButton.disabled = mutationDisabled;
+    this._dropZone.disabled = mutationDisabled;
+    this._fileInput.disabled = mutationDisabled;
+    this._urlInput.disabled = mutationDisabled || this._isImportingUrl;
+    this._urlSubmit.disabled = mutationDisabled || this._isImportingUrl;
+    this._nameInput.disabled = mutationDisabled || !selected;
+    this._customColor.disabled = mutationDisabled || !selected;
+    this._widthInput.disabled = mutationDisabled || !selected;
+    this._opacityInput.disabled = mutationDisabled || !selected;
+    this._zoomButton.disabled = !selected?.bounds;
+    this._editButton.disabled = mutationDisabled || !isAnnotationLayerItem(selected);
+    this._exportButton.disabled = !selected?.data;
+    this._deleteButton.disabled = mutationDisabled || !selected;
+
+    for (const row of this._list.querySelectorAll<HTMLElement>('.layer-manager-item')) {
+      const layerItem = this._layerItems.find((item) => item.id === row.dataset.layerItemId);
+      const reorder = row.querySelector<HTMLButtonElement>('.layer-manager-reorder-handle');
+      const visibility = row.querySelector<HTMLButtonElement>('.layer-manager-visibility-button');
+      const main = row.querySelector<HTMLButtonElement>('.layer-manager-item-main');
+      const zoom = row.querySelector<HTMLButtonElement>('.layer-manager-zoom-button');
+      if (reorder) reorder.disabled = mutationDisabled;
+      if (visibility) visibility.disabled = mutationDisabled;
+      if (main) main.disabled = false;
+      if (zoom) zoom.disabled = !layerItem?.bounds;
     }
   }
 
   _registerLayerItem(layerItem: LayerItem) {
     if (!layerItem || !layerItem.id || !FILE_LAYER_SOURCE_TYPES.has(layerItem.type)) return;
     const remote = isRemoteFileLayerEvent(layerItem);
+    if (!remote && !this._canEdit) return;
     const syncLayerId =
       layerItem.syncLayerId || layerItem.remoteLayerId || (remote ? layerItem.id : randomFileLayerSyncId());
     const existingIndex = this._layerItems.findIndex(
@@ -953,6 +1008,7 @@ class LayerManagerControl {
   }
 
   async _importFiles(files: File[]) {
+    if (!this._canEdit) return;
     const supported = files.filter((file) => /\.(gpx|geojson|json)$/i.test(file.name));
     if (supported.length === 0) {
       this._setStatus('No supported files');
@@ -989,6 +1045,7 @@ class LayerManagerControl {
   }
 
   async _importUrl(value: string | null | undefined) {
+    if (!this._canEdit) return;
     const url = String(value || '').trim();
     if (!url) {
       this._setStatus('Enter a URL');
@@ -1066,6 +1123,7 @@ class LayerManagerControl {
   }
 
   _createAnnotationLayer() {
+    if (!this._canEdit) return;
     if (!this._layerStore) return;
     const now = Date.now();
     const layerId = createAnnotationId('annotation-layer');
@@ -1090,6 +1148,7 @@ class LayerManagerControl {
   }
 
   _renameSelected(name: string) {
+    if (!this._canEdit) return;
     const layerItem = this._selectedLayerItem();
     if (!layerItem) return;
     layerItem.name = name.replace(/\s+/g, ' ').trimStart() || formatLayerItemType(layerItem.type);
@@ -1104,6 +1163,7 @@ class LayerManagerControl {
   }
 
   _updateSelectedStyle(changes: LayerStylePatch) {
+    if (!this._canEdit) return;
     const layerItem = this._selectedLayerItem();
     if (!layerItem) return;
     if (layerItem.type === 'gpx' || layerItem.subType === 'osrm') return;
@@ -1121,6 +1181,7 @@ class LayerManagerControl {
   }
 
   _toggleLayerItemVisibility(layerItem: LayerItem) {
+    if (!this._canEdit) return;
     layerItem.visible = !layerItem.visible;
     if (isAnnotationLayerItem(layerItem)) {
       this._layerStore?.patchLayer(layerItem.annotationLayerId || ANNOTATION_DEFAULT_LAYER_ID, {
@@ -1209,12 +1270,14 @@ class LayerManagerControl {
   }
 
   _removeSelected() {
+    if (!this._canEdit) return;
     const layerItem = this._selectedLayerItem();
     if (!layerItem) return;
     this._removeLayerItem(layerItem, { emit: true });
   }
 
   _removeLayerItem(layerItem: LayerItem, { emit = true }: LayerMutationOptions = {}) {
+    if (emit && !this._canEdit) return;
     if (isAnnotationLayerItem(layerItem)) {
       const layerId = layerItem.annotationLayerId || ANNOTATION_DEFAULT_LAYER_ID;
       if (this._shouldClearAnnotationLayer(layerItem)) {
@@ -1258,6 +1321,7 @@ class LayerManagerControl {
   }
 
   _editSelected() {
+    if (!this._canEdit) return;
     const layerItem = this._selectedLayerItem();
     if (!isAnnotationLayerItem(layerItem)) return;
     this.setExpanded(false);
@@ -1305,6 +1369,7 @@ class LayerManagerControl {
     destinationIndex: number,
     { render = true, sync = true }: MoveLayerItemOptions = {},
   ) {
+    if (sync && !this._canEdit) return false;
     const fromIndex = this._layerItems.findIndex((layerItem) => layerItem.id === layerItemId);
     if (fromIndex === -1) return false;
 
@@ -1339,6 +1404,7 @@ class LayerManagerControl {
   }
 
   _handleReorderKeydown(event: KeyboardEvent, layerItemId: string) {
+    if (!this._canEdit) return;
     const index = this._layerItems.findIndex((layerItem) => layerItem.id === layerItemId);
     if (index === -1) return;
 
@@ -1363,6 +1429,7 @@ class LayerManagerControl {
   }
 
   _beginReorder(event: PointerEvent, layerItemId: string) {
+    if (!this._canEdit) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
     const handle = event.currentTarget as HTMLElement;
     const row = handle.closest<HTMLElement>('.layer-manager-item');
@@ -1396,7 +1463,25 @@ class LayerManagerControl {
     window.removeEventListener('pointercancel', this._boundReorderPointerCancel);
   }
 
+  _cancelReorder() {
+    const state = this._dragState;
+    if (!state) return;
+    if (state.handle.hasPointerCapture?.(state.pointerId)) {
+      state.handle.releasePointerCapture(state.pointerId);
+    }
+    this._cancelReorderListeners();
+    state.row.classList.remove('reordering');
+    this._list.classList.remove('layer-manager-list-reordering');
+    this._dragState = null;
+    this._renderList();
+    this._syncDetails();
+  }
+
   _updateReorder(event: PointerEvent) {
+    if (!this._canEdit) {
+      this._cancelReorder();
+      return;
+    }
     const state = this._dragState;
     if (!state || state.pointerId !== event.pointerId) return;
 
@@ -1423,6 +1508,10 @@ class LayerManagerControl {
   }
 
   _finishReorder(event: PointerEvent | null) {
+    if (!this._canEdit) {
+      this._cancelReorder();
+      return;
+    }
     const state = this._dragState;
     if (!state || (event && state.pointerId !== event.pointerId)) return;
 
@@ -1496,6 +1585,7 @@ class LayerManagerControl {
       reorder.title = 'Drag or use arrow keys to reorder';
       reorder.setAttribute('aria-label', `Reorder ${layerItem.name}`);
       reorder.setAttribute('aria-keyshortcuts', 'ArrowUp ArrowDown Home End');
+      reorder.disabled = !this._canEdit || !this._expanded;
       appendIcon(reorder, GripVerticalIcon);
       reorder.addEventListener('pointerdown', (event) => this._beginReorder(event, layerItem.id));
       reorder.addEventListener('pointermove', (event) => this._updateReorder(event));
@@ -1509,6 +1599,7 @@ class LayerManagerControl {
       visibility.setAttribute('aria-label', visibility.title);
       visibility.classList.add('layer-manager-visibility-button');
       visibility.classList.toggle('visible', layerItem.visible);
+      visibility.disabled = !this._canEdit || !this._expanded;
       appendIcon(visibility, layerItem.visible ? EyeIcon : EyeOffIcon);
       visibility.addEventListener('click', () => this._toggleLayerItemVisibility(layerItem));
 
@@ -1526,9 +1617,10 @@ class LayerManagerControl {
       zoom.setAttribute('aria-label', 'Zoom to layer');
       zoom.classList.add('layer-manager-zoom-button');
       appendIcon(zoom, LocateFixedIcon);
-      zoom.disabled = !layerItem.bounds;
+      zoom.disabled = !this._expanded || !layerItem.bounds;
       zoom.addEventListener('click', () => fitLayerItemBounds(this._map, layerItem));
     }
+    this._syncPanelInteractivity();
   }
 
   _syncDetails() {
@@ -1536,6 +1628,7 @@ class LayerManagerControl {
     if (!layerItem) {
       this._detailsTitle.textContent = '';
       this._nameInput.value = '';
+      this._syncPanelInteractivity();
       return;
     }
 
@@ -1567,6 +1660,7 @@ class LayerManagerControl {
     )
       ? 'Clear'
       : 'Delete';
+    this._syncPanelInteractivity();
   }
 }
 

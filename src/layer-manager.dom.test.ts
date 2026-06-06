@@ -2,6 +2,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { ANNOTATION_DEFAULT_LAYER_ID, type AnnotationFeaturePayload } from './annotation-model.js';
+import { COLLABORATION_ACCESS_EVENT } from './collaboration-permissions.js';
 import { installLayerManager } from './layer-manager.js';
 import { LayerStore } from './layer-store.js';
 import type { Layer } from './layer-model.js';
@@ -272,6 +273,20 @@ function openLayerManager() {
   (button as HTMLButtonElement).click();
 }
 
+function makeReadOnly(map: TestMap) {
+  map.container.dataset.collaborationCanEdit = 'false';
+  map.container.dispatchEvent(
+    new CustomEvent(COLLABORATION_ACCESS_EVENT, {
+      detail: {
+        canView: true,
+        canEdit: false,
+        canManage: false,
+        role: 'view',
+      },
+    }),
+  );
+}
+
 function dispatchPointer(target: EventTarget, type: string, init: PointerEventInit) {
   target.dispatchEvent(
     new PointerEvent(type, {
@@ -286,6 +301,30 @@ function dispatchPointer(target: EventTarget, type: string, init: PointerEventIn
 }
 
 describe('layer manager DOM behavior', () => {
+  it('disables shared layer mutations when collaboration access is read-only', () => {
+    const map = createTestMap();
+    const layerStore = createTestLayerStore();
+
+    installLayerManager(map, layerStore);
+    makeReadOnly(map);
+    openLayerManager();
+
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-import')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-dropzone')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLInputElement>('.layer-manager-url-input')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-url-submit')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLInputElement>('.layer-manager-name-input')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-reorder-handle')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-visibility-button')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-edit')?.disabled).toBe(true);
+    expect(document.querySelector<HTMLButtonElement>('.layer-manager-danger')?.disabled).toBe(true);
+
+    addLocalFileLayer(map, { id: 'local-layer', name: 'Local layer', syncLayerId: 'local-layer' });
+
+    expect(rowNames()).toEqual(['Annotations']);
+    expect(rowNames()).not.toContain('Local layer');
+  });
+
   it('deletes the default annotation layer when another annotation layer remains', () => {
     const map = createTestMap();
     const layerStore = createTestLayerStoreWithExtraLayer();

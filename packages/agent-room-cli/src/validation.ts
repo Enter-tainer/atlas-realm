@@ -76,6 +76,7 @@ export function createConfig(
     clientId,
     agentName: normalizeName(options.agentName, DEFAULT_AGENT_NAME, 32),
     agentColor: normalizeColor(options.agentColor, DEFAULT_AGENT_COLOR),
+    accessToken: String(options.token || options.accessToken || env.ORM_ROOM_TOKEN || ''),
     clientType,
     timeoutMs: clamp(options.timeout, 1000, 120_000, 10_000),
   };

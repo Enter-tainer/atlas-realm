@@ -1,4 +1,4 @@
-import { buildSocketUrl } from './config.js';
+import { buildApiUrl, buildSocketUrl } from './config.js';
 import { decodeFileContentMessage } from './protocol.js';
 import type {
   AgentRoomConfig,
@@ -64,10 +64,27 @@ export class RoomClient {
     this.socket = null;
   }
 
+  async ensureRoomRegistry(): Promise<void> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+    if (this.config.accessToken) headers.Authorization = `Bearer ${this.config.accessToken}`;
+    const response = await fetch(buildApiUrl(this.config, '/api/rooms'), {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ roomId: this.config.room }),
+    });
+    if (!response.ok && response.status !== 501) {
+      throw new Error(`Failed to prepare room registry: HTTP ${response.status}`);
+    }
+  }
+
   async connect(): Promise<void> {
     if (typeof this.WebSocketImpl === 'undefined') {
       throw new Error('This CLI requires a Node.js runtime with a global WebSocket implementation');
     }
+
+    await this.ensureRoomRegistry();
 
     const url = buildSocketUrl(this.config);
     this.socket = new this.WebSocketImpl(url);
