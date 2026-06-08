@@ -44,13 +44,19 @@ type StyleLayerLike = JsonRecord & {
 };
 type StyleLike = JsonRecord & {
   glyphs?: string;
-  sprite?: string | Array<JsonRecord & { url: string }>;
+  sprite?: string | Array<JsonRecord & { id?: string; url: string }>;
   sources?: Record<string, JsonRecord>;
   layers?: StyleLayerLike[];
   metadata?: JsonRecord;
   state?: Record<string, JsonRecord>;
   center?: maplibregl.LngLatLike;
   zoom?: number;
+};
+type SpriteSpec = JsonRecord & { id: string; url: string };
+type MapLibreErrorEvent = ErrorEvent & {
+  error?: unknown;
+  sourceId?: string;
+  tile?: unknown;
 };
 type DemSourceLike = {
   setupMaplibre(maplibre: typeof maplibregl): void;
@@ -125,6 +131,26 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
   });
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function isFontStack(value: unknown): value is string[] {
+  return isStringArray(value) && value.some((fontName) => /(?:Noto Sans|Fira Code)/.test(fontName));
+}
+
+function coerceSpriteList(sprite: StyleLike['sprite'], defaultId: string): SpriteSpec[] {
+  if (!sprite) return [];
+  if (typeof sprite === 'string') return [{ id: defaultId, url: sprite }];
+  return sprite.map((entry) => ({ ...entry, id: entry.id || defaultId }));
+}
+
+function rewriteOrmSpriteUrl(url: string): string {
+  if (url.startsWith('/orm/')) return absoluteUrl(url);
+  if (url.startsWith('/')) return absoluteUrl(`/orm${url}`);
+  return url;
+}
+
 function appendIcon(parent: Element, icon: LucideIcon, className = 'satellite-icon') {
   const svg = createIconElement(icon, {
     class: className,
@@ -162,16 +188,12 @@ async function fetchWithSwr(url: string, ttlMs = 3600_000) {
 }
 
 function rewriteOrmStyle(style: StyleLike): StyleLike {
-  style.glyphs = absoluteUrl('/orm/font/{fontstack}/{range}');
-
-  if (Array.isArray(style.sprite)) {
-    style.sprite = style.sprite.map((sprite) => ({
-      ...sprite,
-      url: absoluteUrl(sprite.url.startsWith('/orm/') ? sprite.url : `/orm${sprite.url}`),
-    }));
-  } else if (style.sprite?.startsWith('/')) {
-    style.sprite = absoluteUrl(`/orm${style.sprite}`);
-  }
+  style.layers = style.layers?.map(normalizeOrmLayerFonts);
+  style.sprite = coerceSpriteList(style.sprite, 'orm').map((sprite) => ({
+    ...sprite,
+    id: sprite.id === 'default' ? 'orm' : sprite.id,
+    url: rewriteOrmSpriteUrl(sprite.url),
+  }));
 
   const rewrittenSources: string[] = [];
   style.sources = Object.fromEntries(
@@ -203,6 +225,93 @@ function rewriteOrmStyle(style: StyleLike): StyleLike {
   };
 
   return style;
+}
+
+function normalizeOrmFontName(fontName: string): string {
+  if (fontName.includes('Italic')) return 'Noto Sans Italic';
+  if (fontName.includes('Bold') || fontName.includes('Fira Code')) return 'Noto Sans Bold';
+  return 'Noto Sans Regular';
+}
+
+function normalizeTextFont(value: unknown): unknown {
+  if (isFontStack(value)) return [normalizeOrmFontName(value[0] || 'Noto Sans Regular')];
+  if (!Array.isArray(value)) return value;
+  if (value[0] === 'literal' && isFontStack(value[1])) {
+    return ['literal', [normalizeOrmFontName(value[1][0] || 'Noto Sans Regular')]];
+  }
+  return value.map((item) => normalizeTextFont(item));
+}
+
+function normalizeOrmLayerFonts<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(normalizeOrmLayerFonts) as T;
+  if (!value || typeof value !== 'object') return value;
+  const normalized: JsonRecord = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === 'text-font') {
+      normalized[key] = normalizeTextFont(child);
+    } else if (key === 'icon-image' || key === 'fill-pattern' || key === 'line-pattern') {
+      normalized[key] = namespaceOrmImageReference(child);
+    } else {
+      normalized[key] = normalizeOrmLayerFonts(child);
+    }
+  }
+  return normalized as T;
+}
+
+function namespaceOrmImageId(id: string): string {
+  if (!id || id.startsWith('sdf:') || id.startsWith('orm:')) return id;
+  return `orm:${id}`;
+}
+
+function namespaceOrmImageReference(value: unknown): unknown {
+  if (typeof value === 'string') return namespaceOrmImageId(value);
+  if (!Array.isArray(value)) return value;
+
+  const [operator, ...args] = value;
+  if (operator === 'image') {
+    return ['image', namespaceOrmImageReference(args[0])];
+  }
+
+  if (operator === 'concat') {
+    const first = args[0];
+    if (typeof first === 'string' && (first.startsWith('sdf:') || first.startsWith('orm:'))) return value;
+    return ['concat', 'orm:', ...args];
+  }
+
+  if (operator === 'case') {
+    return value.map((item, index) =>
+      index >= 2 && (index % 2 === 0 || index === value.length - 1) ? namespaceOrmImageReference(item) : item,
+    );
+  }
+
+  if (operator === 'match') {
+    return value.map((item, index) =>
+      (index > 2 && index % 2 === 1) || index === value.length - 1 ? namespaceOrmImageReference(item) : item,
+    );
+  }
+
+  if (operator === 'step') {
+    return value.map((item, index) =>
+      index === 2 || (index > 3 && index % 2 === 0) ? namespaceOrmImageReference(item) : item,
+    );
+  }
+
+  if (operator === 'coalesce') {
+    return [operator, ...args.map(namespaceOrmImageReference)];
+  }
+
+  return ['concat', 'orm:', value];
+}
+
+function mergeStyleSprites(baseSprite: StyleLike['sprite'], ormSprite: StyleLike['sprite']): SpriteSpec[] | undefined {
+  const mergedSprites = [...coerceSpriteList(baseSprite, 'default'), ...coerceSpriteList(ormSprite, 'orm')];
+  const seenIds = new Set<string>();
+  const uniqueSprites = mergedSprites.filter((sprite) => {
+    if (seenIds.has(sprite.id)) return false;
+    seenIds.add(sprite.id);
+    return true;
+  });
+  return uniqueSprites.length > 0 ? uniqueSprites : undefined;
 }
 
 function getFirstSymbolLayerId(style: StyleLike) {
@@ -355,8 +464,8 @@ function mergeBaseAndOrm(baseStyle: StyleLike, ormStyle: StyleLike): StyleLike {
   const baseLayers = (baseStyle.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
   merged.center = ormStyle.center || merged.center;
   merged.zoom = ormStyle.zoom || merged.zoom;
-  merged.glyphs = ormStyle.glyphs || merged.glyphs;
-  merged.sprite = ormStyle.sprite || merged.sprite;
+  merged.glyphs = merged.glyphs || ormStyle.glyphs;
+  merged.sprite = mergeStyleSprites(merged.sprite, ormStyle.sprite);
   // Set state defaults before the style is applied to avoid initial render flash
   const state = { ...(merged.state || {}), ...(ormStyle.state || {}) };
   for (const [key, value] of Object.entries(STATE_DEFAULTS)) {
@@ -370,6 +479,21 @@ function mergeBaseAndOrm(baseStyle: StyleLike, ormStyle: StyleLike): StyleLike {
   merged.sources = { ...(merged.sources || {}), ...(ormStyle.sources || {}) };
   merged.layers = [...baseLayers, ...(ormStyle.layers || [])];
   return merged;
+}
+
+function isMapResourceLoadError(event: MapLibreErrorEvent): boolean {
+  const message = event.error instanceof Error ? event.error.message : String(event.error || '');
+  return Boolean(event.sourceId || event.tile || /(?:tile|glyph|sprite|image|resource|fetch|load)/i.test(message));
+}
+
+function installMapLibreErrorLogging(map: maplibregl.Map) {
+  map.on('error', (event: MapLibreErrorEvent) => {
+    if (isMapResourceLoadError(event)) {
+      console.debug('MapLibre resource load skipped:', event);
+      return;
+    }
+    console.error('MapLibre error:', event);
+  });
 }
 
 async function loadStyle(demSource: DemSourceLike): Promise<StyleLike> {
@@ -388,7 +512,7 @@ function isSpriteIndex(value: unknown): value is SpriteAtlas['index'] {
 
 async function loadSpriteAtlases(): Promise<SpriteAtlas[]> {
   const specs = [
-    { prefix: '', json: '/orm/sprite/symbols.json', png: '/orm/sprite/symbols.png', sdf: false },
+    { prefix: 'orm:', json: '/orm/sprite/symbols.json', png: '/orm/sprite/symbols.png', sdf: false },
     { prefix: 'sdf:', json: '/orm/sdf_sprite/symbols.json', png: '/orm/sdf_sprite/symbols.png', sdf: true },
   ];
   const atlases: SpriteAtlas[] = [];
@@ -726,7 +850,7 @@ async function init() {
     map.on('load', runMapReadySetup);
     if (map.loaded()) runMapReadySetup();
 
-    map.on('error', (e) => console.error('MapLibre error:', e));
+    installMapLibreErrorLogging(map);
   } catch (error) {
     console.error(error);
   }
