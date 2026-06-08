@@ -68,6 +68,20 @@ describe('layer store', () => {
     expect(store.getAnnotationFeaturePayload('point-a')?.label).toBe('Edited point');
   });
 
+  it('counts annotation features by layer when assigning sort keys', () => {
+    const store = new LayerStore({ layers: [annotationLayer('day-1'), annotationLayer('day-2')] });
+
+    store.upsertFeature(pointFeature('point-a', 1001, 'day-1'));
+    store.upsertFeature(pointFeature('point-b', 1002, 'day-1'));
+    store.upsertFeature(pointFeature('point-c', 1003, 'day-2'));
+    store.upsertFeature(pointFeature('point-d', 1004, 'day-2'));
+
+    expect(store.getAnnotationFeatureCount()).toBe(4);
+    expect(store.getAnnotationFeatureCount('day-1')).toBe(2);
+    expect(store.getAnnotationFeatureCount('day-2')).toBe(2);
+    expect(store.getAnnotationFeature('point-d')?.sortKey).toBe('000020');
+  });
+
   it('emits feature delete events when clearing a layer', () => {
     const store = new LayerStore({ layers: [annotationLayer('day-1', 'Day 1')] });
     store.upsertFeature(pointFeature('point-a', 1001, 'day-1'));

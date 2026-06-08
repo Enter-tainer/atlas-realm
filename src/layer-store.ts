@@ -101,6 +101,15 @@ export class LayerStore extends EventTarget {
       .sort(compareAnnotationFeatures);
   }
 
+  _getAnnotationFeatureCount(layerId?: string) {
+    if (!layerId) return this._features.size;
+    let count = 0;
+    for (const feature of this._features.values()) {
+      if (feature.layerId === layerId) count += 1;
+    }
+    return count;
+  }
+
   getAnnotationFeature(featureId: string) {
     return this._features.get(featureId) || null;
   }
@@ -114,7 +123,7 @@ export class LayerStore extends EventTarget {
   }
 
   getAnnotationFeatureCount(layerId?: string) {
-    return this.getAnnotationFeatures(layerId).length;
+    return this._getAnnotationFeatureCount(layerId);
   }
 
   getGeoJson({ includeHidden = false }: { includeHidden?: boolean } = {}) {
@@ -213,6 +222,7 @@ export class LayerStore extends EventTarget {
   patchLayer(layerId: string, patch: LayerUpdatePatch, options: { remote?: boolean } = {}) {
     const layer = this._layers.get(layerId);
     if (!layer) return null;
+    const now = Date.now();
     const next = sanitizeLayer(
       {
         ...layer,
@@ -221,10 +231,10 @@ export class LayerStore extends EventTarget {
         sortKey: patch.sortKey ?? layer.sortKey,
         payload: patch.payload ?? layer.payload,
         revision: layer.revision + 1,
-        updatedAt: Date.now(),
+        updatedAt: now,
         updatedBy: patch.updatedBy ?? layer.updatedBy,
       },
-      Date.now(),
+      now,
       layer,
     );
     if (!next) return null;
@@ -242,6 +252,7 @@ export class LayerStore extends EventTarget {
   }
 
   reorderLayers(orderedIds: string[], { remote = false }: { remote?: boolean } = {}) {
+    const now = Date.now();
     for (const [index, layerId] of orderedIds.entries()) {
       const layer = this._layers.get(layerId);
       if (!layer) continue;
@@ -249,7 +260,7 @@ export class LayerStore extends EventTarget {
         ...layer,
         sortKey: initialSortKey(index),
         revision: layer.revision + 1,
-        updatedAt: Date.now(),
+        updatedAt: now,
       });
     }
     this._emit({ type: 'layer:reorder', layers: this.getLayers(), remote });
@@ -269,7 +280,7 @@ export class LayerStore extends EventTarget {
             sortKey:
               existing && existing.layerId === feature.layerId
                 ? existing.sortKey
-                : initialSortKey(this.getAnnotationFeatures(feature.layerId).length),
+                : initialSortKey(this._getAnnotationFeatureCount(feature.layerId)),
             revision: Math.max(0, existing?.revision || 0) + 1,
             createdAt: existing?.createdAt ?? feature.createdAt,
             updatedAt: feature.updatedAt || now,
@@ -297,6 +308,7 @@ export class LayerStore extends EventTarget {
   }
 
   reorderFeatures(orderedIds: string[], { remote = false }: { remote?: boolean } = {}) {
+    const now = Date.now();
     for (const [index, featureId] of orderedIds.entries()) {
       const feature = this._features.get(featureId);
       if (!feature) continue;
@@ -304,7 +316,7 @@ export class LayerStore extends EventTarget {
         ...feature,
         sortKey: initialSortKey(index),
         revision: feature.revision + 1,
-        updatedAt: Date.now(),
+        updatedAt: now,
       });
     }
     this._emit({ type: 'feature:reorder', features: this.getAnnotationFeatures(), remote });

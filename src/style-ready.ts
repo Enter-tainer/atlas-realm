@@ -77,22 +77,24 @@ function ensureStyleReadyLoadMarker(map: StyleReadyMap) {
   });
 }
 
+function runWhenFullStyleReady(map: StyleReadyMap, callback: () => void) {
+  if (isFullStyleReady(map)) {
+    markStyleReady(map);
+    callback();
+    return;
+  }
+  map.once('load', () => {
+    markStyleReady(map);
+    callback();
+  });
+}
+
 /**
  * Set a global state property on the map.
  * Once the style has been initialised, always sets synchronously.
  */
 export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName: string, value: unknown) {
-  if (isFullStyleReady(map)) {
-    markStyleReady(map);
-    map.setGlobalStateProperty(propertyName, value);
-    return;
-  }
-  if (map._styleInitialized) {
-    map.setGlobalStateProperty(propertyName, value);
-    return;
-  }
-  map.once('load', () => {
-    markStyleReady(map);
+  runWhenFullStyleReady(map, () => {
     map.setGlobalStateProperty(propertyName, value);
   });
 }
@@ -102,19 +104,7 @@ export function setGlobalStatePropertyWhenReady(map: StyleReadyMap, propertyName
  * After the first load, runs synchronously (tile loading state ignored).
  */
 export function runWhenStyleReady(map: StyleReadyMap, callback: () => void) {
-  if (isFullStyleReady(map)) {
-    markStyleReady(map);
-    callback();
-    return;
-  }
-  if (map._styleInitialized) {
-    callback();
-    return;
-  }
-  map.once('load', () => {
-    markStyleReady(map);
-    callback();
-  });
+  runWhenFullStyleReady(map, callback);
 }
 
 /**

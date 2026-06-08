@@ -616,16 +616,20 @@ let geojsonLayerCount = 0;
 export function addGeoJsonToMap(map: FileLayerMap, geojson: unknown, options: FileLayerOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
   if (!normalized || !normalized.features || normalized.features.length === 0) return;
+  return addNormalizedGeoJsonToMap(map, normalized, options);
+}
 
+function addNormalizedGeoJsonToMap(
+  map: FileLayerMap,
+  normalized: GeoJsonFeatureCollection,
+  options: FileLayerOptions = {},
+) {
   const summary = summarizeGeoJson(normalized);
   const color = options.color || DEFAULT_FILE_LAYER_COLOR;
   const containsOsrm = hasOsrmFeatures(normalized);
   const routeFeature = containsOsrm
     ? normalized.features.find((feature) => getFeatureKind(feature) === 'osrm_route')
     : null;
-  const lineFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'line');
-  const pointFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'point');
-  const polygonFeatures = normalized.features.filter((f) => getGeometryFamily(f.geometry) === 'polygon');
   const layerIds = [];
 
   const id = `geojson-layer-${geojsonLayerCount++}`;
@@ -735,7 +739,7 @@ export function addGeoJsonToMap(map: FileLayerMap, geojson: unknown, options: Fi
       },
     });
     layerIds.push(osrmManeuverLayerId);
-  } else if (polygonFeatures.length > 0) {
+  } else if (summary.polygons > 0) {
     const fillLayerId = `${id}-polygon-fill`;
     map.addLayer({
       id: fillLayerId,
@@ -792,7 +796,7 @@ export function addGeoJsonToMap(map: FileLayerMap, geojson: unknown, options: Fi
   }
 
   // LineString: track rendering
-  if (!containsOsrm && lineFeatures.length > 0) {
+  if (!containsOsrm && summary.lines > 0) {
     const strokeLayerId = `${id}-line-stroke`;
     map.addLayer({
       id: strokeLayerId,
@@ -850,7 +854,7 @@ export function addGeoJsonToMap(map: FileLayerMap, geojson: unknown, options: Fi
   }
 
   // Point: symbol layer with collision detection (icon + text)
-  if (!containsOsrm && pointFeatures.length > 0) {
+  if (!containsOsrm && summary.points > 0) {
     ensureMarkerIcon(map, color);
     const pointLayerId = `${id}-point`;
     map.addLayer({
@@ -972,11 +976,11 @@ export async function processOrQueueGpx(map: FileLayerMap, xmlString: string, op
  */
 export function processOrQueueGeoJson(map: FileLayerMap, geojson: unknown, options: FileLayerOptions = {}) {
   const normalized = normalizeGeoJson(geojson);
-  const summary = normalized ? summarizeGeoJson(normalized) : { bounds: null as Bounds | null };
   if (!normalized || normalized.features.length === 0) return null;
+  const summary = summarizeGeoJson(normalized);
 
   if (isMapReadyForLayer(map)) {
-    const result = addGeoJsonToMap(map, normalized, options);
+    const result = addNormalizedGeoJsonToMap(map, normalized, options);
     if (result) {
       console.log(`GeoJSON loaded: ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`);
     }
@@ -1002,7 +1006,7 @@ export function drainGpxQueue(map: FileLayerMap) {
   }
   pendingGpxQueue = [];
   for (const item of pendingGeoJsonQueue) {
-    const result = addGeoJsonToMap(map, item.geojson, item.options);
+    const result = addNormalizedGeoJsonToMap(map, item.geojson, item.options);
     if (result) {
       console.log(
         `GeoJSON loaded (deferred): ${result.lines} lines, ${result.points} points, ${result.polygons} polygons`,
