@@ -151,6 +151,8 @@ Layer style options:
 
 6. **Snapshot JSON is large**: Route geometry arrays can make snapshot output >1MB. Redirect to file (`> /tmp/snap.json`) instead of parsing from terminal tool output, which truncates at ~20K chars.
 
+7. **Server does not perform routing**: Atlas Realm stores route annotations as-is — it does not call OSRM, AMAP, or any routing API. Agents must fetch road geometry from an external routing service and pass the result via `--geometry`. Using `--waypoints` alone produces straight lines, not real roads.
+
 ## Annotations
 
 Annotations are editable planning objects in the shared annotation model.
@@ -179,6 +181,26 @@ Polygon:
 ```bash
 atlas-realm --host <host> --room <room> --client-id <id> annotations add polygon --id area-a --points "121.5,31.2;121.51,31.2;121.51,31.21" --label "Search area" --line-style dotted --opacity 0.9 --fill-opacity 0.25 --json
 ```
+
+Route:
+
+```bash
+atlas-realm --host <host> --room <room> --client-id <id> annotations add route --id day1-drive --waypoints "121.5,31.2;121.8,31.5" --geometry "121.5,31.2;121.51,31.22;121.6,31.35;121.7,31.42;121.8,31.5" --profile driving --label "Day 1 Drive" --color "#0f766e" --width 5 --opacity 0.95 --json
+```
+
+**Architecture: server does not perform routing.** Route annotations require `--waypoints` (start/end/via points) and `--geometry` (the actual road path). The agent must obtain road geometry from an external routing service (OSRM, AMAP/高德, etc.) and pass it directly to Atlas Realm. The server stores and renders route data as-is — it does not call any routing API. When `--geometry` is omitted, the route renders as a straight line between waypoints.
+
+Route options:
+
+- `--waypoints "lng,lat;lng,lat"` — at least two waypoints (required)
+- `--geometry "lng,lat;lng,lat"` — road path from a routing engine (recommended)
+- `--profile driving|walking|cycling` — route profile (default: driving)
+- `--directed true|false` — direction arrow (default: true)
+- `--width <number>` — line width (default: 5)
+- `--distance <meters>` — route distance in meters
+- `--duration <seconds>` — route duration in seconds
+- `--distance-text "..."` — human-readable distance label
+- `--duration-text "..."` — human-readable duration label
 
 Line, route, and polygon outline style options:
 
@@ -210,7 +232,7 @@ atlas-realm --host <host> --room <room> --client-id <id> annotations layers dele
 ## Travel Planning Conventions
 
 - Use points for POIs, hotels, stations, restaurants, meeting spots, and warnings.
-- Use routes (via `annotations add route`) for road trip daily segments. Use AMAP (高德) or OSRM for real road geometry — never hand-draw straight lines.
+- Use routes (via `annotations add route`) for road trip daily segments. **The agent must fetch real road geometry from an external routing service** (OSRM, AMAP/高德, etc.) and pass it via `--geometry`. The server stores and renders the geometry as-is — it does not perform routing. Never hand-draw straight lines between waypoints.
 - Split long driving days (>5h) into shorter segments with activity stops in between.
 - Use warm+cool color palettes by geographic region (not all one hue). Example: green for valleys, violet for mountains, orange for desert cities, cyan for plateau.
 - Use `--line-style dashed` / `--line-style dotted` with low opacity (0.35–0.55) for backup/detour routes to visually distinguish them from main routes.
