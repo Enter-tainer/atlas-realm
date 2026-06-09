@@ -57,10 +57,21 @@ export type RoomAccessState = {
 };
 export type RoomGrantMember = {
   userId: string;
+  githubId?: string;
   githubLogin: string;
   displayName: string | null;
   avatarUrl: string | null;
   role: RoomRole;
+  pending?: boolean;
+};
+type GrantUpdateResponse = {
+  grant?: {
+    userId?: string;
+    githubId?: string;
+    githubLogin?: string;
+    role?: RoomRole;
+    pending?: boolean;
+  };
 };
 export type PeerUser = { id?: string; name: string; color: string; avatarUrl?: string | null };
 export type AgentParticipant = {
@@ -811,11 +822,18 @@ export function installMapCollaboration(
   grantForm.appendChild(grantRoleSelect);
   grantForm.appendChild(grantAddButton);
 
+  const grantStatus = createElement('div', 'collab-grant-status', {
+    role: 'status',
+    'aria-live': 'polite',
+  });
+  grantStatus.hidden = true;
+
   const grantsList = createElement('div', 'collab-grants-list');
 
   sharePanel.appendChild(copyLinkButton);
   sharePanel.appendChild(linkAccessField);
   sharePanel.appendChild(grantForm);
+  sharePanel.appendChild(grantStatus);
   sharePanel.appendChild(grantsList);
 
   const presenceBar = createElement('div', 'collab-presence-bar');
@@ -950,14 +968,23 @@ export function installMapCollaboration(
     }
     for (const grant of roomGrants.values()) {
       const row = createElement('div', 'collab-grant-row');
+      row.dataset.pending = grant.pending ? 'true' : 'false';
       const label = createElement('span', 'collab-grant-person');
-      label.textContent = grant.githubLogin;
+      const name = createElement('span', 'collab-grant-name');
+      name.textContent = grant.githubLogin;
+      label.appendChild(name);
+      if (grant.pending) {
+        const pendingBadge = createElement('span', 'collab-grant-state-badge');
+        pendingBadge.textContent = 'Pending';
+        label.appendChild(pendingBadge);
+      }
       label.title = grant.displayName ? `${grant.displayName} (${grant.githubLogin})` : grant.githubLogin;
       const roleSelect = grantRoleSelect.cloneNode(true) as HTMLSelectElement;
       roleSelect.value = grant.role;
       roleSelect.addEventListener('change', () => {
         updateGrant(grant.githubLogin, roleSelect.value as RoomRole).catch((error) => {
           console.error('Failed to update room grant:', error);
+          setGrantStatus(`Could not update @${grant.githubLogin}. Try again.`, 'error');
           roleSelect.value = grant.role;
         });
       });
@@ -970,6 +997,7 @@ export function installMapCollaboration(
       removeButton.addEventListener('click', () => {
         removeGrant(grant.userId).catch((error) => {
           console.error('Failed to remove room grant:', error);
+          setGrantStatus(`Could not remove @${grant.githubLogin}. Try again.`, 'error');
         });
       });
       row.appendChild(label);
@@ -988,6 +1016,12 @@ export function installMapCollaboration(
     grantRoleSelect.disabled = !roomAccess.canManage;
     grantAddButton.disabled = !roomAccess.canManage;
     renderGrants();
+  }
+
+  function setGrantStatus(message: string, tone: 'idle' | 'success' | 'pending' | 'error' = 'idle') {
+    grantStatus.textContent = message;
+    grantStatus.dataset.tone = tone;
+    grantStatus.hidden = !message;
   }
 
   function renderClaimButton() {
@@ -1103,12 +1137,16 @@ export function installMapCollaboration(
   }
 
   async function updateGrant(githubLogin: string, role: RoomRole) {
-    await fetchJson(`/api/rooms/${encodeURIComponent(currentRoom)}/grants/${encodeURIComponent(githubLogin)}`, {
-      method: 'PUT',
-      body: JSON.stringify({ role }),
-    });
+    const data = await fetchJson<GrantUpdateResponse>(
+      `/api/rooms/${encodeURIComponent(currentRoom)}/grants/${encodeURIComponent(githubLogin)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ role }),
+      },
+    );
     await refreshGrants();
     await refreshRoomAccess(currentRoom);
+    return data.grant || null;
   }
 
   async function removeGrant(userId: string) {
@@ -1116,6 +1154,7 @@ export function installMapCollaboration(
       method: 'DELETE',
     });
     roomGrants.delete(userId);
+    setGrantStatus('Access removed.', 'success');
     renderSharePanel();
   }
 
@@ -2074,12 +2113,30 @@ export function installMapCollaboration(
     event.preventDefault();
     const login = grantInput.value.trim();
     if (!login) return;
+    grantAddButton.disabled = true;
+    grantAddButton.textContent = 'Adding';
+    grantInput.disabled = true;
+    grantRoleSelect.disabled = true;
+    setGrantStatus(`Adding @${login}...`, 'pending');
     updateGrant(login, grantRoleSelect.value as RoomRole)
-      .then(() => {
+      .then((grant) => {
         grantInput.value = '';
+        const displayLogin = grant?.githubLogin || login;
+        if (grant?.pending) {
+          setGrantStatus(`@${displayLogin} can join after signing in with GitHub.`, 'pending');
+        } else {
+          setGrantStatus(`@${displayLogin} now has ${grant?.role || grantRoleSelect.value} access.`, 'success');
+        }
       })
       .catch((error) => {
         console.error('Failed to add room grant:', error);
+        setGrantStatus(`Could not add @${login}. Check the username and try again.`, 'error');
+      })
+      .finally(() => {
+        grantInput.disabled = !roomAccess.canManage;
+        grantRoleSelect.disabled = !roomAccess.canManage;
+        grantAddButton.disabled = !roomAccess.canManage;
+        grantAddButton.textContent = 'Add';
       });
   });
 

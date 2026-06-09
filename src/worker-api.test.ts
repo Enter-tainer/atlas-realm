@@ -45,6 +45,8 @@ interface PendingGrantRow {
   github_login: string;
   role: RoomRole;
   granted_by_user_id: string;
+  created_at?: number;
+  claimed_at?: number | null;
 }
 
 interface AccessTokenRow {
@@ -206,6 +208,12 @@ class FakeApiStmt {
       return grant ? ({ role: grant.role } as T) : null;
     }
 
+    if (this.sql.includes('FROM pending_room_grants') && this.sql.includes('LIMIT 1')) {
+      const [roomId, githubId] = this.args as [string, string];
+      const pending = this.db.pending.get(`${roomId}:${githubId}`);
+      return pending && pending.claimed_at == null ? ({ role: pending.role } as T) : null;
+    }
+
     if (this.sql.includes('FROM rooms') && this.sql.includes('NULL AS grant_role')) {
       const [roomId] = this.args as [string];
       const room = this.db.rooms.get(roomId);
@@ -240,11 +248,30 @@ class FakeApiStmt {
       };
     }
 
+    if (this.sql.includes('FROM pending_room_grants') && this.sql.includes('github_id AS githubId')) {
+      const [roomId] = this.args as [string];
+      return {
+        results: [...this.db.pending.values()]
+          .filter((row) => row.room_id === roomId && row.claimed_at == null)
+          .map(
+            (row) =>
+              ({
+                roomId: row.room_id,
+                githubId: row.github_id,
+                role: row.role,
+                grantedByUserId: row.granted_by_user_id,
+                githubLogin: row.github_login,
+                createdAt: row.created_at || 0,
+              }) as T,
+          ),
+      };
+    }
+
     if (this.sql.includes('FROM pending_room_grants')) {
       const [githubId] = this.args as [string];
       return {
         results: [...this.db.pending.values()]
-          .filter((row) => row.github_id === githubId)
+          .filter((row) => row.github_id === githubId && row.claimed_at == null)
           .map((row) => ({ roomId: row.room_id, role: row.role }) as T),
       };
     }
@@ -479,12 +506,13 @@ class FakeApiStmt {
     }
 
     if (this.sql.includes('INSERT INTO pending_room_grants')) {
-      const [roomId, githubId, githubLogin, role, grantedByUserId] = this.args as [
+      const [roomId, githubId, githubLogin, role, grantedByUserId, now] = this.args as [
         string,
         string,
         string,
         RoomRole,
         string,
+        number,
       ];
       this.db.pending.set(`${roomId}:${githubId}`, {
         room_id: roomId,
@@ -492,6 +520,8 @@ class FakeApiStmt {
         github_login: githubLogin,
         role,
         granted_by_user_id: grantedByUserId,
+        created_at: now,
+        claimed_at: null,
       });
       return fakeD1Result();
     }
@@ -499,6 +529,12 @@ class FakeApiStmt {
     if (this.sql.includes('DELETE FROM room_grants')) {
       const [roomId, userId] = this.args as [string, string];
       this.db.grants.delete(`${roomId}:${userId}`);
+      return fakeD1Result();
+    }
+
+    if (this.sql.includes('DELETE FROM pending_room_grants')) {
+      const [roomId, githubId] = this.args as [string, string];
+      this.db.pending.delete(`${roomId}:${githubId}`);
       return fakeD1Result();
     }
 
@@ -1390,5 +1426,109 @@ describe('account API handler', () => {
       grant: { githubId: '42', githubLogin: 'new-user', role: 'view', pending: true },
     });
     expect(db.pending.get('room:42')?.role).toBe('view');
+  });
+
+  it('lists pending GitHub grants so the sharing UI can show unresolved members', async () => {
+    const db = new FakeApiD1Database();
+    db.users.set('owner', {
+      user_id: 'owner',
+      github_id: '1',
+      github_login: 'owner',
+      display_name: 'Owner',
+      avatar_url: null,
+    });
+    db.users.set('editor', {
+      user_id: 'editor',
+      github_id: '2',
+      github_login: 'editor',
+      display_name: 'Editor',
+      avatar_url: null,
+    });
+    db.sessions.set('owner-session-owner-session-1234', {
+      session_id: 'owner-session-owner-session-1234',
+      user_id: 'owner',
+      expires_at: Date.now() + 60_000,
+      revoked_at: null,
+    });
+    db.rooms.set('room', {
+      room_id: 'room',
+      owner_user_id: 'owner',
+      link_access: 'restricted',
+      archived_at: null,
+    });
+    db.grants.set('room:editor', {
+      room_id: 'room',
+      user_id: 'editor',
+      role: 'edit',
+      granted_by_user_id: 'owner',
+      updated_at: 2,
+    });
+    db.pending.set('room:42', {
+      room_id: 'room',
+      github_id: '42',
+      github_login: 'new-user',
+      role: 'view',
+      granted_by_user_id: 'owner',
+      created_at: 3,
+      claimed_at: null,
+    });
+
+    const response = await handleAccountApiRequest(
+      new Request('https://example.test/api/rooms/room/grants', {
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=owner-session-owner-session-1234` },
+      }),
+      envWithDb(asD1(db)),
+    );
+
+    expect(response?.status).toBe(200);
+    await expect(json(response as Response)).resolves.toMatchObject({
+      grants: [
+        { userId: 'editor', githubLogin: 'editor', role: 'edit' },
+        { userId: 'github:42', githubId: '42', githubLogin: 'new-user', role: 'view', pending: true },
+      ],
+    });
+  });
+
+  it('removes pending GitHub grants by stable GitHub id', async () => {
+    const db = new FakeApiD1Database();
+    db.users.set('owner', {
+      user_id: 'owner',
+      github_id: '1',
+      github_login: 'owner',
+      display_name: 'Owner',
+      avatar_url: null,
+    });
+    db.sessions.set('owner-session-owner-session-1234', {
+      session_id: 'owner-session-owner-session-1234',
+      user_id: 'owner',
+      expires_at: Date.now() + 60_000,
+      revoked_at: null,
+    });
+    db.rooms.set('room', {
+      room_id: 'room',
+      owner_user_id: 'owner',
+      link_access: 'restricted',
+      archived_at: null,
+    });
+    db.pending.set('room:42', {
+      room_id: 'room',
+      github_id: '42',
+      github_login: 'new-user',
+      role: 'view',
+      granted_by_user_id: 'owner',
+      created_at: 3,
+      claimed_at: null,
+    });
+
+    const response = await handleAccountApiRequest(
+      new Request('https://example.test/api/rooms/room/grants/github%3A42', {
+        method: 'DELETE',
+        headers: { Cookie: `${SESSION_COOKIE_NAME}=owner-session-owner-session-1234` },
+      }),
+      envWithDb(asD1(db)),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(db.pending.get('room:42')).toBeUndefined();
   });
 });

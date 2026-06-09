@@ -31,6 +31,7 @@ import {
   getRoomSummary,
   getUserByGithubLogin,
   listRoomGrants,
+  removePendingRoomGrant,
   removeRoomGrant,
   updateRoomMetadata,
   upsertPendingRoomGrant,
@@ -699,10 +700,16 @@ export async function handleAccountApiRequest(request: Request, env: Cloudflare.
 
     if (request.method === 'DELETE') {
       try {
-        await removeRoomGrant(env.ACCOUNTS_DB, roomId, member, user.userId);
-        const access = await getEffectiveRoomAccess(env.ACCOUNTS_DB, roomId, member);
-        if (!(await sendAccessRefresh(env, roomId, [{ userId: member, role: refreshRole(access?.role) }]))) {
-          return jsonResponse({ error: 'access-refresh-failed' }, { status: 503 });
+        if (member.startsWith('github:')) {
+          const githubId = member.slice('github:'.length);
+          if (!githubId) return jsonResponse({ error: 'invalid-grant' }, { status: 400 });
+          await removePendingRoomGrant(env.ACCOUNTS_DB, roomId, githubId, user.userId);
+        } else {
+          await removeRoomGrant(env.ACCOUNTS_DB, roomId, member, user.userId);
+          const access = await getEffectiveRoomAccess(env.ACCOUNTS_DB, roomId, member);
+          if (!(await sendAccessRefresh(env, roomId, [{ userId: member, role: refreshRole(access?.role) }]))) {
+            return jsonResponse({ error: 'access-refresh-failed' }, { status: 503 });
+          }
         }
         return jsonResponse({ ok: true });
       } catch (error) {
