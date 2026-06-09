@@ -12,7 +12,7 @@ import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
 import { installLayerManager } from './layer-manager.js';
 import { installOsrmRouting } from './routing.js';
-import { setGlobalStatePropertyWhenReady, runWhenStyleReady } from './style-ready.js';
+import { setGlobalStatePropertyWhenReady, runWhenStyleInfrastructureReady } from './style-ready.js';
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
@@ -728,7 +728,7 @@ async function init() {
         const next = Boolean(enabled);
         if (this._enabled === next) return;
         this._enabled = next;
-        runWhenStyleReady(this._map, () => {
+        runWhenStyleInfrastructureReady(this._map, () => {
           this._map.setTerrain(next ? { source: 'hillshadeSource', exaggeration: 1.0 } : null);
         });
         this._btn?.classList.toggle('maplibregl-ctrl-terrain-enabled', next);
@@ -784,7 +784,7 @@ async function init() {
         if (!options.silent) this._onChange?.();
       }
       _enable() {
-        runWhenStyleReady(this._map, () => {
+        runWhenStyleInfrastructureReady(this._map, () => {
           setGlobalStatePropertyWhenReady(this._map, SHOW_BASE_MAP_STATE, false);
           if (this._map.getLayer('satellite-layer')) {
             this._map.setLayoutProperty('satellite-layer', 'visibility', 'visible');
@@ -792,7 +792,7 @@ async function init() {
         });
       }
       _disable() {
-        runWhenStyleReady(this._map, () => {
+        runWhenStyleInfrastructureReady(this._map, () => {
           if (this._map.getLayer('satellite-layer')) {
             this._map.setLayoutProperty('satellite-layer', 'visibility', 'none');
           }
