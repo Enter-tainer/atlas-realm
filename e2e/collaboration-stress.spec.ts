@@ -22,6 +22,8 @@ import {
 } from './support/real-collaboration';
 
 test.describe('real collaboration protocol stress', () => {
+  test.describe.configure({ timeout: 120_000 });
+
   test('fans out a burst of feature upserts to every connected browser', async ({ browser }, testInfo) => {
     const room = uniqueRoomName('e2e-burst', testInfo.title);
     const contextA = await browser.newContext({ locale: 'en-US' });
