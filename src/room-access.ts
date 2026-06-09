@@ -78,12 +78,14 @@ export interface ClaimedPendingGrant {
 export interface RoomGrantMember {
   roomId: string;
   userId: string;
+  githubId?: string;
   role: RoomRole;
   grantedByUserId: string;
   githubLogin: string;
   displayName: string | null;
   avatarUrl: string | null;
   updatedAt: number;
+  pending?: boolean;
 }
 
 export interface UserIdentity {
@@ -127,6 +129,15 @@ interface RoomSummaryRow {
   linkAccess: LinkAccess;
   updatedAt: number;
   lastActiveAt: number;
+}
+
+interface PendingRoomGrantMemberRow {
+  roomId: string;
+  githubId: string;
+  role: RoomRole;
+  grantedByUserId: string;
+  githubLogin: string;
+  createdAt: number;
 }
 
 function nowMs(now?: number): number {
@@ -380,7 +391,7 @@ export async function listRoomGrants(db: D1Database, roomId: string, actorUserId
   const actor = await getEffectiveRoomAccess(db, roomId, actorUserId);
   if (!actor || actor.role !== 'manage') throw new Error('Forbidden grant');
 
-  const result = await db
+  const active = await db
     .prepare(
       `
       SELECT
@@ -400,7 +411,40 @@ export async function listRoomGrants(db: D1Database, roomId: string, actorUserId
     )
     .bind(roomId)
     .all<RoomGrantMember>();
-  return result.results || [];
+
+  const pending = await db
+    .prepare(
+      `
+      SELECT
+        room_id AS roomId,
+        github_id AS githubId,
+        role,
+        granted_by_user_id AS grantedByUserId,
+        github_login AS githubLogin,
+        created_at AS createdAt
+      FROM pending_room_grants
+      WHERE room_id = ?1 AND claimed_at IS NULL
+      ORDER BY created_at DESC
+    `,
+    )
+    .bind(roomId)
+    .all<PendingRoomGrantMemberRow>();
+
+  return [
+    ...(active.results || []),
+    ...(pending.results || []).map((grant) => ({
+      roomId: grant.roomId,
+      userId: `github:${grant.githubId}`,
+      githubId: grant.githubId,
+      role: grant.role,
+      grantedByUserId: grant.grantedByUserId,
+      githubLogin: grant.githubLogin,
+      displayName: null as string | null,
+      avatarUrl: null as string | null,
+      updatedAt: grant.createdAt,
+      pending: true,
+    })),
+  ];
 }
 
 export async function getUserByGithubLogin(db: D1Database, githubLogin: string): Promise<UserIdentity | null> {
@@ -447,6 +491,35 @@ export async function removeRoomGrant(
   if (targetRole === 'manage' && !actor.isOwner) throw new Error('Forbidden grant');
 
   await db.prepare(`DELETE FROM room_grants WHERE room_id = ?1 AND user_id = ?2`).bind(roomId, targetUserId).run();
+}
+
+export async function removePendingRoomGrant(
+  db: D1Database,
+  roomId: string,
+  githubId: string,
+  actorUserId: string,
+): Promise<void> {
+  const actor = await getEffectiveRoomAccess(db, roomId, actorUserId);
+  if (!actor || actor.role !== 'manage') throw new Error('Forbidden grant');
+
+  const target = await db
+    .prepare(
+      `
+      SELECT role
+      FROM pending_room_grants
+      WHERE room_id = ?1 AND github_id = ?2 AND claimed_at IS NULL
+      LIMIT 1
+    `,
+    )
+    .bind(roomId, githubId)
+    .first<GrantRoleRow>();
+  const targetRole = normalizeRole(target?.role);
+  if (targetRole === 'manage' && !actor.isOwner) throw new Error('Forbidden grant');
+
+  await db
+    .prepare(`DELETE FROM pending_room_grants WHERE room_id = ?1 AND github_id = ?2 AND claimed_at IS NULL`)
+    .bind(roomId, githubId)
+    .run();
 }
 
 export async function upsertPendingRoomGrant(db: D1Database, input: PendingGrantInput): Promise<void> {

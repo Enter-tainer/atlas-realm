@@ -521,10 +521,50 @@ body,
   min-width: 0;
 }
 
+.collab-grant-status {
+  display: flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 7px 9px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+
+.collab-grant-status[hidden] {
+  display: none;
+}
+
+.collab-grant-status[data-tone='success'] {
+  border-color: rgba(22, 163, 74, 0.22);
+  background: rgba(22, 163, 74, 0.08);
+  color: #166534;
+}
+
+.collab-grant-status[data-tone='pending'] {
+  border-color: rgba(37, 99, 235, 0.2);
+  background: rgba(37, 99, 235, 0.07);
+  color: #1d4ed8;
+}
+
+.collab-grant-status[data-tone='error'] {
+  border-color: rgba(220, 38, 38, 0.22);
+  background: rgba(220, 38, 38, 0.07);
+  color: #991b1b;
+}
+
 .collab-grants-list {
   display: grid;
   gap: 6px;
   min-width: 0;
+  max-height: min(240px, 34vh);
+  overflow: auto;
+  padding-right: 2px;
+  overscroll-behavior: contain;
 }
 
 .collab-grant-row {
@@ -533,15 +573,46 @@ body,
   align-items: center;
   gap: 6px;
   min-width: 0;
+  min-height: 34px;
+  padding: 5px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.collab-grant-row[data-pending='true'] {
+  border-color: rgba(37, 99, 235, 0.18);
+  background: linear-gradient(0deg, rgba(37, 99, 235, 0.045), rgba(37, 99, 235, 0.045)), #fff;
 }
 
 .collab-grant-person {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   overflow: hidden;
+  min-width: 0;
   color: #374151;
   font-size: 12px;
   font-weight: 700;
+  line-height: 1.2;
+}
+
+.collab-grant-name {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.collab-grant-state-badge {
+  flex: 0 0 auto;
+  padding: 3px 6px;
+  border: 1px solid rgba(37, 99, 235, 0.2);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: #1d4ed8;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1;
 }
 
 .collab-grant-remove {

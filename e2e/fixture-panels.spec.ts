@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { installBrowserErrorWatch, openFixture } from './support/map-fixture';
+import { expectLocatorInsideViewport, expectNoVisibleInteractiveElementOverflow } from './support/ui-audit';
 
 test.describe('fixture-backed panel rendering', () => {
   test('renders real layer manager rows and selected layer details', async ({ page }) => {
@@ -55,6 +56,47 @@ test.describe('fixture-backed panel rendering', () => {
     await expect(page.getByRole('combobox', { name: 'General access' })).toHaveValue('edit');
     await expect(page.getByText('mei-citywalk')).toBeVisible();
     await expect(page.getByText('lin-camera')).toBeVisible();
+    await expect(page.locator('.collab-grant-row', { hasText: 'alex-rail' })).toHaveAttribute('data-pending', 'true');
+    await expect(page.locator('.collab-grant-row', { hasText: 'alex-rail' }).getByText('Pending')).toBeVisible();
+
+    errors.assertNoErrors();
+  });
+
+  test('keeps long sharing member lists scrollable inside the panel', async ({ page }) => {
+    const errors = await installBrowserErrorWatch(page);
+
+    await openFixture(page, 'sharing', { grants: 'long' });
+
+    const panel = page.locator('.collab-panel');
+    const grantsList = page.locator('.collab-grants-list');
+    const lastMember = page.locator('.collab-grant-row', { hasText: 'member-rail-36' });
+    await expect(page.locator('.collab-grant-row')).toHaveCount(36);
+    await expect(page.getByText('member-rail-01')).toBeVisible();
+    await expect.poll(async () => grantsList.evaluate((node) => node.scrollHeight > node.clientHeight)).toBe(true);
+    await expect
+      .poll(async () =>
+        lastMember.evaluate((node) => {
+          const row = node.getBoundingClientRect();
+          const list = node.parentElement?.getBoundingClientRect();
+          return Boolean(list && row.top >= list.top && row.bottom <= list.bottom);
+        }),
+      )
+      .toBe(false);
+
+    await grantsList.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    await expect
+      .poll(async () =>
+        lastMember.evaluate((node) => {
+          const row = node.getBoundingClientRect();
+          const list = node.parentElement?.getBoundingClientRect();
+          return Boolean(list && row.top >= list.top && row.bottom <= list.bottom);
+        }),
+      )
+      .toBe(true);
+    await expectLocatorInsideViewport(panel, 'long sharing panel');
+    await expectNoVisibleInteractiveElementOverflow(page, '#map');
 
     errors.assertNoErrors();
   });

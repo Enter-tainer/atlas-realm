@@ -4,6 +4,8 @@ import {
   ensureRoomRegistry,
   getEffectiveRoomAccess,
   getRoomAccessSnapshot,
+  listRoomGrants,
+  removePendingRoomGrant,
   upsertPendingRoomGrant,
   upsertRoomGrant,
 } from './room-access.js';
@@ -92,16 +94,59 @@ class FakeStmt {
         link_access: room.link_access,
       } as T;
     }
+    if (this.sql.includes('FROM pending_room_grants') && this.sql.includes('LIMIT 1')) {
+      const [roomId, githubId] = this.args as [string, string];
+      const pending = this.db.pending.get(`${roomId}:${githubId}`);
+      return pending && pending.claimed_at === null ? ({ role: pending.role } as T) : null;
+    }
     throw new Error(`Unexpected first SQL: ${this.sql}`);
   }
 
   async all<T>(): Promise<{ results: T[] }> {
+    if (this.sql.includes('FROM room_grants') && this.sql.includes('JOIN users')) {
+      const [roomId] = this.args as [string];
+      return {
+        results: [...this.db.grants.values()]
+          .filter((row) => row.room_id === roomId)
+          .map((row) => {
+            const user = this.db.users.get(row.user_id);
+            return {
+              roomId: row.room_id,
+              userId: row.user_id,
+              role: row.role,
+              grantedByUserId: row.granted_by_user_id,
+              githubLogin: user?.github_login || row.user_id,
+              displayName: null,
+              avatarUrl: null,
+              updatedAt: row.updated_at,
+            } as T;
+          }),
+      };
+    }
     if (this.sql.includes('FROM room_grants')) {
       const [roomId] = this.args as [string];
       return {
         results: [...this.db.grants.values()]
           .filter((row) => row.room_id === roomId)
           .map((row) => ({ user_id: row.user_id, role: row.role }) as T),
+      };
+    }
+    if (this.sql.includes('FROM pending_room_grants') && this.sql.includes('github_id AS githubId')) {
+      const [roomId] = this.args as [string];
+      return {
+        results: [...this.db.pending.values()]
+          .filter((row) => row.room_id === roomId && row.claimed_at === null)
+          .map(
+            (row) =>
+              ({
+                roomId: row.room_id,
+                githubId: row.github_id,
+                role: row.role,
+                grantedByUserId: row.granted_by_user_id,
+                githubLogin: row.github_login,
+                createdAt: row.created_at,
+              }) as T,
+          ),
       };
     }
     if (this.sql.includes('FROM pending_room_grants')) {
@@ -199,6 +244,11 @@ class FakeStmt {
       const [roomId, githubId, now] = this.args as [string, string, number];
       const pending = this.db.pending.get(`${roomId}:${githubId}`);
       if (pending && pending.claimed_at === null) pending.claimed_at = now;
+      return fakeD1Result();
+    }
+    if (this.sql.includes('DELETE FROM pending_room_grants')) {
+      const [roomId, githubId] = this.args as [string, string];
+      this.db.pending.delete(`${roomId}:${githubId}`);
       return fakeD1Result();
     }
     throw new Error(`Unexpected run SQL: ${this.sql}`);
@@ -384,5 +434,66 @@ describe('room access D1 helpers', () => {
     await expect(claimPendingRoomGrants(db, 'user_1', '123', 5)).resolves.toEqual([{ roomId: 'room', role: 'edit' }]);
     expect(db.grants.get('room:user_1')?.role).toBe('edit');
     expect(db.pending.get('room:123')?.claimed_at).toBe(5);
+  });
+
+  it('lists pending GitHub grants beside active room members', async () => {
+    const db = fakeDb();
+    db.users.set('editor', {
+      user_id: 'editor',
+      github_id: '321',
+      github_login: 'editor-user',
+    });
+    await ensureRoomRegistry(db, {
+      roomId: 'room',
+      ownerUserId: 'owner',
+      createdByKind: 'user',
+      persistence: 'persistent',
+      linkAccess: 'restricted',
+      now: 1,
+    });
+    await upsertRoomGrant(db, {
+      roomId: 'room',
+      actorUserId: 'owner',
+      targetUserId: 'editor',
+      targetRole: 'edit',
+      now: 2,
+    });
+    await upsertPendingRoomGrant(db, {
+      roomId: 'room',
+      actorUserId: 'owner',
+      githubId: '123',
+      githubLogin: 'future-user',
+      targetRole: 'view',
+      now: 3,
+    });
+
+    await expect(listRoomGrants(db, 'room', 'owner')).resolves.toMatchObject([
+      { userId: 'editor', githubLogin: 'editor-user', role: 'edit' },
+      { userId: 'github:123', githubId: '123', githubLogin: 'future-user', role: 'view', pending: true },
+    ]);
+  });
+
+  it('allows managers to remove pending grants by GitHub id', async () => {
+    const db = fakeDb();
+    await ensureRoomRegistry(db, {
+      roomId: 'room',
+      ownerUserId: 'owner',
+      createdByKind: 'user',
+      persistence: 'persistent',
+      linkAccess: 'restricted',
+      now: 1,
+    });
+    await upsertPendingRoomGrant(db, {
+      roomId: 'room',
+      actorUserId: 'owner',
+      githubId: '123',
+      githubLogin: 'future-user',
+      targetRole: 'edit',
+      now: 2,
+    });
+
+    await removePendingRoomGrant(db, 'room', '123', 'owner');
+
+    expect(db.pending.get('room:123')).toBeUndefined();
   });
 });

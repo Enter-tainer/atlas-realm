@@ -68,6 +68,20 @@ export async function expectNoVisibleInteractiveElementOverflow(page: Page, sele
     const rootElement = root instanceof Document ? root.body : root;
     const nodes = Array.from(rootElement.querySelectorAll<HTMLElement>(interactiveSelector));
     const failures: Rect[] = [];
+    const intersect = (a: DOMRect, b: DOMRect) => {
+      const left = Math.max(a.left, b.left);
+      const top = Math.max(a.top, b.top);
+      const right = Math.min(a.right, b.right);
+      const bottom = Math.min(a.bottom, b.bottom);
+      return {
+        left,
+        top,
+        right,
+        bottom,
+        width: Math.max(0, right - left),
+        height: Math.max(0, bottom - top),
+      };
+    };
     for (const node of nodes) {
       const style = window.getComputedStyle(node);
       const hidden =
@@ -80,14 +94,28 @@ export async function expectNoVisibleInteractiveElementOverflow(page: Page, sele
       if (hidden) continue;
       const rect = node.getBoundingClientRect();
       if (rect.width <= 0 || rect.height <= 0) continue;
+      let visibleRect = rect;
+      for (let parent = node.parentElement; parent && rootElement.contains(parent); parent = parent.parentElement) {
+        const parentStyle = window.getComputedStyle(parent);
+        const clipsX = ['auto', 'scroll', 'hidden', 'clip'].includes(parentStyle.overflowX);
+        const clipsY = ['auto', 'scroll', 'hidden', 'clip'].includes(parentStyle.overflowY);
+        if (!clipsX && !clipsY) continue;
+        const parentRect = parent.getBoundingClientRect();
+        visibleRect = intersect(visibleRect, parentRect) as DOMRect;
+        if (visibleRect.width <= 0 || visibleRect.height <= 0) break;
+      }
+      if (visibleRect.width <= 0 || visibleRect.height <= 0) continue;
       const outside =
-        rect.left < -1 || rect.top < -1 || rect.right > viewportWidth + 1 || rect.bottom > viewportHeight + 1;
+        visibleRect.left < -1 ||
+        visibleRect.top < -1 ||
+        visibleRect.right > viewportWidth + 1 ||
+        visibleRect.bottom > viewportHeight + 1;
       if (!outside) continue;
       failures.push({
-        x: Number(rect.left.toFixed(1)),
-        y: Number(rect.top.toFixed(1)),
-        width: Number(rect.width.toFixed(1)),
-        height: Number(rect.height.toFixed(1)),
+        x: Number(visibleRect.left.toFixed(1)),
+        y: Number(visibleRect.top.toFixed(1)),
+        width: Number(visibleRect.width.toFixed(1)),
+        height: Number(visibleRect.height.toFixed(1)),
         label:
           node.getAttribute('aria-label') || node.textContent?.replace(/\s+/g, ' ').trim().slice(0, 80) || node.tagName,
       });
