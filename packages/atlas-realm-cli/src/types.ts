@@ -167,6 +167,7 @@ export interface Command extends JsonRecord {
   out?: string;
   persistence?: RoomPersistence;
   hideLayer?: boolean;
+  ensureLayer?: boolean;
   lineStyle?: string;
   opacity?: number;
   fillOpacity?: number;

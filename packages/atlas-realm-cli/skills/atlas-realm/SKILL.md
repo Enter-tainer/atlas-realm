@@ -186,6 +186,7 @@ Route:
 
 ```bash
 atlas-realm --host <host> --room <room> --client-id <id> annotations add route --id day1-drive --waypoints "121.5,31.2;121.8,31.5" --geometry "121.5,31.2;121.51,31.22;121.6,31.35;121.7,31.42;121.8,31.5" --profile driving --label "Day 1 Drive" --color "#0f766e" --width 5 --opacity 0.95 --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add route --id day1-drive --layer-id day-1-routes --ensure-layer --name "Day 1 Routes" --waypoints "121.5,31.2;121.8,31.5" --geometry "121.5,31.2;121.51,31.22;121.6,31.35;121.7,31.42;121.8,31.5" --json
 ```
 
 **Architecture: server does not perform routing.** Route annotations require `--waypoints` (start/end/via points) and `--geometry` (the actual road path). The agent must obtain road geometry from an external routing service (OSRM, AMAP/高德, etc.) and pass it directly to Atlas Realm. The server stores and renders route data as-is — it does not call any routing API. When `--geometry` is omitted, the route renders as a straight line between waypoints.
@@ -218,6 +219,12 @@ atlas-realm --host <host> --room <room> --client-id <id> annotations clear --lay
 ```
 
 For multiline labels or notes, prefer UTF-8 files with `--label-file` / `--note-file` so shell quoting does not alter line breaks. For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
+
+Layer targeting:
+
+- `--layer-id <id>` writes the annotation into an existing annotation layer.
+- By default, the CLI fails before writing if the target layer does not exist or is a file layer. The JSON error includes `code`, `layerId`, `existingAnnotationLayerIds`, and a suggested create command.
+- Use `--ensure-layer` with `--layer-id` when a batch script should create the annotation layer if it is missing. Optional `--name`, `--visible`, and `--sort-key` apply to the new layer only.
 
 Annotation layers:
 

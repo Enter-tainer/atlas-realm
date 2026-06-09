@@ -9,9 +9,16 @@ if (!existsSync(compiledCliUrl)) {
   process.exit(1);
 }
 
-const { runCli } = await import('../dist/cli.js');
+const [{ runCli }, { formatCliError }] = await Promise.all([import('../dist/cli.js'), import('../dist/errors.js')]);
+
+const hasFlag = (name) => process.argv.some((arg) => arg === name || arg.startsWith(`${name}=`));
 
 runCli(process.argv.slice(2)).catch((error) => {
-  console.error(error?.message || String(error));
+  console.error(
+    formatCliError(error, {
+      json: hasFlag('--json'),
+      pretty: hasFlag('--pretty'),
+    }),
+  );
   process.exitCode = 1;
 });

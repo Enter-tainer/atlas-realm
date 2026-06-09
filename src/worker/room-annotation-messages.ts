@@ -28,12 +28,25 @@ export async function handleAnnotationFeatureMessage(
       return 'handled';
     }
     const parent = room._getLayer(annotationMessage.feature.layerId);
-    if (!parent || parent.kind !== 'annotation') {
+    if (!parent) {
       connection.send(
         encodeMessage({
           type: 'annotation-feature:rejected',
           featureId: annotationMessage.feature.id,
+          layerId: annotationMessage.feature.layerId,
           reason: 'missing-layer',
+        }),
+      );
+      return 'handled';
+    }
+    if (parent.kind !== 'annotation') {
+      connection.send(
+        encodeMessage({
+          type: 'annotation-feature:rejected',
+          featureId: annotationMessage.feature.id,
+          layerId: annotationMessage.feature.layerId,
+          layerKind: parent.kind,
+          reason: 'wrong-layer-kind',
         }),
       );
       return 'handled';
@@ -55,6 +68,7 @@ export async function handleAnnotationFeatureMessage(
         encodeMessage({
           type: 'annotation-feature:rejected',
           featureId: annotationMessage.feature.id,
+          layerId: annotationMessage.feature.layerId,
           reason: 'invalid-feature',
         }),
       );

@@ -35,7 +35,13 @@ export type AnnotationFeatureServerMessage =
   | { type: 'annotation-feature:upserted'; feature: AnnotationFeature }
   | { type: 'annotation-feature:deleted'; featureId: string }
   | { type: 'annotation-feature:reordered'; features: AnnotationFeature[] }
-  | { type: 'annotation-feature:rejected'; featureId: string; reason: 'missing-layer' | 'invalid-feature' };
+  | {
+      type: 'annotation-feature:rejected';
+      featureId: string;
+      layerId: string;
+      layerKind?: Layer['kind'];
+      reason: 'missing-layer' | 'wrong-layer-kind' | 'invalid-feature';
+    };
 
 type JsonRecord = Record<string, unknown>;
 
