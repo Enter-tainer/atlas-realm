@@ -1070,6 +1070,17 @@ describe('MapCollaboration layer storage', () => {
         connection,
         jsonMessage('annotation-feature:upsert', { feature: annotationFeature('missing-feature', 'missing-layer') }),
       );
+      await sendWorkerMessage(instance, connection, encodeFileContentFrame(HASH_A, CONTENT_A));
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:create', { layer: fileLayer('route-layer', HASH_A) }),
+      );
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('wrong-kind-feature', 'route-layer') }),
+      );
       await sendWorkerMessage(
         instance,
         connection,
@@ -1090,7 +1101,7 @@ describe('MapCollaboration layer storage', () => {
       await sendWorkerMessage(instance, connection, jsonMessage('layer:delete', { layerId: 'day-1' }));
 
       return {
-        rejected: sentJson(connection, 'annotation-feature:rejected')[0],
+        rejected: sentJson(connection, 'annotation-feature:rejected'),
         upserted: sentJson(connection, 'annotation-feature:upserted')[0],
         reordered: sentJson(connection, 'annotation-feature:reordered')[0],
         beforeDelete,
@@ -1098,11 +1109,21 @@ describe('MapCollaboration layer storage', () => {
       };
     });
 
-    expect(result.rejected).toEqual({
-      type: 'annotation-feature:rejected',
-      featureId: 'missing-feature',
-      reason: 'missing-layer',
-    });
+    expect(result.rejected).toEqual([
+      {
+        type: 'annotation-feature:rejected',
+        featureId: 'missing-feature',
+        layerId: 'missing-layer',
+        reason: 'missing-layer',
+      },
+      {
+        type: 'annotation-feature:rejected',
+        featureId: 'wrong-kind-feature',
+        layerId: 'route-layer',
+        layerKind: 'file',
+        reason: 'wrong-layer-kind',
+      },
+    ]);
     expect(result.upserted).toMatchObject({
       type: 'annotation-feature:upserted',
       feature: { id: 'path-a', layerId: 'day-1', featureType: 'path' },

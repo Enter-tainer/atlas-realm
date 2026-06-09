@@ -388,6 +388,10 @@ function annotationBuilder(y: any): any {
     .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
     .option('visible', { type: 'boolean', describe: 'Annotation layer visibility' })
+    .option('ensure-layer', {
+      type: 'boolean',
+      describe: 'Create the target annotation layer when --layer-id does not exist',
+    })
     .option('hide-layer', { type: 'boolean', describe: 'Hide annotation layer after clearing it' });
 }
 
@@ -510,6 +514,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     featureJson: args.featureJson,
     patchFile: args.patchFile,
     patchJson: args.patchJson,
+    ensureLayer: args.ensureLayer,
     hideLayer: args.hideLayer,
   };
 

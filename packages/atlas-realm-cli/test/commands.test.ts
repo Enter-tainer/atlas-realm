@@ -7,6 +7,7 @@ import { getStoredToken, saveStoredToken } from '../src/auth.js';
 import { buildFileLayerAssetFromText } from '../src/file-layer-asset.js';
 import { buildApiUrl, buildSocketUrl, createConfig } from '../src/config.js';
 import { executeCommand } from '../src/commands.js';
+import { formatCliError } from '../src/errors.js';
 import { RoomClient } from '../src/room-client.js';
 import { runCli } from '../src/cli.js';
 
@@ -80,7 +81,7 @@ class FakeRoomClient {
       this.roomStatus = { ...this.roomStatus, type: 'room:updated', persistence };
       return { json: this.roomStatus };
     }
-    if (label.startsWith('layer create')) {
+    if (label.startsWith('layer create') || label.startsWith('annotation layer create')) {
       const layer = this.sentJson.at(-1)?.layer;
       this.upsertLayer(layer);
       return { json: { type: 'layer:created', layer } };
@@ -1038,6 +1039,157 @@ describe('atlas-realm CLI package', () => {
     expect(client.sentJson[1]).toEqual({ type: 'annotation-feature:delete', featureId: 'stop-a' });
     expect(upsert.result.annotation.id).toBe('stop-a');
     expect(deleted.result.annotationId).toBe('stop-a');
+  });
+
+  it('rejects annotations for missing target layers before sending feature mutations', async () => {
+    const client = new FakeRoomClient();
+
+    const error = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'add',
+      featureType: 'point',
+      type: 'point',
+      id: 'stop-a',
+      layerId: 'day-1',
+      lng: 121.5,
+      lat: 31.2,
+    }).catch((caught) => caught);
+
+    expect(error).toMatchObject({
+      code: 'annotation_layer_not_found',
+      details: {
+        layerId: 'day-1',
+        existingAnnotationLayerIds: ['annotation-default'],
+        ensureFlag: '--ensure-layer',
+      },
+    });
+    expect(JSON.parse(formatCliError(error, { json: true }))).toMatchObject({
+      ok: false,
+      code: 'annotation_layer_not_found',
+      layerId: 'day-1',
+      existingAnnotationLayerIds: ['annotation-default'],
+      suggestedCommand: 'atlas-realm annotations layers create day-1',
+    });
+    expect(client.sentJson).toEqual([]);
+  });
+
+  it('rejects annotations when server-side layer validation races with the client snapshot', async () => {
+    class RaceRoomClient extends FakeRoomClient {
+      async waitFor(_predicate, label) {
+        if (label.startsWith('annotation feature upsert')) {
+          const feature = this.sentJson.at(-1)?.feature;
+          return {
+            json: {
+              type: 'annotation-feature:rejected',
+              featureId: feature.id,
+              layerId: feature.layerId,
+              reason: 'missing-layer',
+            },
+          };
+        }
+        return super.waitFor(_predicate, label);
+      }
+    }
+    const client = new RaceRoomClient();
+    client.layers.push({
+      id: 'day-1',
+      kind: 'annotation',
+      name: 'Day 1',
+      visible: true,
+      sortKey: '000020',
+      payload: { version: 1 },
+      revision: 0,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await expect(
+      executeCommand(client, {
+        subject: 'annotations',
+        action: 'add',
+        featureType: 'point',
+        type: 'point',
+        id: 'stop-a',
+        layerId: 'day-1',
+        lng: 121.5,
+        lat: 31.2,
+      }),
+    ).rejects.toMatchObject({
+      code: 'annotation_layer_not_found',
+      details: {
+        layerId: 'day-1',
+        existingAnnotationLayerIds: ['annotation-default', 'day-1'],
+        ensureFlag: '--ensure-layer',
+      },
+    });
+    expect(client.sentJson[0]).toMatchObject({
+      type: 'annotation-feature:upsert',
+      feature: { id: 'stop-a', layerId: 'day-1' },
+    });
+  });
+
+  it('can ensure missing annotation layers before creating annotations', async () => {
+    const client = new FakeRoomClient();
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'add',
+      featureType: 'point',
+      type: 'point',
+      id: 'stop-a',
+      layerId: 'day-1',
+      ensureLayer: true,
+      name: 'Day 1',
+      lng: 121.5,
+      lat: 31.2,
+    });
+
+    expect(client.sentJson).toMatchObject([
+      {
+        type: 'layer:create',
+        layer: {
+          id: 'day-1',
+          kind: 'annotation',
+          name: 'Day 1',
+        },
+      },
+      {
+        type: 'annotation-feature:upsert',
+        feature: {
+          id: 'stop-a',
+          layerId: 'day-1',
+          payload: { layerId: 'day-1' },
+        },
+      },
+    ]);
+    expect(response.result.annotation).toMatchObject({ id: 'stop-a', layerId: 'day-1' });
+  });
+
+  it('does not treat file layers as annotation layers', async () => {
+    const client = new FakeRoomClient();
+    addFakeFileLayer(client, routeGeoJson(), { id: 'route-layer' });
+
+    await expect(
+      executeCommand(client, {
+        subject: 'annotations',
+        action: 'add',
+        featureType: 'point',
+        type: 'point',
+        id: 'stop-a',
+        layerId: 'route-layer',
+        ensureLayer: true,
+        lng: 121.5,
+        lat: 31.2,
+      }),
+    ).rejects.toMatchObject({
+      code: 'annotation_layer_wrong_kind',
+      details: {
+        layerId: 'route-layer',
+        layerKind: 'file',
+        existingAnnotationLayerIds: ['annotation-default'],
+      },
+    });
+    expect(client.sentJson).toEqual([]);
   });
 
   it('sends layer:reorder messages for annotation layers', async () => {

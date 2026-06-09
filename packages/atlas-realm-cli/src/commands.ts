@@ -10,6 +10,7 @@ import {
   sortedAnnotationFeatures,
   sortedLayers,
 } from './room-state.js';
+import { CliCommandError } from './errors.js';
 import { annotationLayerListText, annotationListText, layerListText } from './format.js';
 import { coerceBoolean, coerceNumber, normalizeId, normalizeName } from './validation.js';
 import type {
@@ -219,9 +220,10 @@ export async function handleAnnotationCommand(
 
   if (action === 'add' || action === 'upsert') {
     const payload = await buildFeatureFromOptions(command, client.config, command.featureType);
+    await ensureAnnotationLayer(client, payload.layerId, command);
     const feature = annotationFeatureFromPayload(client, payload);
     client.sendJson({ type: 'annotation-feature:upsert', feature });
-    const ack = await waitForFeatureMutation(client, feature.id, 'upsert');
+    const ack = await waitForFeatureMutation(client, feature, 'upsert');
     return {
       result: { ok: true, room: client.config.room, annotation: ack.json.feature },
       human: (data: JsonRecord) => `Upserted annotation ${data.annotation.id}`,
@@ -238,9 +240,10 @@ export async function handleAnnotationCommand(
       command.featureType || existing.featureType,
       existing.payload,
     );
+    await ensureAnnotationLayer(client, payload.layerId, command);
     const feature = annotationFeatureFromPayload(client, payload, existing);
     client.sendJson({ type: 'annotation-feature:upsert', feature });
-    const ack = await waitForFeatureMutation(client, feature.id, 'update');
+    const ack = await waitForFeatureMutation(client, feature, 'update');
     return {
       result: { ok: true, room: client.config.room, annotation: ack.json.feature },
       human: (data: JsonRecord) => `Updated annotation ${data.annotation.id}`,
@@ -331,6 +334,7 @@ export async function handleAnnotationLayerCommand(
     const existing = getLayer(client.layers, id);
     const now = Date.now();
     if (existing) {
+      if (existing.kind !== 'annotation') throw annotationLayerWrongKindError(client, id, existing.kind);
       const patch = annotationLayerPatchFromCommand(command, existing);
       client.sendJson({ type: 'layer:update', layerId: id, patch });
       const ack = await client.waitFor(
@@ -454,17 +458,121 @@ function annotationFeatureFromPayload(
   };
 }
 
-async function waitForFeatureMutation(client: RoomClientLike, featureId: string, label: string): Promise<RoomEvent> {
+async function ensureAnnotationLayer(client: RoomClientLike, layerId: string, command: Command): Promise<Layer> {
+  const existing = getLayer(client.layers, layerId);
+  if (existing?.kind === 'annotation') return existing;
+  if (existing) throw annotationLayerWrongKindError(client, layerId, existing.kind);
+  if (!command.ensureLayer) throw annotationLayerNotFoundError(client, layerId, command);
+
+  const now = Date.now();
+  const layer: Layer = {
+    id: layerId,
+    kind: 'annotation',
+    name: normalizeName(command.name, layerId === DEFAULT_ANNOTATION_LAYER_ID ? 'Annotations' : layerId, 80),
+    visible: coerceBoolean(command.visible, true) !== false,
+    sortKey: typeof command.sortKey === 'string' ? command.sortKey : nextSortKey(client.layers.length),
+    payload: { version: 1 },
+    revision: 0,
+    createdAt: now,
+    updatedAt: now,
+    updatedBy: command.updatedBy || client.config.agentName,
+  };
+
+  client.sendJson({ type: 'layer:create', layer });
+  const ack = await client.waitFor(
+    (event: RoomEvent) => event.json?.type === 'layer:created' && event.json.layer?.id === layerId,
+    `annotation layer create ${layerId}`,
+  );
+  return ack.json.layer;
+}
+
+async function waitForFeatureMutation(
+  client: RoomClientLike,
+  feature: AnnotationFeature,
+  label: string,
+): Promise<RoomEvent> {
   const ack = await client.waitFor(
     (event: RoomEvent) =>
-      (event.json?.type === 'annotation-feature:upserted' && event.json.feature?.id === featureId) ||
-      (event.json?.type === 'annotation-feature:rejected' && event.json.featureId === featureId),
-    `annotation feature ${label} ${featureId}`,
+      (event.json?.type === 'annotation-feature:upserted' && event.json.feature?.id === feature.id) ||
+      (event.json?.type === 'annotation-feature:rejected' && event.json.featureId === feature.id),
+    `annotation feature ${label} ${feature.id}`,
   );
   if (ack.json.type === 'annotation-feature:rejected') {
-    throw new Error(`Annotation feature rejected: ${ack.json.reason || 'unknown'}`);
+    const layerId = String(ack.json.layerId || feature.layerId);
+    if (ack.json.reason === 'missing-layer') throw annotationLayerNotFoundError(client, layerId);
+    if (ack.json.reason === 'wrong-layer-kind') {
+      throw annotationLayerWrongKindError(client, layerId, ack.json.layerKind);
+    }
+    throw new CliCommandError(
+      'annotation_feature_rejected',
+      `Annotation feature rejected: ${ack.json.reason || 'unknown'}`,
+      {
+        featureId: feature.id,
+        layerId,
+        reason: ack.json.reason || 'unknown',
+      },
+    );
   }
   return ack;
+}
+
+function annotationLayerNotFoundError(client: RoomClientLike, layerId: string, command: Command = {}): CliCommandError {
+  const existingAnnotationLayerIds = sortedLayers(client.layers)
+    .filter((layer) => layer.kind === 'annotation')
+    .map((layer) => layer.id);
+  const suggestedCommand = annotationLayerCreateCommand(layerId, command.name);
+  const existing = existingAnnotationLayerIds.length ? existingAnnotationLayerIds.join(', ') : 'none';
+  return new CliCommandError(
+    'annotation_layer_not_found',
+    [
+      `Annotation layer not found: ${layerId}.`,
+      'Create it first:',
+      `  ${suggestedCommand}`,
+      'Or retry the annotation command with --ensure-layer.',
+      `Existing annotation layers: ${existing}`,
+    ].join('\n'),
+    {
+      layerId,
+      existingAnnotationLayerIds,
+      suggestedCommand,
+      ensureFlag: '--ensure-layer',
+    },
+  );
+}
+
+function annotationLayerWrongKindError(
+  client: RoomClientLike,
+  layerId: string,
+  layerKind = 'unknown',
+): CliCommandError {
+  const existingAnnotationLayerIds = sortedLayers(client.layers)
+    .filter((layer) => layer.kind === 'annotation')
+    .map((layer) => layer.id);
+  const existing = existingAnnotationLayerIds.length ? existingAnnotationLayerIds.join(', ') : 'none';
+  return new CliCommandError(
+    'annotation_layer_wrong_kind',
+    [
+      `Layer ${layerId} is a ${layerKind} layer, not an annotation layer.`,
+      'Choose an annotation layer id, or create a new annotation layer with a different id.',
+      `Existing annotation layers: ${existing}`,
+    ].join('\n'),
+    {
+      layerId,
+      layerKind,
+      existingAnnotationLayerIds,
+    },
+  );
+}
+
+function annotationLayerCreateCommand(layerId: string, name: unknown): string {
+  const parts = ['atlas-realm', 'annotations', 'layers', 'create', shellQuote(layerId)];
+  if (name !== undefined) parts.push('--name', shellQuote(normalizeName(name, String(name), 80)));
+  return parts.join(' ');
+}
+
+function shellQuote(value: unknown): string {
+  const text = String(value);
+  return /^[0-9A-Za-z_./:=@-]+$/.test(text) ? text : `'${text.replace(/'/g, `'\\''`)}'`;
 }
 
 async function snapshotResult(client: RoomClientLike, includeContent: boolean): Promise<JsonRecord> {
