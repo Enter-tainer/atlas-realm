@@ -718,6 +718,80 @@ describe('MapCollaboration layer storage', () => {
     expect(result.viewerDenied).toEqual([]);
   });
 
+  it('broadcasts agent activity updates and includes recent agents in presence init', async () => {
+    const stub = roomStub('agent-presence-sync');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      withInternalAuth(instance);
+      const viewer = createConnection('viewer');
+      const agent = createConnection('agent-socket');
+      const lateViewer = createConnection('late-viewer');
+      installFakeBroadcast(instance, [viewer, agent, lateViewer]);
+
+      await connectWorker(instance, viewer, {
+        request: new Request('https://example.com/parties/map-collaboration/agent-presence-sync', {
+          headers: await authHeaders('agent-presence-sync', {
+            userId: 'user-viewer',
+            role: 'edit',
+            clientId: 'viewer-session',
+          }),
+        }),
+      } as ConnectionContext);
+      await connectWorker(instance, agent, {
+        request: new Request(
+          'https://example.com/parties/map-collaboration/agent-presence-sync?clientType=agent&name=Planner&color=%234f46e5',
+          {
+            headers: await authHeaders('agent-presence-sync', {
+              userId: 'agent-planner',
+              role: 'edit',
+              clientId: 'agent-planner',
+              agentId: 'agent-planner',
+              authKind: 'anonymous',
+            }),
+          },
+        ),
+      } as ConnectionContext);
+      viewer.sent = [];
+      agent.sent = [];
+
+      await sendWorkerMessage(instance, agent, jsonMessage('client:update', { action: 'annotations add' }));
+      await connectWorker(instance, lateViewer, {
+        request: new Request('https://example.com/parties/map-collaboration/agent-presence-sync', {
+          headers: await authHeaders('agent-presence-sync', {
+            userId: 'user-late-viewer',
+            role: 'edit',
+            clientId: 'late-viewer-session',
+          }),
+        }),
+      } as ConnectionContext);
+
+      return {
+        viewerAgentUpdate: sentJson(viewer, 'agent:participant:update').at(-1),
+        agentAck: sentJson(agent, 'agent:participant:update').at(-1),
+        lateInit: sentJson(lateViewer, 'presence:init').at(-1),
+      };
+    });
+
+    expect(result.viewerAgentUpdate).toMatchObject({
+      type: 'agent:participant:update',
+      agent: {
+        id: 'agent-planner',
+        clientType: 'agent',
+        active: true,
+        lastAction: 'annotations add',
+        user: { id: 'agent-planner', name: 'Alice', color: '#4f46e5' },
+      },
+    });
+    expect(result.agentAck).toMatchObject({
+      type: 'agent:participant:update',
+      agent: { id: 'agent-planner', lastAction: 'annotations add' },
+    });
+    expect(result.lateInit).toMatchObject({
+      type: 'presence:init',
+      agents: [{ id: 'agent-planner', active: true, lastAction: 'annotations add' }],
+    });
+  });
+
   it('downgrades active connections through access refresh before later messages', async () => {
     const stub = roomStub('auth-refresh-downgrade');
     const result = await runInDO(stub, async (instance) => {
