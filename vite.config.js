@@ -13,7 +13,7 @@ function fileHash(path) {
 }
 
 export default defineConfig({
-  plugins: [cloudflare()],
+  plugins: [cloudflare({ remoteBindings: process.env.CLOUDFLARE_VITE_REMOTE_BINDINGS !== '0' })],
   define: {
     __STYLE_HASH__: JSON.stringify(fileHash('public/orm/style/standard.json')),
     __SCREENSHOT_FIXTURES__: JSON.stringify(process.env.SCREENSHOT_FIXTURES === '1'),

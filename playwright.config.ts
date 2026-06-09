@@ -49,6 +49,7 @@ export default defineConfig({
         env: {
           SCREENSHOT_FIXTURES: '1',
           INTERNAL_AUTH_SECRET: 'e2e-internal-auth-secret',
+          CLOUDFLARE_VITE_REMOTE_BINDINGS: '0',
         },
       },
 });
