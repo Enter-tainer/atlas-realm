@@ -9,6 +9,8 @@
  *   installOrmPopups(map, featuresCatalog);
  */
 
+import { renderMarkdown } from './markdown.js';
+
 // ---------------------------------------------------------------------------
 // OSM element type icons (base64 SVGs from ORM upstream)
 // ---------------------------------------------------------------------------
@@ -1336,7 +1338,7 @@ function annotationPopupContent(feature: RenderedFeatureLike) {
   if (properties.description) {
     const paragraphs = el('div', 'orm-popup-paragraphs', container);
     const paragraph = el('p', undefined, paragraphs);
-    paragraph.innerText = stringValue(properties.description);
+    paragraph.innerHTML = renderMarkdown(stringValue(properties.description));
   }
 
   return container;

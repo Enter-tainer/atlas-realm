@@ -1796,6 +1796,95 @@ body,
   font-weight: 650;
   white-space: pre-line;
   -webkit-line-clamp: 12;
+  word-break: break-word;
+}
+
+.annotation-text-note-body p {
+  margin: 0 0 2px 0;
+}
+
+.annotation-text-note-body strong {
+  font-weight: 850;
+  color: #451a03;
+}
+
+.annotation-text-note-body em {
+  font-style: italic;
+}
+
+.annotation-text-note-body del {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.annotation-text-note-body a {
+  color: #1d4ed8;
+  text-decoration: underline;
+}
+
+.annotation-text-note-body code {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(146, 64, 14, 0.1);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.annotation-text-note-body pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  background: rgba(146, 64, 14, 0.08);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.annotation-text-note-body pre code {
+  padding: 0;
+  background: none;
+}
+
+.annotation-text-note-body ul,
+.annotation-text-note-body ol {
+  margin: 2px 0;
+  padding-left: 16px;
+}
+
+.annotation-text-note-body li {
+  margin: 1px 0;
+}
+
+.annotation-text-note-body blockquote {
+  margin: 2px 0;
+  padding-left: 8px;
+  border-left: 3px solid rgba(146, 64, 14, 0.28);
+  color: #854d0e;
+}
+
+.annotation-text-note-body h1,
+.annotation-text-note-body h2,
+.annotation-text-note-body h3,
+.annotation-text-note-body h4,
+.annotation-text-note-body h5,
+.annotation-text-note-body h6 {
+  margin: 0 0 2px 0;
+  font-size: 13px;
+  font-weight: 850;
+  color: #451a03;
+  line-height: 1.25;
+}
+
+.annotation-text-note-body hr {
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid rgba(146, 64, 14, 0.18);
+}
+
+.annotation-text-note-body img {
+  max-width: 100%;
+  border-radius: 3px;
 }
 
 .annotation-text-note-resize-handle {
@@ -3250,6 +3339,93 @@ body,
   margin: 6px 0;
   font-size: 12px;
   line-height: 1.5;
+  word-break: break-word;
+}
+
+.orm-popup-paragraphs strong {
+  font-weight: 700;
+}
+
+.orm-popup-paragraphs em {
+  font-style: italic;
+}
+
+.orm-popup-paragraphs del {
+  text-decoration: line-through;
+  opacity: 0.65;
+}
+
+.orm-popup-paragraphs a {
+  color: #0d6efd;
+  text-decoration: underline;
+}
+
+.orm-popup-paragraphs a:hover {
+  text-decoration: none;
+}
+
+.orm-popup-paragraphs code {
+  font-family: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, monospace;
+  font-size: 11px;
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 3px;
+  padding: 0 3px;
+}
+
+.orm-popup-paragraphs pre {
+  margin: 4px 0;
+  padding: 6px 8px;
+  font-size: 11px;
+  line-height: 1.35;
+  background: rgba(0, 0, 0, 0.05);
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.orm-popup-paragraphs pre code {
+  padding: 0;
+  background: none;
+}
+
+.orm-popup-paragraphs ul,
+.orm-popup-paragraphs ol {
+  margin: 3px 0;
+  padding-left: 16px;
+}
+
+.orm-popup-paragraphs li {
+  margin: 1px 0;
+}
+
+.orm-popup-paragraphs blockquote {
+  margin: 3px 0;
+  padding-left: 8px;
+  border-left: 3px solid rgba(0, 0, 0, 0.15);
+  color: #555;
+}
+
+.orm-popup-paragraphs h1,
+.orm-popup-paragraphs h2,
+.orm-popup-paragraphs h3,
+.orm-popup-paragraphs h4,
+.orm-popup-paragraphs h5,
+.orm-popup-paragraphs h6 {
+  margin: 4px 0 2px 0;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.orm-popup-paragraphs hr {
+  margin: 4px 0;
+  border: none;
+  border-top: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.orm-popup-paragraphs img {
+  max-width: 100%;
+  border-radius: 3px;
 }
 
 /* Route list — mirrors upstream popup-content-list */

@@ -182,4 +182,26 @@ describe('annotation model', () => {
       [121.6, 31.3],
     ]);
   });
+
+  it('includes description_plain with stripped markdown', () => {
+    const geojson = annotationFeaturePayloadsToGeoJson([pointFeature('p', ANNOTATION_DEFAULT_LAYER_ID)]);
+
+    expect(geojson.features[0].properties).toHaveProperty('description_plain');
+
+    const withMd = annotationFeaturePayloadsToGeoJson([
+      {
+        ...pointFeature('m', ANNOTATION_DEFAULT_LAYER_ID),
+        note: '**bold** and *italic* text',
+      },
+    ]);
+
+    expect(withMd.features[0].properties?.description).toBe('**bold** and *italic* text');
+    expect(withMd.features[0].properties?.description_plain).toBe('bold and italic text');
+  });
+
+  it('sets description_plain to undefined when note is empty', () => {
+    const geojson = annotationFeaturePayloadsToGeoJson([pointFeature('empty', ANNOTATION_DEFAULT_LAYER_ID)]);
+    expect(geojson.features[0].properties?.description).toBeUndefined();
+    expect(geojson.features[0].properties?.description_plain).toBeUndefined();
+  });
 });

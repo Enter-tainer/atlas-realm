@@ -1,4 +1,5 @@
 import type { Feature, FeatureCollection, LineString, Point, Polygon } from 'geojson';
+import { stripMarkdown } from './markdown.js';
 
 export const ANNOTATION_DEFAULT_LAYER_ID = 'annotation-default';
 export const ANNOTATION_SOURCE_ID = 'annotation-source';
@@ -89,6 +90,7 @@ export type AnnotationGeoJsonProperties = {
   name?: string;
   label?: string;
   description?: string;
+  description_plain?: string;
   color?: string;
   directed?: boolean;
   profile?: AnnotationRouteProfile;
@@ -358,6 +360,7 @@ function featureBaseProperties(feature: AnnotationFeaturePayload, kind: string):
     name: feature.label || undefined,
     label: feature.label || undefined,
     description: feature.note || undefined,
+    description_plain: stripMarkdown(feature.note) || undefined,
     color: feature.color,
   };
 }

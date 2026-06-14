@@ -167,8 +167,32 @@ Text:
 
 ```bash
 atlas-realm --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note "Meet at 09:00" --json
-atlas-realm --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note-file ./plan-note.txt --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations add text --id plan-note --coordinate "121.5,31.2" --label "Day 1" --note-file ./plan-note.md --json
 ```
+
+`--note` supports **Markdown** formatting. Rendered inline on text-note bodies and annotation popups (bold, italic, links, lists, code blocks, blockquotes, headings, images).
+
+Note markdown examples:
+
+````bash
+# Bold + link
+atlas-realm ... annotations add text --id info --coordinate "121.5,31.2" --label "Sichuan branch" \
+  --note "Station **Chengdu** ([OSM](https://www.openstreetmap.org/node/244076593))" --json
+
+# Unordered list
+atlas-realm ... annotations add text --id checklist --coordinate "121.5,31.2" --label "Packing list" \
+  --note "- Passport\n- Sunglasses\n- Sunscreen SPF 50\n- Hiking boots" --json
+
+# Blockquote for warnings
+atlas-realm ... annotations add text --id warn --coordinate "121.5,31.2" --label "Altitude warning" \
+  --note "> Altitude sickness risk above 4000m\n\nAcclimatize for 24h before attempting the pass." --json
+
+# Code block for technical notes
+atlas-realm ... annotations add text --id freq --coordinate "121.5,31.2" --label "Radio freqs" \
+  --note '```\nRX 439.500 MHz\nTX 434.500 MHz\nCTCSS 88.5 Hz\n```' --json
+````
+
+Use `--note-file` with a `.md` file for longer markdown content to avoid shell escaping issues.
 
 Path:
 
@@ -245,4 +269,4 @@ atlas-realm --host <host> --room <room> --client-id <id> annotations layers dele
 - Use `--line-style dashed` / `--line-style dotted` with low opacity (0.35–0.55) for backup/detour routes to visually distinguish them from main routes.
 - Annotation layers should have descriptive names reflecting their content (e.g. "🏔️ 伊犁+独库+帕米尔 10天" not "Annotations").
 - Group related routes, activities, and risk markers in the same annotation layer.
-- Keep labels short; put details in `--note`.
+- Keep labels short; put details in `--note`. Use **Markdown** in notes for structure: `**bold**` for emphasis, `[links](url)` for references, `- lists` for checklists, `> quotes` for warnings or context.

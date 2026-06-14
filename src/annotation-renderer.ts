@@ -10,6 +10,7 @@ import {
   sanitizeAnnotationTextWidth,
   sanitizeLngLat,
 } from './annotation-model.js';
+import { renderMarkdown } from './markdown.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import type { AnnotationFeaturePayload, AnnotationPolygonPayload, AnnotationTextPayload } from './annotation-model.js';
 import type { AnnotationLayer } from './layer-model.js';
@@ -277,11 +278,11 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       filter: [
         'all',
         kindFilter(['annotation_path', 'annotation_route']),
-        ['any', ['has', 'name'], ['has', 'description']],
+        ['any', ['has', 'name'], ['has', 'description_plain']],
       ],
       layout: {
         'symbol-placement': 'line',
-        'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'description_plain'], ''],
         'text-font': ['Noto Sans Regular'],
         'text-size': 12,
         'text-allow-overlap': false,
@@ -299,9 +300,13 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       id: layerIds.polygonLabels,
       type: 'symbol',
       source: sourceId,
-      filter: ['all', ['==', ['get', 'kind'], 'annotation_polygon'], ['any', ['has', 'name'], ['has', 'description']]],
+      filter: [
+        'all',
+        ['==', ['get', 'kind'], 'annotation_polygon'],
+        ['any', ['has', 'name'], ['has', 'description_plain']],
+      ],
       layout: {
-        'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'description_plain'], ''],
         'text-font': ['Noto Sans Regular'],
         'text-size': 12,
         'text-anchor': 'center',
@@ -342,7 +347,7 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       maxzoom: TEXT_NOTE_FULL_MIN_ZOOM,
       filter: ['==', ['get', 'kind'], 'annotation_text'],
       layout: {
-        'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], 'Note'],
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'description_plain'], 'Note'],
         'text-font': ['Noto Sans Regular'],
         'text-size': ['interpolate', ['linear'], ['zoom'], 7, 11, 10.9, 13],
         'text-offset': [0, 1.05],
@@ -366,7 +371,7 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
       source: sourceId,
       filter: ['==', ['get', 'kind'], 'annotation_point'],
       layout: {
-        'text-field': ['coalesce', ['get', 'name'], ['get', 'description'], ''],
+        'text-field': ['coalesce', ['get', 'name'], ['get', 'description_plain'], ''],
         'text-font': ['Noto Sans Regular'],
         'text-size': 12,
         'text-offset': [0, 1.25],
@@ -533,7 +538,7 @@ function updateTextMarkerElement(element: HTMLElement, feature: AnnotationTextPa
   const title = element.querySelector<HTMLElement>('.annotation-text-note-title');
   const body = element.querySelector<HTMLElement>('.annotation-text-note-body');
   if (title) title.textContent = feature.label || 'Note';
-  if (body) body.textContent = textMarkerBody(feature);
+  if (body) body.innerHTML = renderMarkdown(textMarkerBody(feature));
 }
 
 function updateTextFeatureCoordinate(store: LayerStore, featureId: string, marker: maplibregl.Marker) {
