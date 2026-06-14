@@ -41,6 +41,15 @@ describe('renderMarkdown', () => {
     expect(result).toContain('>link</a>');
   });
 
+  it('preserves query strings and fragments in links', () => {
+    const result = renderMarkdown('[link](https://example.com?a=1&b=2#section)');
+    const div = document.createElement('div');
+    div.innerHTML = result;
+    const link = div.querySelector('a');
+    expect(link).toBeTruthy();
+    expect(link!.getAttribute('href')).toBe('https://example.com?a=1&b=2#section');
+  });
+
   it('renders unordered lists', () => {
     const result = renderMarkdown('- item');
     expect(result).toContain('<li>item</li>');

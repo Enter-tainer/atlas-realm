@@ -857,6 +857,7 @@ export function installMapCollaboration(
   panelBody.appendChild(sharePanel);
   panelBody.appendChild(presenceBar);
   panelBody.appendChild(followBar);
+
   panel.appendChild(compactToggle);
   panel.appendChild(panelBody);
 

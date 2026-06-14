@@ -969,6 +969,21 @@ body,
   color: #0284c7;
 }
 
+.maplibregl-ctrl-github {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 29px;
+  height: 29px;
+  border: 0;
+  background: none;
+  color: #333;
+  cursor: pointer;
+}
+.maplibregl-ctrl-github:hover {
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
 .weather-icon {
   flex: 0 0 auto;
   width: 16px;
