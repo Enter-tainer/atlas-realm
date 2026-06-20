@@ -153,7 +153,7 @@ type CollaborationMessage = JsonRecord & {
   canEdit?: boolean;
   canManage?: boolean;
 };
-type CollaborationMap = {
+export type CollaborationMap = {
   getContainer(): HTMLElement;
   getCanvas(): HTMLCanvasElement;
   project(lngLat: LngLatTuple): PointLike;
@@ -661,6 +661,8 @@ export function installMapCollaboration(
   let lastFollowAt = 0;
   let shareResetTimer = 0;
   let accessDeniedRetryTimer = 0;
+  let backgroundTimer = 0;
+  let wasBgDisconnect = false;
   let panelExpanded = false;
   let currentUser: AccountUser | null = null;
   let roomAccess = defaultRoomAccess();
@@ -2037,6 +2039,30 @@ export function installMapCollaboration(
   };
   compactToggle.addEventListener('click', () => setPanelExpanded(!panelExpanded));
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      if (!backgroundTimer && socket) {
+        backgroundTimer = window.setTimeout(() => {
+          backgroundTimer = 0;
+          wasBgDisconnect = true;
+          disconnect();
+        }, 30_000);
+      }
+    } else {
+      if (backgroundTimer) {
+        clearTimeout(backgroundTimer);
+        backgroundTimer = 0;
+      }
+      if (wasBgDisconnect && currentRoom && !destroyed) {
+        wasBgDisconnect = false;
+        connect(currentRoom).catch((error) => {
+          console.error('Failed to reconnect after background:', error);
+          setStatus('Offline', 'offline');
+        });
+      }
+    }
+  };
+  document.addEventListener('visibilitychange', handleVisibilityChange);
   roomInput.addEventListener('input', updateActionState);
 
   async function copyCurrentRoomLink(button: HTMLElement) {
@@ -2333,9 +2359,11 @@ export function installMapCollaboration(
       clearTimeout(sendTimer);
       clearTimeout(followTimer);
       clearTimeout(shareResetTimer);
+      clearTimeout(backgroundTimer);
       clearAccessDeniedRetry();
       if (overlayFrame) cancelAnimationFrame(overlayFrame);
       document.removeEventListener('pointerdown', handleDocumentPointerDown);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       mapContainer.removeEventListener('collaboration:locationchange', handleLocationChange);
       mapContainer.removeEventListener(UI_PANEL_OPEN_EVENT, handleUiPanelOpen);
       mapContainer.removeEventListener('layer-sync:local-upsert', handleLocalFileLayerUpsert);
