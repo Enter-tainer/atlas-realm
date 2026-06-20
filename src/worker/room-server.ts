@@ -193,7 +193,22 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     await ensureLayerStorage(this._storageContext());
   }
 
+  /** Persisted throttle guard — reads from DO storage once per wake cycle. */
+  private static TOUCH_INTERVAL_MS = 60_000;
+  private static TOUCH_STORAGE_KEY = '_touch_ts';
+  /** Cached in memory after storage read; null = not loaded this wake cycle. */
+  private _lastTouchCached: number | null = null;
+
+  /** Use by onConnect and onMessage — throttled writes. */
   async _touchRoom(): Promise<void> {
+    const now = Date.now();
+    // Lazy-read from persistent storage on first call after wake.
+    if (this._lastTouchCached === null) {
+      this._lastTouchCached = (await this.ctx.storage.get<number>(MapCollaboration.TOUCH_STORAGE_KEY)) ?? 0;
+    }
+    if (now - this._lastTouchCached < MapCollaboration.TOUCH_INTERVAL_MS) return;
+    this._lastTouchCached = now;
+    await this.ctx.storage.put(MapCollaboration.TOUCH_STORAGE_KEY, now);
     await touchRoom(this._storageContext());
   }
 
