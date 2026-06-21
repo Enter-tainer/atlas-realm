@@ -24,6 +24,7 @@ import {
   ensureDefaultAnnotationLayer,
   ensureLayerStorage,
   getFileContent,
+  getAnnotationFeature,
   getLayer,
   layerFromRow,
   listAnnotationFeatures,
@@ -75,6 +76,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       _upsertLayerRow: this._upsertLayerRow.bind(this),
       _pruneUnreferencedFileContent: this._pruneUnreferencedFileContent.bind(this),
       _listAnnotationFeatures: this._listAnnotationFeatures.bind(this),
+      _getAnnotationFeature: this._getAnnotationFeature.bind(this),
       _upsertAnnotationFeatureRow: this._upsertAnnotationFeatureRow.bind(this),
       _getFileContent: this._getFileContent.bind(this),
       _touchAgentParticipant: this._touchAgentParticipant.bind(this),
@@ -360,6 +362,10 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
   _listAnnotationFeatures(layerId?: string): AnnotationFeature[] {
     return listAnnotationFeatures(this._storageContext(), layerId);
+  }
+
+  _getAnnotationFeature(featureId: string): AnnotationFeature | null {
+    return getAnnotationFeature(this._storageContext(), featureId);
   }
 
   _upsertAnnotationFeatureRow(feature: AnnotationFeature): void {

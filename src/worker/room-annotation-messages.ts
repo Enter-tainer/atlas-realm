@@ -1,9 +1,24 @@
 import type { Connection } from 'partyserver';
-import { sanitizeAnnotationFeature } from '../layer-model.js';
+import { sanitizeAnnotationFeature, type AnnotationFeature } from '../layer-model.js';
 import { parseAnnotationFeatureClientMessage } from '../layer-sync.js';
-import { encodeMessage } from './json-utils.js';
+import { encodeMessage, stableJson } from './json-utils.js';
 import type { RoomMessageContext, MessageHandlerResult } from './room-message-types.js';
 import type { PeerState } from './room-types.js';
+
+function featurePayloadContent(value: AnnotationFeature['payload']) {
+  const { ...content } = value;
+  return content;
+}
+
+function featureContentEquals(a: AnnotationFeature, b: AnnotationFeature) {
+  return (
+    a.layerId === b.layerId &&
+    a.featureType === b.featureType &&
+    a.sortKey === b.sortKey &&
+    a.updatedBy === b.updatedBy &&
+    stableJson(featurePayloadContent(a.payload)) === stableJson(featurePayloadContent(b.payload))
+  );
+}
 
 export async function handleAnnotationFeatureMessage(
   room: RoomMessageContext,
@@ -51,14 +66,12 @@ export async function handleAnnotationFeatureMessage(
       );
       return 'handled';
     }
-    const existing = room.sql<{ revision: number; created_at: number }>`
-      SELECT revision, created_at FROM annotation_features WHERE feature_id = ${annotationMessage.feature.id} LIMIT 1
-    `[0];
+    const existing = room._getAnnotationFeature(annotationMessage.feature.id);
     const feature = sanitizeAnnotationFeature(
       {
         ...annotationMessage.feature,
         revision: Number(existing?.revision || 0) + 1,
-        createdAt: Number(existing?.created_at || annotationMessage.feature.createdAt),
+        createdAt: Number(existing?.createdAt || annotationMessage.feature.createdAt),
         updatedAt: Date.now(),
       },
       Date.now(),
@@ -72,6 +85,18 @@ export async function handleAnnotationFeatureMessage(
           reason: 'invalid-feature',
         }),
       );
+      return 'handled';
+    }
+    if (existing && featureContentEquals(existing, feature)) {
+      connection.send(encodeMessage({ type: 'annotation-feature:upserted', feature: existing }));
+      return 'handled';
+    }
+    if (
+      existing &&
+      Number(annotationMessage.feature.revision || 0) > 0 &&
+      annotationMessage.feature.revision <= existing.revision
+    ) {
+      connection.send(encodeMessage({ type: 'annotation-feature:upserted', feature: existing }));
       return 'handled';
     }
     room._upsertAnnotationFeatureRow(feature);

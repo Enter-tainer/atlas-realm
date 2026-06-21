@@ -26,6 +26,13 @@ export async function handleRoomSocketMessage(
     }
     const frame = decodeFileContentFrame(message);
     if (!frame) return;
+    const existing = room.sql<{ content_hash: string }>`
+      SELECT content_hash FROM file_contents WHERE content_hash = ${frame.contentHash} LIMIT 1
+    `[0];
+    if (existing) {
+      connection.send(encodeMessage({ type: 'file:content:stored', contentHash: frame.contentHash }));
+      return;
+    }
     const contentBuffer = toArrayBuffer(frame.content);
     room.ctx.storage.sql.exec(
       `

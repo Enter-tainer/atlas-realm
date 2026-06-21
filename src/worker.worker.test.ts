@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reset, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
 import type { MapCollaboration } from './worker.js';
@@ -125,6 +125,7 @@ const textDecoder = new TextDecoder();
 const INTERNAL_AUTH_SECRET = 'test-internal-auth-secret';
 
 afterEach(async () => {
+  vi.restoreAllMocks();
   await reset();
 });
 
@@ -1059,6 +1060,56 @@ describe('MapCollaboration layer storage', () => {
     expect(result.contentCount).toBe(0);
   });
 
+  it('does not rewrite identical layer create replays', async () => {
+    const stub = roomStub('layer-create-replay-dedupe');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = authorizeConnection(createConnection());
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
+
+      const layer = fileLayer('route-a', HASH_A);
+      await sendWorkerMessage(instance, connection, jsonMessage('layer:create', { layer }));
+      await sendWorkerMessage(instance, connection, jsonMessage('layer:create', { layer }));
+
+      return {
+        layers: instance._listLayers(),
+        created: sentJson(connection, 'layer:created'),
+      };
+    });
+
+    const route = result.layers.find((layer) => layer.id === 'route-a');
+    expect(route).toMatchObject({ id: 'route-a', revision: 1 });
+    expect(result.created).toHaveLength(2);
+    expect(result.created[1].layer).toMatchObject({ id: 'route-a', revision: 1 });
+  });
+
+  it('does not rewrite identical file content uploads', async () => {
+    const stub = roomStub('file-content-replay-dedupe');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = authorizeConnection(createConnection());
+      const now = vi.spyOn(Date, 'now');
+
+      now.mockReturnValue(1_000);
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
+      now.mockReturnValue(9_000);
+      await storeContent(instance, connection, HASH_A, CONTENT_A);
+
+      return {
+        stored: sentJson(connection, 'file:content:stored'),
+        row: instance.sql<{ content_hash: string; created_at: number }>`
+          SELECT content_hash, created_at FROM file_contents WHERE content_hash = ${HASH_A} LIMIT 1
+        `[0],
+      };
+    });
+
+    expect(result.stored).toEqual([
+      { type: 'file:content:stored', contentHash: HASH_A },
+      { type: 'file:content:stored', contentHash: HASH_A },
+    ]);
+    expect(result.row).toEqual({ content_hash: HASH_A, created_at: 1_000 });
+  });
+
   it('stores annotation features as rows and rejects features for missing layers', async () => {
     const stub = roomStub('annotation-feature-flow');
     const result = await runInDO(stub, async (instance) => {
@@ -1215,6 +1266,33 @@ describe('MapCollaboration layer storage', () => {
     expect((result.features[0].payload as Record<string, unknown>).label).toBe('Second label');
     expect(result.firstAck.feature).toMatchObject({ id: 'path-a', revision: 1 });
     expect(result.secondAck.feature).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
+  });
+
+  it('does not rewrite identical annotation feature replays', async () => {
+    const stub = roomStub('annotation-feature-replay-dedupe');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
+
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
+      );
+      const feature = annotationFeature('path-a', 'day-1', { label: 'Same label', updatedBy: 'user-a' });
+      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature }));
+      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature }));
+
+      return {
+        features: instance._listAnnotationFeatures('day-1'),
+        upserted: sentJson(connection, 'annotation-feature:upserted'),
+      };
+    });
+
+    expect(result.features).toHaveLength(1);
+    expect(result.features[0]).toMatchObject({ id: 'path-a', revision: 1 });
+    expect(result.upserted).toHaveLength(2);
+    expect(result.upserted[1].feature).toMatchObject({ id: 'path-a', revision: 1 });
   });
 
   it('reorders mixed file and annotation layers with layer sort keys only', async () => {

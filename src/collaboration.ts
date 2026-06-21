@@ -10,7 +10,7 @@ import type { LayerStore } from './layer-store.js';
 import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
 import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
 import { COLLABORATION_ACCESS_EVENT } from './collaboration-permissions.js';
-import { initialSortKey, type Layer } from './layer-model.js';
+import { initialSortKey, type AnnotationFeature, type Layer } from './layer-model.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const PARTY_NAME = 'map-collaboration';
@@ -19,6 +19,7 @@ const PROFILE_KEY = 'orm-collaboration-profile';
 const SESSION_KEY = 'orm-collaboration-session';
 const SEND_INTERVAL_MS = 90;
 const FOLLOW_INTERVAL_MS = 140;
+const BACKGROUND_DISCONNECT_MS = 30_000;
 const STALE_PEER_MS = 45_000;
 const EARTH_RADIUS_METERS = 6_378_137;
 const LOCATION_ACCURACY_SEGMENTS = 48;
@@ -153,6 +154,7 @@ type CollaborationMessage = JsonRecord & {
   canEdit?: boolean;
   canManage?: boolean;
 };
+type CollaborationSocket = Pick<PartySocket, 'readyState' | 'send' | 'close' | 'addEventListener'>;
 export type CollaborationMap = {
   getContainer(): HTMLElement;
   getCanvas(): HTMLCanvasElement;
@@ -363,7 +365,7 @@ function safeColor(color: unknown) {
   return typeof color === 'string' && /^#[0-9a-fA-F]{6}$/.test(color) ? color : PROFILE_COLORS[0];
 }
 
-function fileLayerManifestToLayerMessage(manifest: FileLayerManifest) {
+function fileLayerManifestToLayerMessage(manifest: FileLayerManifest): Layer {
   return {
     id: manifest.id,
     kind: 'file',
@@ -626,6 +628,47 @@ function applyViewState(map: CollaborationMap, viewState: CollaborationViewState
   );
 }
 
+function localLayerNeedsUpload(localLayer: Layer, remoteLayer: Layer | null | undefined) {
+  if (!remoteLayer) return true;
+  return Number(localLayer.revision || 0) > Number(remoteLayer.revision || 0);
+}
+
+function localFeatureNeedsUpload(
+  localFeature: { revision?: number },
+  remoteFeature: { revision?: number } | null | undefined,
+) {
+  if (!remoteFeature) return true;
+  return Number(localFeature.revision || 0) > Number(remoteFeature.revision || 0);
+}
+
+function fileLayerPayloadEquals(localPayload: unknown, remotePayload: unknown) {
+  if (!isRecord(localPayload) || !isRecord(remotePayload)) return false;
+  const localStyle = isRecord(localPayload.style) ? localPayload.style : {};
+  const remoteStyle = isRecord(remotePayload.style) ? remotePayload.style : {};
+  return (
+    localPayload.fileType === remotePayload.fileType &&
+    localPayload.contentHash === remotePayload.contentHash &&
+    localPayload.contentType === remotePayload.contentType &&
+    localPayload.contentEncoding === remotePayload.contentEncoding &&
+    Number(localPayload.contentByteLength || 0) === Number(remotePayload.contentByteLength || 0) &&
+    Number(localPayload.rawByteLength || 0) === Number(remotePayload.rawByteLength || 0) &&
+    JSON.stringify(localPayload.bounds || null) === JSON.stringify(remotePayload.bounds || null) &&
+    localStyle.color === remoteStyle.color &&
+    Number(localStyle.opacity || 0) === Number(remoteStyle.opacity || 0) &&
+    Number(localStyle.lineWidth || 0) === Number(remoteStyle.lineWidth || 0)
+  );
+}
+
+function fileLayerMessageEqualsRemote(localLayer: Layer, remoteLayer: Layer | null | undefined) {
+  if (!remoteLayer || localLayer.kind !== 'file' || remoteLayer.kind !== 'file') return false;
+  return (
+    localLayer.name === remoteLayer.name &&
+    localLayer.visible === remoteLayer.visible &&
+    localLayer.sortKey === remoteLayer.sortKey &&
+    fileLayerPayloadEquals(localLayer.payload, remoteLayer.payload)
+  );
+}
+
 export function installMapCollaboration(
   map: CollaborationMap,
   layerStore?: LayerStore,
@@ -645,8 +688,14 @@ export function installMapCollaboration(
   const localFileLayerIds = new Set<string>();
   const knownLocalFileLayers = new Map<string, LocalFileLayer>();
   const uploadedLocalFileLayerHashes = new Map<string, string>();
+  const serverLayers = new Map<string, Layer>();
+  const serverFeatures = new Map<string, AnnotationFeature>();
+  let snapshotLocalFileLayers: LocalFileLayer[] = [];
+  let snapshotLocalLayers: Layer[] = [];
+  let snapshotLocalFeatures: AnnotationFeature[] = [];
+  let snapshotLocalFeatureCounts = new Map<string, number>();
 
-  let socket: Pick<PartySocket, 'readyState' | 'send' | 'close'> | null = null;
+  let socket: CollaborationSocket | null = null;
   let currentRoom = fixture?.roomId || getInitialRoom();
   let localCursor: CursorState = { visible: false, lngLat: null };
   let localLocation: LocationState = { ...EMPTY_LOCATION };
@@ -663,6 +712,7 @@ export function installMapCollaboration(
   let accessDeniedRetryTimer = 0;
   let backgroundTimer = 0;
   let wasBgDisconnect = false;
+  let syncSnapshotReady = false;
   let panelExpanded = false;
   let currentUser: AccountUser | null = null;
   let roomAccess = defaultRoomAccess();
@@ -1069,6 +1119,7 @@ export function installMapCollaboration(
       }
       refreshRoomAccess(room)
         .then((access) => {
+          if (document.hidden) return;
           if (!access.canView || socket || currentRoom !== room) return;
           clearAccessDeniedRetry();
           connect(room).catch((error) => {
@@ -1276,6 +1327,7 @@ export function installMapCollaboration(
       readyState: WebSocket.OPEN,
       send() {},
       close() {},
+      addEventListener() {},
     };
     renderAccessUi();
     renderPeople();
@@ -1597,11 +1649,28 @@ export function installMapCollaboration(
       const asset = await buildFileLayerSyncAsset(fileLayer);
       if (!asset || !socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
       const fileLayerId = asset.envelope.manifest.id;
+      const layerMessage = fileLayerManifestToLayerMessage(asset.envelope.manifest);
+      const remoteLayer = serverLayers.get(fileLayerId);
+      if (fileLayerMessageEqualsRemote(layerMessage, remoteLayer)) {
+        localFileLayerIds.add(fileLayerId);
+        fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
+        uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
+        return;
+      }
+      const remotePayload: JsonRecord | null = isRecord(remoteLayer?.payload) ? remoteLayer.payload : null;
+      if (remoteLayer?.kind === 'file' && remotePayload?.contentHash === asset.envelope.manifest.contentHash) {
+        localFileLayerIds.add(fileLayerId);
+        fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
+        fileLayerContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
+        uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
+        sendLayerMessage({ type: 'layer:create', layer: layerMessage });
+        return;
+      }
       const previousHash = uploadedLocalFileLayerHashes.get(fileLayerId);
       if (previousHash === asset.envelope.manifest.contentHash) {
         sendLayerMessage({
           type: 'layer:create',
-          layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
+          layer: layerMessage,
         });
         return;
       }
@@ -1619,26 +1688,89 @@ export function installMapCollaboration(
     }
   }
 
-  async function syncKnownLocalFileLayers() {
+  async function syncKnownLocalFileLayers(fileLayers: Iterable<LocalFileLayer> = knownLocalFileLayers.values()) {
+    if (!syncSnapshotReady) return;
     if (!canWriteToRoom()) return;
-    for (const fileLayer of knownLocalFileLayers.values()) {
+    for (const fileLayer of fileLayers) {
       if (!fileLayer.remoteLayerId) await syncLocalFileLayer(fileLayer);
     }
   }
 
-  function syncKnownLocalLayers() {
+  function syncKnownLocalLayers(
+    layers: Iterable<Layer> = layerStore?.getLayers?.() || [],
+    features: Iterable<AnnotationFeature> = layerStore?.getAnnotationFeatures?.() || [],
+    featureCounts?: Map<string, number>,
+  ) {
+    if (!syncSnapshotReady) return;
     if (!canWriteToRoom()) return;
     if (!layerStore) return;
-    sendLayerMessage({ type: 'layer:list:request' });
-    sendLayerMessage({ type: 'annotation-feature:list:request' });
-    for (const layer of layerStore.getLayers?.() || []) {
-      const featureCount = layer.kind === 'annotation' ? (layerStore.getAnnotationFeatureCount?.(layer.id) ?? 0) : 0;
+    for (const layer of layers) {
+      const featureCount =
+        layer.kind === 'annotation'
+          ? featureCounts
+            ? (featureCounts.get(layer.id) ?? 0)
+            : (layerStore.getAnnotationFeatureCount?.(layer.id) ?? 0)
+          : 0;
       if (!shouldSyncKnownLocalLayer(layer, featureCount)) continue;
+      if (!localLayerNeedsUpload(layer, serverLayers.get(layer.id))) continue;
       sendLayerMessage({ type: 'layer:create', layer });
     }
-    for (const feature of layerStore.getAnnotationFeatures?.() || []) {
+    for (const feature of features) {
+      if (!localFeatureNeedsUpload(feature, serverFeatures.get(feature.id))) continue;
       sendLayerMessage({ type: 'annotation-feature:upsert', feature });
     }
+  }
+
+  function captureSnapshotLocalCandidates() {
+    snapshotLocalFileLayers = Array.from(knownLocalFileLayers.values());
+    snapshotLocalLayers = Array.from(layerStore?.getLayers?.() || []);
+    snapshotLocalFeatures = Array.from(layerStore?.getAnnotationFeatures?.() || []);
+    snapshotLocalFeatureCounts = new Map();
+    for (const layer of snapshotLocalLayers) {
+      if (layer.kind !== 'annotation') continue;
+      snapshotLocalFeatureCounts.set(
+        layer.id,
+        snapshotLocalFeatures.filter((feature) => feature.layerId === layer.id).length,
+      );
+    }
+  }
+
+  function clearSnapshotLocalCandidates() {
+    snapshotLocalFileLayers = [];
+    snapshotLocalLayers = [];
+    snapshotLocalFeatures = [];
+    snapshotLocalFeatureCounts.clear();
+  }
+
+  function refreshSnapshotLocalFileLayerCandidates() {
+    if (!pendingSnapshotLayers && !pendingSnapshotFeatures) return;
+    snapshotLocalFileLayers = Array.from(knownLocalFileLayers.values());
+  }
+
+  let pendingSnapshotLayers = false;
+  let pendingSnapshotFeatures = false;
+
+  function requestSyncSnapshot() {
+    syncSnapshotReady = false;
+    pendingSnapshotLayers = true;
+    pendingSnapshotFeatures = true;
+    serverLayers.clear();
+    serverFeatures.clear();
+    captureSnapshotLocalCandidates();
+    sendLayerMessage({ type: 'layer:list:request' });
+    sendLayerMessage({ type: 'annotation-feature:list:request' });
+  }
+
+  function maybeCompleteSyncSnapshot() {
+    if (syncSnapshotReady || pendingSnapshotLayers || pendingSnapshotFeatures) return;
+    syncSnapshotReady = true;
+    const localFileLayers = snapshotLocalFileLayers;
+    const localLayers = snapshotLocalLayers;
+    const localFeatures = snapshotLocalFeatures;
+    const localFeatureCounts = new Map(snapshotLocalFeatureCounts);
+    clearSnapshotLocalCandidates();
+    syncKnownLocalFileLayers(localFileLayers);
+    syncKnownLocalLayers(localLayers, localFeatures, localFeatureCounts);
   }
 
   function completePendingFileLayerUpload(contentHash: string | undefined) {
@@ -1849,9 +1981,23 @@ export function installMapCollaboration(
       message.type === 'layer:deleted' ||
       message.type === 'layer:reordered'
     ) {
+      if (message.type === 'layer:list' || message.type === 'layer:reordered') {
+        serverLayers.clear();
+        for (const layer of (message.layers || []) as Layer[]) {
+          if (layer?.id) serverLayers.set(layer.id, layer);
+        }
+        if (message.type === 'layer:list') {
+          pendingSnapshotLayers = false;
+        }
+      } else if ((message.type === 'layer:created' || message.type === 'layer:updated') && isRecord(message.layer)) {
+        serverLayers.set(String(message.layer.id), message.layer as Layer);
+      } else if (message.type === 'layer:deleted' && message.layerId) {
+        serverLayers.delete(message.layerId);
+      }
       layerStore?.applyLayerServerMessage(message as LayerServerMessage);
       if (message.type === 'layer:list') {
         applyFileLayerManifestList((message.layers || []).map(fileLayerMessageToFileLayerManifest).filter(Boolean));
+        maybeCompleteSyncSnapshot();
       } else if (message.type === 'layer:created' || message.type === 'layer:updated') {
         const manifest = fileLayerMessageToFileLayerManifest(message.layer);
         if (manifest) {
@@ -1876,7 +2022,33 @@ export function installMapCollaboration(
       message.type === 'annotation-feature:reordered' ||
       message.type === 'annotation-feature:rejected'
     ) {
+      if (message.type === 'annotation-feature:list') {
+        if (message.layerId) {
+          for (const [featureId, feature] of Array.from(serverFeatures.entries())) {
+            if (feature.layerId === message.layerId) serverFeatures.delete(featureId);
+          }
+        } else {
+          serverFeatures.clear();
+          pendingSnapshotFeatures = false;
+        }
+        for (const feature of (message.features || []) as AnnotationFeature[]) {
+          if (feature?.id) serverFeatures.set(feature.id, feature);
+        }
+      } else if (message.type === 'annotation-feature:upserted' && isRecord(message.feature)) {
+        serverFeatures.set(String(message.feature.id), message.feature as AnnotationFeature);
+      } else if (
+        (message.type === 'annotation-feature:deleted' || message.type === 'annotation-feature:rejected') &&
+        message.featureId
+      ) {
+        serverFeatures.delete(message.featureId);
+      } else if (message.type === 'annotation-feature:reordered') {
+        serverFeatures.clear();
+        for (const feature of (message.features || []) as AnnotationFeature[]) {
+          if (feature?.id) serverFeatures.set(feature.id, feature);
+        }
+      }
       layerStore?.applyAnnotationFeatureServerMessage(message as AnnotationFeatureServerMessage);
+      if (message.type === 'annotation-feature:list') maybeCompleteSyncSnapshot();
       return;
     }
 
@@ -1902,8 +2074,22 @@ export function installMapCollaboration(
   }
 
   async function connect(roomValue: string) {
+    if (document.hidden) {
+      currentRoom = normalizeRoom(roomValue);
+      roomInput.value = currentRoom;
+      updateRoomUrl(currentRoom);
+      wasBgDisconnect = true;
+      setStatus('Ready', 'idle');
+      return;
+    }
     const room = normalizeRoom(roomValue);
     currentRoom = room;
+    syncSnapshotReady = false;
+    pendingSnapshotLayers = false;
+    pendingSnapshotFeatures = false;
+    clearSnapshotLocalCandidates();
+    serverLayers.clear();
+    serverFeatures.clear();
     roomInput.value = room;
     updateRoomUrl(room);
     if (!currentUser) syncLocalProfileUi();
@@ -1964,16 +2150,25 @@ export function installMapCollaboration(
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
-      syncKnownLocalFileLayers();
-      syncKnownLocalLayers();
+      requestSyncSnapshot();
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
       if (socket !== nextSocket) return;
+      if (document.hidden) {
+        wasBgDisconnect = true;
+        disconnect({ preserveRoomState: true });
+        return;
+      }
       setStatus('Offline', 'offline');
     });
     nextSocket.addEventListener('error', () => {
       if (socket !== nextSocket) return;
+      if (document.hidden) {
+        wasBgDisconnect = true;
+        disconnect({ preserveRoomState: true });
+        return;
+      }
       setStatus('Offline', 'offline');
     });
     nextSocket.addEventListener('message', (event: MessageEvent) => {
@@ -1984,15 +2179,17 @@ export function installMapCollaboration(
     });
   }
 
-  function disconnect() {
+  function disconnect({ preserveRoomState = false }: { preserveRoomState?: boolean } = {}) {
     if (socket) {
       const closing = socket;
       socket = null;
       closing.close(1000, 'disconnect');
     }
     clearAccessDeniedRetry();
+    clearTimeout(backgroundTimer);
     clearTimeout(sendTimer);
     clearTimeout(followTimer);
+    backgroundTimer = 0;
     sendTimer = 0;
     followTimer = 0;
     peers.clear();
@@ -2002,11 +2199,19 @@ export function installMapCollaboration(
     requestedFileLayerContent.clear();
     localFileLayerIds.clear();
     uploadedLocalFileLayerHashes.clear();
-    roomGrants.clear();
-    roomAccess = defaultRoomAccess();
-    roomAccessLoaded = false;
-    dispatchCollaborationAccess(mapContainer, roomAccess, roomAccessLoaded);
-    sharePanelOpen = false;
+    serverLayers.clear();
+    serverFeatures.clear();
+    syncSnapshotReady = false;
+    pendingSnapshotLayers = false;
+    pendingSnapshotFeatures = false;
+    clearSnapshotLocalCandidates();
+    if (!preserveRoomState) {
+      roomGrants.clear();
+      roomAccess = defaultRoomAccess();
+      roomAccessLoaded = false;
+      dispatchCollaborationAccess(mapContainer, roomAccess, roomAccessLoaded);
+      sharePanelOpen = false;
+    }
     followedPeerId = null;
     localCursor = { visible: false, lngLat: null };
     ownConnectionId = clientId;
@@ -2014,7 +2219,7 @@ export function installMapCollaboration(
     locationLayer.replaceChildren();
     cursorLayer.replaceChildren();
     setPanelExpanded(false);
-    setStatus('Ready', 'idle');
+    setStatus(preserveRoomState ? 'Background' : 'Ready', 'idle');
     renderAccessUi();
     renderPeople();
   }
@@ -2041,12 +2246,17 @@ export function installMapCollaboration(
   document.addEventListener('pointerdown', handleDocumentPointerDown, { passive: true });
   const handleVisibilityChange = () => {
     if (document.hidden) {
-      if (!backgroundTimer && socket) {
+      if (backgroundTimer) {
+        clearTimeout(backgroundTimer);
+        backgroundTimer = 0;
+      }
+      if (socket) {
         backgroundTimer = window.setTimeout(() => {
           backgroundTimer = 0;
+          if (!document.hidden || !socket) return;
           wasBgDisconnect = true;
-          disconnect();
-        }, 30_000);
+          disconnect({ preserveRoomState: true });
+        }, BACKGROUND_DISCONNECT_MS);
       }
     } else {
       if (backgroundTimer) {
@@ -2182,6 +2392,14 @@ export function installMapCollaboration(
   };
   const handleLocalFileLayerUpsert = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
+    if (!syncSnapshotReady) {
+      if (detail?.layer?.id) {
+        const layer = detail.layer as LocalFileLayer;
+        knownLocalFileLayers.set(layer.syncLayerId || layer.remoteLayerId || layer.id, layer);
+        refreshSnapshotLocalFileLayerCandidates();
+      }
+      return;
+    }
     syncLocalFileLayer(detail?.layer);
   };
   const handleLocalFileLayerPatch = (event: Event) => {
@@ -2190,6 +2408,8 @@ export function installMapCollaboration(
     const patch = isRecord(detail?.patch) ? detail.patch : null;
     if (!fileLayerId || !patch) return;
     patchPendingFileLayerAsset(fileLayerId, patch);
+    refreshSnapshotLocalFileLayerCandidates();
+    if (!syncSnapshotReady) return;
     const stylePatch: JsonRecord = {};
     if (typeof patch.color === 'string') stylePatch.color = patch.color;
     if (typeof patch.opacity === 'number') stylePatch.opacity = patch.opacity;
@@ -2248,6 +2468,7 @@ export function installMapCollaboration(
             .filter(Boolean)
         : [];
     if (updates.length === 0) return;
+    if (!syncSnapshotReady) return;
     sendLayerMessage({ type: 'layer:reorder', updates });
   };
   const handleLocalFileLayerDelete = (event: Event) => {
@@ -2256,10 +2477,15 @@ export function installMapCollaboration(
     if (!fileLayerId) return;
     localFileLayerIds.delete(fileLayerId);
     knownLocalFileLayers.delete(fileLayerId);
+    snapshotLocalFileLayers = snapshotLocalFileLayers.filter((fileLayer) => {
+      const candidateId = fileLayer.syncLayerId || fileLayer.remoteLayerId || fileLayer.id;
+      return candidateId !== fileLayerId;
+    });
     uploadedLocalFileLayerHashes.delete(fileLayerId);
     for (const [id, manifest] of fileLayerManifests) {
       if (manifest.id === fileLayerId) fileLayerManifests.delete(id);
     }
+    if (!syncSnapshotReady) return;
     sendLayerMessage({
       type: 'layer:delete',
       layerId: fileLayerId,
@@ -2274,6 +2500,10 @@ export function installMapCollaboration(
 
   const unsubscribeLayerStore = layerStore?.subscribe((event) => {
     if (event.remote) return;
+    if (!syncSnapshotReady) {
+      if (pendingSnapshotLayers || pendingSnapshotFeatures) captureSnapshotLocalCandidates();
+      return;
+    }
     if (event.type === 'layer:upsert') {
       sendLayerMessage({ type: 'layer:create', layer: event.layer });
     } else if (event.type === 'layer:update') {

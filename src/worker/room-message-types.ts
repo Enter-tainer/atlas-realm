@@ -22,6 +22,7 @@ export interface RoomMessageContext {
   _upsertLayerRow(layer: Layer): void;
   _pruneUnreferencedFileContent(options?: { immediate?: boolean }): void;
   _listAnnotationFeatures(layerId?: string): AnnotationFeature[];
+  _getAnnotationFeature(featureId: string): AnnotationFeature | null;
   _upsertAnnotationFeatureRow(feature: AnnotationFeature): void;
   _getFileContent(contentHash: string): ArrayBuffer | null;
   _touchAgentParticipant(user: NonNullable<PeerState['user']>, action?: string): unknown;

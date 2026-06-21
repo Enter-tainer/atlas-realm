@@ -1,9 +1,20 @@
 import type { Connection } from 'partyserver';
-import { sanitizeLayer, type FileLayer, type FileLayerPayload } from '../layer-model.js';
+import { sanitizeLayer, type FileLayer, type FileLayerPayload, type Layer } from '../layer-model.js';
 import { parseLayerClientMessage } from '../layer-sync.js';
-import { encodeMessage, isRecord } from './json-utils.js';
+import { encodeMessage, isRecord, stableJson } from './json-utils.js';
 import type { RoomMessageContext, MessageHandlerResult } from './room-message-types.js';
 import type { PeerState } from './room-types.js';
+
+function layerContentEquals(a: Layer, b: Layer) {
+  return (
+    a.kind === b.kind &&
+    a.name === b.name &&
+    a.visible === b.visible &&
+    a.sortKey === b.sortKey &&
+    a.updatedBy === b.updatedBy &&
+    stableJson(a.payload) === stableJson(b.payload)
+  );
+}
 
 export async function handleLayerMessage(
   room: RoomMessageContext,
@@ -43,6 +54,14 @@ export async function handleLayerMessage(
         connection.send(encodeMessage({ type: 'file:content:needed', contentHash: fileLayer.payload.contentHash }));
         return 'handled';
       }
+    }
+    if (existing && layerContentEquals(existing, layer)) {
+      connection.send(encodeMessage({ type: 'layer:created', layer: existing }));
+      return 'handled';
+    }
+    if (existing && Number(layerMessage.layer.revision || 0) > 0 && layerMessage.layer.revision <= existing.revision) {
+      connection.send(encodeMessage({ type: 'layer:created', layer: existing }));
+      return 'handled';
     }
     room._upsertLayerRow(layer);
     if (existing?.kind === 'file') room._pruneUnreferencedFileContent({ immediate: true });

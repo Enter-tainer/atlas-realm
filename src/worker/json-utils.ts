@@ -21,6 +21,14 @@ export function encodeMessage(message: unknown): string {
   return JSON.stringify(message);
 }
 
+export function stableJson(value: unknown): string {
+  const primitive = JSON.stringify(value);
+  if (!value || typeof value !== 'object') return primitive === undefined ? 'undefined' : primitive;
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(',')}]`;
+  const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b));
+  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${stableJson(item)}`).join(',')}}`;
+}
+
 export function parseJsonRecord(value: string): JsonRecord | null {
   try {
     const parsed = JSON.parse(value);

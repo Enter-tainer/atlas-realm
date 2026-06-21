@@ -315,6 +315,26 @@ export function listAnnotationFeatures(room: RoomStorageContext, layerId?: strin
   return sortAnnotationFeatures(rows.map((row) => annotationFeatureFromRow(row)).filter(Boolean));
 }
 
+export function getAnnotationFeature(room: RoomStorageContext, featureId: string): AnnotationFeature | null {
+  const row = room.sql<{
+    feature_id: string;
+    layer_id: string;
+    feature_type: string;
+    feature_json: string;
+    sort_key: string;
+    revision: number;
+    created_at: number;
+    updated_at: number;
+    updated_by: string;
+  }>`
+    SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+    FROM annotation_features
+    WHERE feature_id = ${featureId}
+    LIMIT 1
+  `[0];
+  return row ? annotationFeatureFromRow(row) : null;
+}
+
 export function upsertAnnotationFeatureRow(room: RoomStorageContext, feature: AnnotationFeature): void {
   void room.sql`
     INSERT OR REPLACE INTO annotation_features
