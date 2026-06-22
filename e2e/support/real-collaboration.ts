@@ -139,9 +139,41 @@ export async function createProtocolClient(
   room: string,
   name = 'Protocol Client',
 ): Promise<RealRoomClient> {
+  return createRoomSocketClient(page, room, { name, clientType: 'human', headless: true });
+}
+
+export async function createAgentProtocolClient(
+  page: Page,
+  room: string,
+  {
+    clientId = `agent-${Math.random().toString(36).slice(2)}`,
+    name = 'Agent',
+  }: {
+    clientId?: string;
+    name?: string;
+  } = {},
+): Promise<RealRoomClient> {
+  return createRoomSocketClient(page, room, { clientId, name, clientType: 'agent' });
+}
+
+async function createRoomSocketClient(
+  page: Page,
+  room: string,
+  {
+    clientId = `e2e-${Math.random().toString(36).slice(2)}`,
+    name,
+    clientType,
+    headless = false,
+  }: {
+    clientId?: string;
+    name: string;
+    clientType: 'human' | 'agent';
+    headless?: boolean;
+  },
+): Promise<RealRoomClient> {
   await ensureRealRoom(page, room);
   await page.evaluate(
-    ({ room, name }) => {
+    ({ clientId, room, name, clientType, headless }) => {
       type ClientWindow = Window &
         typeof globalThis & {
           __e2eRoomClients?: Record<
@@ -156,14 +188,15 @@ export async function createProtocolClient(
       targetWindow.__e2eRoomClients ||= {};
       const url = new URL(`/parties/map-collaboration/${encodeURIComponent(room)}`, window.location.href);
       url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      url.searchParams.set('clientType', 'human');
-      url.searchParams.set('headless', 'true');
-      url.searchParams.set('userId', `e2e-${Math.random().toString(36).slice(2)}`);
+      url.searchParams.set('_pk', clientId);
+      url.searchParams.set('clientType', clientType);
+      if (headless) url.searchParams.set('headless', 'true');
+      url.searchParams.set('userId', clientId);
       url.searchParams.set('name', name);
       url.searchParams.set('color', '#0f766e');
       const ws = new WebSocket(url.href);
       const messages: JsonRecord[] = [];
-      targetWindow.__e2eRoomClients[room] = { ws, messages };
+      targetWindow.__e2eRoomClients[clientId] = { ws, messages };
       ws.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return;
         try {
@@ -173,33 +206,33 @@ export async function createProtocolClient(
         }
       });
     },
-    { room, name },
+    { clientId, room, name, clientType, headless },
   );
-  await page.waitForFunction((room) => {
+  await page.waitForFunction((clientId) => {
     const client = (window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket }> })
-      .__e2eRoomClients?.[String(room)];
+      .__e2eRoomClients?.[String(clientId)];
     return client?.ws.readyState === WebSocket.OPEN;
-  }, room);
+  }, clientId);
 
   return {
     async send(message: JsonRecord) {
       await page.evaluate(
-        ({ room, message }) => {
+        ({ clientId, message }) => {
           const client = (window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket }> })
-            .__e2eRoomClients?.[room];
-          if (!client || client.ws.readyState !== WebSocket.OPEN) throw new Error(`Room client not open: ${room}`);
+            .__e2eRoomClients?.[clientId];
+          if (!client || client.ws.readyState !== WebSocket.OPEN) throw new Error(`Room client not open: ${clientId}`);
           client.ws.send(JSON.stringify(message));
         },
-        { room, message },
+        { clientId, message },
       );
     },
     async messages() {
-      return await page.evaluate((room) => {
+      return await page.evaluate((clientId) => {
         return (
           (window as typeof window & { __e2eRoomClients?: Record<string, { messages: JsonRecord[] }> })
-            .__e2eRoomClients?.[String(room)]?.messages || []
+            .__e2eRoomClients?.[String(clientId)]?.messages || []
         );
-      }, room);
+      }, clientId);
     },
     async waitFor(type: string, predicate?: (message: JsonRecord) => boolean, timeoutMs = 10_000) {
       const startedAt = Date.now();
@@ -213,13 +246,13 @@ export async function createProtocolClient(
       throw new Error(`Timed out waiting for ${type}`);
     },
     async close() {
-      await page.evaluate((room) => {
+      await page.evaluate((clientId) => {
         const clients = (window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket }> })
           .__e2eRoomClients;
-        const client = clients?.[String(room)];
+        const client = clients?.[String(clientId)];
         client?.ws.close(1000, 'e2e close');
-        if (clients) delete clients[String(room)];
-      }, room);
+        if (clients) delete clients[String(clientId)];
+      }, clientId);
     },
   };
 }
