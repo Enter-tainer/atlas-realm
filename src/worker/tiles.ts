@@ -73,6 +73,7 @@ const CACHE = new ResolvedValueCache(25, undefined, nativeDecompress);
 
 const CONTENT_TYPES: Partial<Record<TileType, string>> = {
   [TileType.Mvt]: 'application/x-protobuf',
+  [TileType.Mlt]: 'application/x-protobuf',
   [TileType.Png]: 'image/png',
   [TileType.Jpeg]: 'image/jpeg',
   [TileType.Webp]: 'image/webp',

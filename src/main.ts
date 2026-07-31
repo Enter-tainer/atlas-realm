@@ -21,7 +21,12 @@ import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
 const TILE_VERSION = '20260511a';
-const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
+// Tile format: 'mvt' (default) or 'mlt' (MapLibre Tile) via ?tiles=mlt.
+// The MLT archive is produced by mlt convert --tile-compression gzip and
+// uploaded to R2 as openrailwaymap-mlt.pmtiles.
+const TILE_FORMAT = new URLSearchParams(window.location.search).get('tiles') === 'mlt' ? 'mlt' : 'mvt';
+const TILE_ARCHIVE = TILE_FORMAT === 'mlt' ? 'openrailwaymap-mlt' : 'openrailwaymap';
+const TILE_URL = `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.${TILE_FORMAT}?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
@@ -205,6 +210,7 @@ function rewriteOrmStyle(style: StyleLike): StyleLike {
           {
             type: 'vector',
             tiles: [TILE_URL],
+            ...(TILE_FORMAT === 'mlt' ? { encoding: 'mlt' } : {}),
             attribution: source.attribution,
             promoteId: source.promoteId,
             bounds: source.bounds,
