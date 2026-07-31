@@ -171,7 +171,37 @@ export const electrification_linesLayers = [
         ],
         '',
       ],
-      ['get', 'electrification_label'],
+      [
+        'case',
+        ['==', ['get', 'voltage'], null],
+        '',
+        ['==', ['get', 'voltage'], 0],
+        '0V',
+        [
+          'let',
+          'voltage_text',
+          [
+            'case',
+            ['<', ['get', 'voltage'], 1000],
+            ['concat', ['number-format', ['get', 'voltage'], { 'max-fraction-digits': 0 }], 'V'],
+            ['concat', ['number-format', ['/', ['get', 'voltage'], 1000.0], { 'max-fraction-digits': 1 }], 'kV'],
+          ],
+          [
+            'case',
+            ['==', ['get', 'frequency'], 0],
+            ['concat', ['var', 'voltage_text'], ' ='],
+            ['!=', ['get', 'frequency'], null],
+            [
+              'concat',
+              ['var', 'voltage_text'],
+              ' ',
+              ['number-format', ['get', 'frequency'], { 'max-fraction-digits': 2 }],
+              'Hz',
+            ],
+            ['var', 'voltage_text'],
+          ],
+        ],
+      ],
     ],
     [
       {
@@ -309,7 +339,7 @@ export const electrification_linesLayers = [
     minzoom: 15,
     source: 'openrailwaymap_electrification',
     'source-layer': 'electrification_signals',
-    filter: ['==', ['get', 'deactivated'], true],
+    filter: ['==', ['get', 'deactivated0'], true],
     layout: {
       'symbol-z-order': 'source',
       'icon-overlap': 'always',

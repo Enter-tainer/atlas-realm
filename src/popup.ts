@@ -355,7 +355,7 @@ function closestPointOnLine(maplibregl: MaplibreLike, point: unknown, line: unkn
 // ---------------------------------------------------------------------------
 export function buildFeatureCatalog() {
   const railwayLineFeatures = {
-    labelProperties: ['standard_label'],
+    labelProperties: ['ref', 'name'],
     featureLinks: FEATURE_LINKS,
     features: {
       rail: { name: 'Railway', type: 'line' },
@@ -385,14 +385,16 @@ export function buildFeatureCatalog() {
       ref: { name: 'Reference' },
       track_ref: { name: 'Track' },
       speed_label: { name: 'Speed' },
-      train_protection: { name: 'Train protection' },
+      train_protection0: { name: 'Train protection' },
+      train_protection1: { name: 'Train protection' },
+      train_protection2: { name: 'Train protection' },
       electrification_state: { name: 'Electrification' },
       frequency: { name: 'Frequency', format: { template: '%.2d Hz' } },
       voltage: { name: 'Voltage', format: { template: '%d V' } },
       maximum_current: { name: 'Maximum current', format: { template: '%d A' } },
       future_frequency: { name: 'Future frequency', format: { template: '%.2d Hz' } },
       future_voltage: { name: 'Future voltage', format: { template: '%d V' } },
-      gauge_label: { name: 'Gauge' },
+      gauges: { name: 'Gauge' },
       loading_gauge: { name: 'Loading gauge' },
       track_class: { name: 'Track class' },
       reporting_marks: { name: 'Reporting marks' },
@@ -1176,9 +1178,8 @@ function fallbackPopupContent(properties: JsonRecord, _layerSource: string) {
 
   const title = el('h5', 'orm-popup-title', container);
   title.innerText =
-    stringValue(
-      properties.localized_name || properties.name || properties.standard_label || properties.label || properties.ref,
-    ) || 'Railway feature';
+    stringValue(properties.localized_name || properties.name || properties.label || properties.ref) ||
+    'Railway feature';
 
   const badges = el('h6', 'orm-popup-badges', container);
 
@@ -1193,7 +1194,7 @@ function fallbackPopupContent(properties: JsonRecord, _layerSource: string) {
     ['electrification_state', 'Electrification'],
     ['voltage', 'Voltage'],
     ['frequency', 'Frequency'],
-    ['gauge_label', 'Gauge'],
+    ['gauges', 'Gauge'],
     ['operator', 'Operator'],
     ['station', 'Station type'],
     ['position', 'Position'],

@@ -141,7 +141,7 @@ export const signals_symbolsLayers = [
       filter: ['!=', ['get', 'feature'], 'ferry'],
       sort: ['get', 'train_protection_rank'],
       width: ['interpolate', ['exponential', 1.2], ['zoom'], 0, 0.5, 7, 2],
-      color: trainProtectionColor('train_protection'),
+      color: trainProtectionColor(['train_protection0', 'train_protection1', 'train_protection2']),
     },
     {
       id: 'railway_line_low_construction',
@@ -155,7 +155,7 @@ export const signals_symbolsLayers = [
       filter: ['all', ['!=', ['get', 'feature'], 'ferry'], ['!=', null, ['get', 'train_protection_construction']]],
       sort: ['get', 'train_protection_construction_rank'],
       width: ['interpolate', ['exponential', 1.2], ['zoom'], 0, 0.5, 7, 2],
-      color: trainProtectionColor('train_protection_construction'),
+      color: trainProtectionColor(['train_protection_construction']),
     },
     {
       id: 'railway_line_med',
@@ -170,7 +170,7 @@ export const signals_symbolsLayers = [
       filter: ['!=', ['get', 'feature'], 'ferry'],
       sort: ['get', 'train_protection_rank'],
       width: 2,
-      color: trainProtectionColor('train_protection'),
+      color: trainProtectionColor(['train_protection0', 'train_protection1', 'train_protection2']),
     },
     {
       id: 'railway_line_med_construction',
@@ -185,7 +185,7 @@ export const signals_symbolsLayers = [
       filter: ['all', ['!=', ['get', 'feature'], 'ferry'], ['!=', null, ['get', 'train_protection_construction']]],
       sort: ['get', 'train_protection_construction_rank'],
       width: 2,
-      color: trainProtectionColor('train_protection_construction'),
+      color: trainProtectionColor(['train_protection_construction']),
     },
     {
       id: 'railway_line_high',
@@ -201,7 +201,7 @@ export const signals_symbolsLayers = [
       filter: ['!=', ['get', 'feature'], 'ferry'],
       sort: ['get', 'train_protection_rank'],
       width: ['interpolate', ['exponential', 1.2], ['zoom'], 14, 2, 16, 3],
-      color: trainProtectionColor('train_protection'),
+      color: trainProtectionColor(['train_protection0', 'train_protection1', 'train_protection2']),
     },
     {
       id: 'railway_line_high_construction',
@@ -217,7 +217,7 @@ export const signals_symbolsLayers = [
       filter: ['all', ['!=', ['get', 'feature'], 'ferry'], ['!=', null, ['get', 'train_protection_construction']]],
       sort: ['get', 'train_protection_construction_rank'],
       width: ['interpolate', ['exponential', 1.2], ['zoom'], 14, 2, 16, 3],
-      color: trainProtectionColor('train_protection_construction'),
+      color: trainProtectionColor(['train_protection_construction']),
     },
   ]),
   // Show at most 2 combined features

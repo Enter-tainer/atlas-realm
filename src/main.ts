@@ -21,7 +21,10 @@ import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
 const TILE_VERSION = '20260511a';
-const TILE_URL = `${window.location.origin}/tiles/openrailwaymap/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
+// Optional ?tileset=<archive-name> override to point at a test tileset
+// (e.g. openrailwaymap-test-<run_id>), defaulting to the production archive.
+const TILE_ARCHIVE = new URLSearchParams(window.location.search).get('tileset') ?? 'openrailwaymap';
+const TILE_URL = `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';

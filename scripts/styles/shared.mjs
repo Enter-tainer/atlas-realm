@@ -194,12 +194,14 @@ export const font = {
 
 export const turntable_casing_width = 2
 
-export const trainProtectionColor = (field) => [
+// Matches any of the given fields (e.g. train_protection0/1/2 from the
+// multi-system protection array, since DB arrays cannot be exported as-is).
+export const trainProtectionColor = (fields) => [
   'case',
   ['boolean', ['feature-state', 'hover'], false],
   colors.hover.main,
   ...signals_railway_line.train_protections.flatMap((train_protection) => [
-    ['==', ['get', field], train_protection.train_protection],
+    ['any', ...fields.map((field) => ['==', ['get', field], train_protection.train_protection])],
     train_protection.color,
   ]),
   'grey',

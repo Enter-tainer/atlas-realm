@@ -191,7 +191,7 @@ export const electrification_textsLayers = [
     minzoom: 13,
     source: 'openrailwaymap_electrification',
     'source-layer': 'electrification_signals',
-    filter: ['all', ['!=', ['get', 'azimuth'], null], ['!=', ['get', 'feature'], '']],
+    filter: ['all', ['!=', ['get', 'azimuth'], null], ['!=', ['get', 'feature0'], '']],
     paint: {
       'icon-color': colors.signals.direction,
       'icon-halo-color': ['case', ['boolean', ['feature-state', 'hover'], false], colors.hover.textHalo, colors.halo],
@@ -224,7 +224,7 @@ export const electrification_textsLayers = [
       'icon-rotation-alignment': 'map',
     },
   },
-  ...imageLayerWithOutline('electrification_signals', ['get', 'feature'], {
+  ...imageLayerWithOutline('electrification_signals', ['get', 'feature0'], {
     type: 'symbol',
     minzoom: 13,
     source: 'openrailwaymap_electrification',

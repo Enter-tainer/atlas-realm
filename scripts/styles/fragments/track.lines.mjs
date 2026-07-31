@@ -133,7 +133,7 @@ export const track_linesLayers = [
       'match',
       ['global-state', 'trackRailwayLine'],
       'gauge',
-      ['coalesce', ['get', 'gauge_label'], ''],
+      ['coalesce', ['get', 'gauges'], ''],
       'loadingGauge',
       ['coalesce', ['get', 'loading_gauge'], ''],
       'trackClass',

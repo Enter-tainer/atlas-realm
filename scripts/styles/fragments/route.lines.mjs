@@ -204,7 +204,12 @@ export const route_linesLayers = [
     },
   })),
   ...railwayLine(
-    ['coalesce', ['get', 'standard_label'], ''],
+    [
+      'concat',
+      ['coalesce', ['get', 'ref'], ''],
+      ['case', ['all', ['!=', ['get', 'ref'], null], ['!=', ['get', 'name'], null]], ' ', ''],
+      ['coalesce', ['get', 'name'], ''],
+    ],
     [
       {
         id: 'railway_line_low',
