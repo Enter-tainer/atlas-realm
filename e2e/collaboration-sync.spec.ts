@@ -11,7 +11,7 @@ import {
   openAnnotationsForLayer,
   selectLayer,
 } from './support/map-interactions';
-import { openRealRoom, uniqueRoomName } from './support/real-collaboration';
+import { createAgentProtocolClient, openRealRoom, uniqueRoomName } from './support/real-collaboration';
 
 test.describe('real multi-device collaboration sync', () => {
   test('syncs annotation layer CRUD, feature CRUD, and survives refresh through the real worker', async ({
@@ -83,6 +83,44 @@ test.describe('real multi-device collaboration sync', () => {
     } finally {
       await deviceA.close();
       await deviceB.close();
+    }
+  });
+
+  test('shows an agent as online after an agent edit activity update', async ({ browser }, testInfo) => {
+    const room = uniqueRoomName('e2e-agent-presence', testInfo.title);
+    const context = await browser.newContext({ locale: 'en-US', colorScheme: 'light' });
+    const page = await context.newPage();
+    const errors = await installBrowserErrorWatch(page);
+
+    try {
+      await openRealRoom(page, room);
+      const agent = await createAgentProtocolClient(page, room, {
+        clientId: 'agent-presence-writer',
+        name: 'Planner',
+      });
+      await agent.send({ type: 'client:update', action: 'annotations add' });
+      await agent.waitFor(
+        'agent:participant:update',
+        (message) =>
+          (message.agent as Record<string, unknown> | undefined)?.id === 'agent-presence-writer' &&
+          (message.agent as Record<string, unknown> | undefined)?.lastAction === 'annotations add',
+      );
+
+      await expect(page.locator('.collab-compact-meta')).toContainText('1 agent active');
+      await expect(page.locator('.collab-compact-avatar.collab-agent-avatar')).toHaveCount(1);
+
+      await page.locator('.collab-compact-toggle').click();
+      await expect(page.locator('.collab-presence-summary')).toContainText('1 agent active');
+      await expect(page.locator('.collab-avatars')).toHaveAttribute('aria-label', /1 agent/);
+      await expect(page.locator('.collab-avatar.collab-agent-avatar')).toHaveAttribute(
+        'aria-label',
+        /Planner, agent active/,
+      );
+
+      errors.assertNoErrors();
+      await agent.close();
+    } finally {
+      await context.close();
     }
   });
 });

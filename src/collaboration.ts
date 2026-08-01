@@ -1215,11 +1215,16 @@ export function installMapCollaboration(
   function renderCompactSummary() {
     const state = panel.dataset.connection || 'idle';
     const otherCount = peers.size;
+    const activeAgents = activeAgentParticipants(agents.values()).length;
 
     if (state === 'live') {
       compactTitle.textContent = 'Sharing';
+      const participantParts = [
+        otherCount === 0 ? '' : `${otherCount} other${otherCount === 1 ? '' : 's'}`,
+        activeAgents === 0 ? '' : activeAgents === 1 ? '1 agent active' : `${activeAgents} agents active`,
+      ].filter(Boolean);
       compactMeta.textContent =
-        otherCount === 0 ? `#${currentRoom}` : `#${currentRoom} · ${otherCount} other${otherCount === 1 ? '' : 's'}`;
+        participantParts.length === 0 ? `#${currentRoom}` : `#${currentRoom} · ${participantParts.join(' · ')}`;
     } else if (state === 'connecting') {
       compactTitle.textContent = 'Connecting';
       compactMeta.textContent = `#${currentRoom}`;
@@ -1353,6 +1358,7 @@ export function installMapCollaboration(
   function renderCompactAvatars() {
     compactAvatars.replaceChildren();
     const localProfile = activeProfile();
+    const activeAgents = activeAgentParticipants(agents.values());
 
     const local = createElement('span', 'collab-compact-avatar');
     setAvatarElement(local, {
@@ -1362,13 +1368,14 @@ export function installMapCollaboration(
     });
     compactAvatars.appendChild(local);
 
-    for (const peer of [...peers.values()].slice(0, 3)) {
+    const visiblePeers = [...peers.values()].slice(0, activeAgents.length > 0 ? 2 : 3);
+    for (const peer of visiblePeers) {
       const avatar = createElement('span', 'collab-compact-avatar');
       setAvatarElement(avatar, { name: peer.user.name, color: peer.user.color, avatarUrl: peer.user.avatarUrl });
       avatar.classList.toggle('following', peer.id === followedPeerId);
       compactAvatars.appendChild(avatar);
     }
-    for (const agent of activeAgentParticipants(agents.values()).slice(0, Math.max(0, 3 - peers.size))) {
+    for (const agent of activeAgents.slice(0, Math.max(0, 3 - visiblePeers.length))) {
       const avatar = createElement('span', 'collab-compact-avatar collab-agent-avatar');
       setAvatarElement(avatar, { name: agent.user.name, color: agent.user.color, avatarUrl: agent.user.avatarUrl });
       compactAvatars.appendChild(avatar);
