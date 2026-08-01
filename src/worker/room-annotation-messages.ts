@@ -6,7 +6,9 @@ import type { RoomMessageContext, MessageHandlerResult } from './room-message-ty
 import type { PeerState } from './room-types.js';
 
 function featurePayloadContent(value: AnnotationFeature['payload']) {
-  const { ...content } = value;
+  // These fields are assigned by the server for every accepted write. They
+  // must not make an otherwise identical replay look like a new mutation.
+  const { createdAt: _createdAt, updatedAt: _updatedAt, ...content } = value;
   return content;
 }
 
@@ -94,7 +96,7 @@ export async function handleAnnotationFeatureMessage(
     if (
       existing &&
       Number(annotationMessage.feature.revision || 0) > 0 &&
-      annotationMessage.feature.revision <= existing.revision
+      annotationMessage.feature.revision < existing.revision
     ) {
       connection.send(encodeMessage({ type: 'annotation-feature:upserted', feature: existing }));
       return 'handled';

@@ -1268,6 +1268,45 @@ describe('MapCollaboration layer storage', () => {
     expect(result.secondAck.feature).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
   });
 
+  it('accepts an annotation mutation carrying the current revision', async () => {
+    const stub = roomStub('annotation-feature-current-revision-update');
+    const result = await runInDO(stub, async (instance) => {
+      await instance.onStart();
+      const connection = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
+
+      await sendWorkerMessage(
+        instance,
+        connection,
+        jsonMessage('annotation-feature:upsert', {
+          feature: annotationFeature('path-a', 'annotation-default', { label: 'Original label' }),
+        }),
+      );
+      const existing = instance._getAnnotationFeature('path-a');
+      const update = annotationFeature('path-a', 'annotation-default', {
+        label: 'Updated label',
+        revision: existing?.revision,
+        createdAt: existing?.createdAt,
+        updatedAt: existing?.updatedAt,
+        payload: {
+          ...(existing?.payload || {}),
+          label: 'Updated label',
+          createdAt: existing?.createdAt,
+          updatedAt: existing?.updatedAt,
+        },
+      });
+      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature: update }));
+
+      return {
+        stored: instance._getAnnotationFeature('path-a'),
+        acknowledgements: sentJson(connection, 'annotation-feature:upserted'),
+      };
+    });
+
+    expect(result.stored).toMatchObject({ id: 'path-a', revision: 2 });
+    expect(result.stored?.payload).toMatchObject({ label: 'Updated label' });
+    expect(result.acknowledgements.at(-1)?.feature).toMatchObject({ id: 'path-a', revision: 2 });
+  });
+
   it('does not rewrite identical annotation feature replays', async () => {
     const stub = roomStub('annotation-feature-replay-dedupe');
     const result = await runInDO(stub, async (instance) => {

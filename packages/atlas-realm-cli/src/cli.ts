@@ -101,7 +101,10 @@ export function buildParser(argv: readonly string[] = []) {
     .parserConfiguration({
       'boolean-negation': false,
       'camel-case-expansion': true,
-      'duplicate-arguments-array': false,
+      // Keep the command's first variadic positional. With this disabled,
+      // yargs drops `update` from `annotations layers update <id>` and treats
+      // the id as the layer action.
+      'duplicate-arguments-array': true,
     });
 }
 

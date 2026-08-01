@@ -219,9 +219,15 @@ export async function handleAnnotationCommand(
   }
 
   if (action === 'add' || action === 'upsert') {
-    const payload = await buildFeatureFromOptions(command, client.config, command.featureType);
+    const existing = command.id ? getAnnotationFeature(client.annotationFeatures, command.id) : undefined;
+    const payload = await buildFeatureFromOptions(
+      command,
+      client.config,
+      command.featureType || existing?.featureType,
+      existing?.payload,
+    );
     await ensureAnnotationLayer(client, payload.layerId, command);
-    const feature = annotationFeatureFromPayload(client, payload);
+    const feature = annotationFeatureFromPayload(client, payload, existing);
     client.sendJson({ type: 'annotation-feature:upsert', feature });
     const ack = await waitForFeatureMutation(client, feature, 'upsert');
     return {

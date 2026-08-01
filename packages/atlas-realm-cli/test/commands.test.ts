@@ -146,6 +146,9 @@ class FakeRoomClient {
 class FakeWebSocket {
   static OPEN = 1;
   static urls: string[] = [];
+  static initialLayers: Array<Record<string, any>> = [];
+  static autoLayerUpdates = false;
+  static autoLayerReorders = false;
   binaryType = 'arraybuffer';
   readyState = FakeWebSocket.OPEN;
   listeners = new Map<string, Array<(event: unknown) => void>>();
@@ -163,7 +166,7 @@ class FakeWebSocket {
         }),
       });
       this.dispatch('message', {
-        data: JSON.stringify({ type: 'layer:list', layers: [] }),
+        data: JSON.stringify({ type: 'layer:list', layers: FakeWebSocket.initialLayers }),
       });
       this.dispatch('message', {
         data: JSON.stringify({ type: 'annotation-feature:list', features: [] }),
@@ -184,7 +187,39 @@ class FakeWebSocket {
     );
   }
 
-  send(_data: unknown) {}
+  send(data: unknown) {
+    const message = JSON.parse(String(data));
+    if (message.type === 'layer:update' && FakeWebSocket.autoLayerUpdates) {
+      const existing = FakeWebSocket.initialLayers.find((layer) => layer.id === message.layerId) || {};
+      const layer = {
+        ...existing,
+        ...message.patch,
+        revision: Number(existing.revision || 0) + 1,
+        updatedAt: NOW + 1,
+      };
+      queueMicrotask(() =>
+        this.dispatch('message', {
+          data: JSON.stringify({ type: 'layer:updated', layer }),
+        }),
+      );
+    }
+    if (message.type === 'layer:reorder' && FakeWebSocket.autoLayerReorders) {
+      const layers = message.updates.map((update) => {
+        const existing = FakeWebSocket.initialLayers.find((layer) => layer.id === update.layerId) || {};
+        return {
+          ...existing,
+          sortKey: update.sortKey,
+          revision: Number(existing.revision || 0) + 1,
+          updatedAt: NOW + 1,
+        };
+      });
+      queueMicrotask(() =>
+        this.dispatch('message', {
+          data: JSON.stringify({ type: 'layer:reordered', layers }),
+        }),
+      );
+    }
+  }
 
   close() {}
 
@@ -257,6 +292,9 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   globalThis.WebSocket = originalWebSocket;
   FakeWebSocket.urls = [];
+  FakeWebSocket.initialLayers = [];
+  FakeWebSocket.autoLayerUpdates = false;
+  FakeWebSocket.autoLayerReorders = false;
   if (originalTokenStore === undefined) delete process.env.ATLAS_REALM_TOKEN_STORE;
   else process.env.ATLAS_REALM_TOKEN_STORE = originalTokenStore;
   if (originalRoomClientId === undefined) delete process.env.ATLAS_REALM_CLIENT_ID;
@@ -342,6 +380,96 @@ describe('atlas-realm CLI package', () => {
       runCli(['snapshot', '--host', 'https://example.com', '--room', 'trip-room', '--json'], captureIo().io),
     ).rejects.toThrow('Room commands require --client-id <id> or ATLAS_REALM_CLIENT_ID.');
     expect(FakeWebSocket.urls).toHaveLength(0);
+  });
+
+  it('accepts a positional id for annotation layer updates', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    FakeWebSocket.initialLayers = [
+      {
+        id: 'day5-routes',
+        kind: 'annotation',
+        name: 'Old name',
+        visible: true,
+        sortKey: '000010',
+        payload: { version: 1 },
+        revision: 1,
+        createdAt: NOW,
+        updatedAt: NOW,
+      },
+    ];
+    FakeWebSocket.autoLayerUpdates = true;
+    const { io, lines } = captureIo();
+
+    await runCli(
+      [
+        'annotations',
+        'layers',
+        'update',
+        'day5-routes',
+        '--name',
+        'New name',
+        '--host',
+        'https://example.com',
+        '--room',
+        'trip-room',
+        '--client-id',
+        'agent-a',
+        '--client-type',
+        'query',
+        '--json',
+      ],
+      io,
+    );
+
+    expect(JSON.parse(lines[0])).toMatchObject({
+      ok: true,
+      layer: { id: 'day5-routes', name: 'New name' },
+    });
+  });
+
+  it('preserves all positional ids when reordering annotation layers', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    FakeWebSocket.initialLayers = ['day-1', 'day-2', 'day-3'].map((id, index) => ({
+      id,
+      kind: 'annotation',
+      name: id,
+      visible: true,
+      sortKey: `00000${index + 1}`,
+      payload: { version: 1 },
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    }));
+    FakeWebSocket.autoLayerReorders = true;
+    const { io, lines } = captureIo();
+
+    await runCli(
+      [
+        'annotations',
+        'layers',
+        'reorder',
+        'day-3',
+        'day-1',
+        'day-2',
+        '--host',
+        'https://example.com',
+        '--room',
+        'trip-room',
+        '--client-id',
+        'agent-a',
+        '--client-type',
+        'query',
+        '--json',
+      ],
+      io,
+    );
+
+    expect(JSON.parse(lines[0])).toMatchObject({
+      ok: true,
+      orderedIds: ['day-3', 'day-1', 'day-2'],
+    });
   });
 
   it('logs in with GitHub Device Flow and stores the returned local PAT', async () => {
@@ -1039,6 +1167,55 @@ describe('atlas-realm CLI package', () => {
     expect(client.sentJson[1]).toEqual({ type: 'annotation-feature:delete', featureId: 'stop-a' });
     expect(upsert.result.annotation.id).toBe('stop-a');
     expect(deleted.result.annotationId).toBe('stop-a');
+  });
+
+  it('merges an existing annotation payload for upsert and preserves its revision metadata', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push({
+      id: 'stop-a',
+      layerId: 'annotation-default',
+      featureType: 'point',
+      payload: {
+        id: 'stop-a',
+        layerId: 'annotation-default',
+        type: 'point',
+        coordinate: [141.35079, 43.06866],
+        label: 'Sapporo pickup',
+        note: 'Keep the original note',
+        color: '#2563eb',
+        createdAt: NOW - 10_000,
+        updatedAt: NOW - 1_000,
+        updatedBy: 'previous-agent',
+      },
+      sortKey: '000010',
+      revision: 7,
+      createdAt: NOW - 10_000,
+      updatedAt: NOW - 1_000,
+      updatedBy: 'previous-agent',
+    });
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'upsert',
+      featureType: 'point',
+      type: 'point',
+      id: 'stop-a',
+      coordinate: '141.3483644,43.0703605',
+    });
+
+    expect(client.sentJson[0]).toMatchObject({
+      type: 'annotation-feature:upsert',
+      feature: {
+        id: 'stop-a',
+        revision: 7,
+        payload: {
+          coordinate: [141.3483644, 43.0703605],
+          label: 'Sapporo pickup',
+          note: 'Keep the original note',
+        },
+      },
+    });
+    expect(response.result.annotation).toMatchObject({ id: 'stop-a', revision: 7 });
   });
 
   it('rejects annotations for missing target layers before sending feature mutations', async () => {
