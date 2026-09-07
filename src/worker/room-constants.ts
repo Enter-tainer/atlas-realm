@@ -8,4 +8,4 @@ export const UNREFERENCED_FILE_CONTENT_TTL_MS = 60 * 60 * 1000;
 export const AGENT_RECENT_TTL_MS = 5 * 60 * 1000;
 export const AGENT_TOUCH_THROTTLE_MS = 5 * 1000;
 export const AUTH_HEADER_MAX_AGE_MS = 60_000;
-export const SQL_READY_KEY = '__layer_sql_ready_v2_clean_break';
+export const SQL_READY_KEY = '__layer_sql_ready_v2_streams';

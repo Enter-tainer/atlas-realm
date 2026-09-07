@@ -173,7 +173,7 @@ function createTestLayerStoreWithGpxFirst(): LayerStore {
 
 function addLocalFileLayer(
   map: TestMap,
-  options: { id: string; name: string; syncLayerId: string; type?: 'geojson' | 'gpx' },
+  options: { id: string; name: string; syncLayerId?: string; type?: 'geojson' | 'gpx' },
 ) {
   map.layerIds.push(`${options.id}-layer`);
   map.getContainer().dispatchEvent(
@@ -301,6 +301,18 @@ function dispatchPointer(target: EventTarget, type: string, init: PointerEventIn
 }
 
 describe('layer manager DOM behavior', () => {
+  it('assigns a stable sync ID to local imports whose source supplied undefined', () => {
+    const map = createTestMap();
+    installLayerManager(map, createTestLayerStore());
+    const ids: string[] = [];
+    map.container.addEventListener('layer-sync:local-upsert', (event) =>
+      ids.push((event as CustomEvent).detail.layer.syncLayerId),
+    );
+    addLocalFileLayer(map, { id: 'raw-import', name: 'Imported' });
+    expect(ids).toHaveLength(1);
+    expect(ids[0]).toMatch(/^file-/);
+  });
+
   it('disables shared layer mutations when collaboration access is read-only', () => {
     const map = createTestMap();
     const layerStore = createTestLayerStore();

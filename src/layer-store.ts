@@ -20,6 +20,7 @@ import {
 import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
 
 export type LayerStoreEvent =
+  | { type: 'ids:remap'; ids: Record<string, string>; remote: boolean }
   | { type: 'snapshot'; layers: Layer[]; features: AnnotationFeature[]; remote: boolean }
   | { type: 'layer:upsert'; layer: Layer; remote: boolean }
   | { type: 'layer:update'; layer: Layer; remote: boolean }
@@ -52,6 +53,7 @@ function hasAnnotationLayer(layers: Iterable<Layer>) {
 
 export class LayerStore extends EventTarget {
   _layers = new Map<string, Layer>();
+  _idAliases = new Map<string, string>();
   _features = new Map<string, AnnotationFeature>();
   _listeners = new Set<LayerStoreListener>();
 
@@ -87,15 +89,17 @@ export class LayerStore extends EventTarget {
   }
 
   getLayer(layerId: string) {
-    return this._layers.get(layerId) || null;
+    return this._layers.get(this._idAliases.get(layerId) || layerId) || null;
   }
 
   getAnnotationLayer(layerId: string) {
+    layerId = this._idAliases.get(layerId) || layerId;
     const layer = this._layers.get(layerId);
     return isAnnotationLayer(layer) ? layer : null;
   }
 
   getAnnotationFeatures(layerId?: string) {
+    if (layerId) layerId = this._idAliases.get(layerId) || layerId;
     return Array.from(this._features.values())
       .filter((feature) => !layerId || feature.layerId === layerId)
       .sort(compareAnnotationFeatures);
@@ -111,11 +115,11 @@ export class LayerStore extends EventTarget {
   }
 
   getAnnotationFeature(featureId: string) {
-    return this._features.get(featureId) || null;
+    return this._features.get(this._idAliases.get(featureId) || featureId) || null;
   }
 
   getAnnotationFeaturePayload(featureId: string) {
-    return this._features.get(featureId)?.payload || null;
+    return this.getAnnotationFeature(featureId)?.payload || null;
   }
 
   getAnnotationFeaturePayloads(layerId?: string) {
@@ -173,6 +177,40 @@ export class LayerStore extends EventTarget {
     });
   }
 
+  remapIds(ids: Record<string, string>) {
+    if (!Object.keys(ids).length) return;
+    for (const [from, to] of Object.entries(ids)) this._idAliases.set(from, to);
+    this._layers = new Map(
+      [...this._layers.values()].map((layer) => {
+        const id = ids[layer.id] || layer.id;
+        return [id, { ...layer, id }];
+      }),
+    );
+    this._features = new Map(
+      [...this._features.values()].map((feature) => {
+        const id = ids[feature.id] || feature.id;
+        const layerId = ids[feature.layerId] || feature.layerId;
+        return [id, { ...feature, id, layerId, payload: { ...feature.payload, id, layerId } }];
+      }),
+    );
+    this._emit({ type: 'ids:remap', ids, remote: true });
+  }
+
+  replaceSnapshot(layers: Layer[], features: AnnotationFeature[]) {
+    this._layers.clear();
+    this._features.clear();
+    for (const layer of layers) {
+      const normalized = sanitizeLayer(layer, layer.createdAt, layer);
+      if (normalized) this._layers.set(normalized.id, normalized);
+    }
+    for (const feature of features) {
+      const normalized = sanitizeAnnotationFeature(feature, feature.createdAt);
+      if (normalized && isAnnotationLayer(this._layers.get(normalized.layerId)))
+        this._features.set(normalized.id, normalized);
+    }
+    this._emitSnapshot(true);
+  }
+
   setLayerList(layers: Layer[], { remote = false }: { remote?: boolean } = {}) {
     this._layers.clear();
     for (const layer of layers) {
@@ -211,6 +249,7 @@ export class LayerStore extends EventTarget {
   }
 
   upsertLayer(layer: Layer, { remote = false }: { remote?: boolean } = {}) {
+    layer = { ...layer, id: this._idAliases.get(layer.id) || layer.id };
     const existing = this._layers.get(layer.id);
     const normalized = sanitizeLayer(layer, Date.now(), existing || layer);
     if (!normalized) return null;
@@ -220,6 +259,7 @@ export class LayerStore extends EventTarget {
   }
 
   patchLayer(layerId: string, patch: LayerUpdatePatch, options: { remote?: boolean } = {}) {
+    layerId = this._idAliases.get(layerId) || layerId;
     const layer = this._layers.get(layerId);
     if (!layer) return null;
     const now = Date.now();
@@ -244,6 +284,7 @@ export class LayerStore extends EventTarget {
   }
 
   deleteLayer(layerId: string, { remote = false }: { remote?: boolean } = {}) {
+    layerId = this._idAliases.get(layerId) || layerId;
     this._layers.delete(layerId);
     for (const [featureId, feature] of this._features) {
       if (feature.layerId === layerId) this._features.delete(featureId);
@@ -253,7 +294,8 @@ export class LayerStore extends EventTarget {
 
   reorderLayers(orderedIds: string[], { remote = false }: { remote?: boolean } = {}) {
     const now = Date.now();
-    for (const [index, layerId] of orderedIds.entries()) {
+    for (const [index, originalId] of orderedIds.entries()) {
+      const layerId = this._idAliases.get(originalId) || originalId;
       const layer = this._layers.get(layerId);
       if (!layer) continue;
       this._layers.set(layerId, {
@@ -266,7 +308,18 @@ export class LayerStore extends EventTarget {
     this._emit({ type: 'layer:reorder', layers: this.getLayers(), remote });
   }
 
+  updateFeature(feature: AnnotationFeature | AnnotationFeaturePayload, options: { remote?: boolean } = {}) {
+    if (!this.getAnnotationFeature(feature.id)) return null;
+    return this.upsertFeature(feature, options);
+  }
+
   upsertFeature(feature: AnnotationFeature | AnnotationFeaturePayload, { remote = false }: { remote?: boolean } = {}) {
+    const id = this._idAliases.get(feature.id) || feature.id;
+    const layerId = this._idAliases.get(feature.layerId) || feature.layerId;
+    feature =
+      'featureType' in feature
+        ? { ...feature, id, layerId, payload: { ...feature.payload, id, layerId } }
+        : { ...feature, id, layerId };
     const existing = this._features.get(feature.id);
     const now = Date.now();
     const candidate =
@@ -294,6 +347,7 @@ export class LayerStore extends EventTarget {
   }
 
   deleteFeature(featureId: string, { remote = false }: { remote?: boolean } = {}) {
+    featureId = this._idAliases.get(featureId) || featureId;
     this._features.delete(featureId);
     this._emit({ type: 'feature:delete', featureId, remote });
   }

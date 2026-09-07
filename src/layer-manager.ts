@@ -801,12 +801,12 @@ class LayerManagerControl {
       lineWidth: DEFAULT_LINE_WIDTH,
       visible: true,
       layerIds: [],
-      syncLayerId,
       ...layerItem,
+      syncLayerId,
     };
     if (existingIndex === -1) {
       this._layerItems.unshift(normalized);
-      this._selectedId = normalized.id;
+      if (!remote || !this._selectedId) this._selectedId = normalized.id;
     } else {
       this._layerItems[existingIndex] = { ...this._layerItems[existingIndex], ...normalized };
     }
@@ -819,7 +819,20 @@ class LayerManagerControl {
     if (!remote) this._emitLayerSyncUpsert(normalized);
   }
 
-  _handleLayerStoreEvent(_event: LayerStoreEvent) {
+  _handleLayerStoreEvent(event: LayerStoreEvent) {
+    if (event.type === 'ids:remap') {
+      for (const item of this._layerItems) {
+        if (item.annotationLayerId && event.ids[item.annotationLayerId]) {
+          const oldId = item.id;
+          item.annotationLayerId = event.ids[item.annotationLayerId];
+          item.id = annotationLayerItemId(item.annotationLayerId);
+          if (this._selectedId === oldId) this._selectedId = item.id;
+        }
+        if (item.syncLayerId) item.syncLayerId = event.ids[item.syncLayerId] || item.syncLayerId;
+        if (item.remoteLayerId) item.remoteLayerId = event.ids[item.remoteLayerId] || item.remoteLayerId;
+      }
+      this._remoteFileLayerOrder = this._remoteFileLayerOrder.map((id) => event.ids[id] || id);
+    }
     this._upsertAnnotationLayerItems({ force: true, render: true });
   }
 
@@ -925,11 +938,13 @@ class LayerManagerControl {
 
   _applyRemoteFileLayerList(detail: FileLayerListDetail) {
     const manifests = Array.isArray(detail?.fileLayers) ? detail.fileLayers : [];
+    const previousRemoteIds = new Set(this._remoteFileLayerOrder);
     this._remoteFileLayerOrder = manifests.map((manifest: LayerItem) => manifest.id).filter(Boolean);
     const remoteIds = new Set(manifests.map((manifest: LayerItem) => manifest.id));
     for (const layerItem of this._layerItems.slice()) {
       if (isAnnotationLayerItem(layerItem)) continue;
-      if (layerItem.remoteLayerId && !remoteIds.has(layerItem.remoteLayerId)) {
+      const syncId = layerItem.remoteLayerId || layerItem.syncLayerId;
+      if ((layerItem.remoteLayerId || previousRemoteIds.has(syncId)) && !remoteIds.has(syncId)) {
         this._removeLayerItem(layerItem, { emit: false });
       }
     }
@@ -939,6 +954,7 @@ class LayerManagerControl {
         (item) => item.remoteLayerId === manifest.id || item.syncLayerId === manifest.id,
       );
       if (!layerItem) continue;
+      layerItem.renderedContentHash ||= layerItem.contentHash || manifest.contentHash;
       const visibleChanged = layerItem.visible !== (manifest.visible !== false);
       Object.assign(layerItem, fileLayerManifestMetadata(manifest), {
         syncLayerId: manifest.id,
@@ -963,12 +979,13 @@ class LayerManagerControl {
     const content = detail?.content;
     if (!manifest || !content) return;
     if (!isFileLayerItem(manifest)) return;
-    if (
-      this._layerItems.some(
-        (layerItem) => layerItem.remoteLayerId === manifest.id || layerItem.syncLayerId === manifest.id,
-      )
-    )
-      return;
+    const existing = this._layerItems.find(
+      (item) => item.remoteLayerId === manifest.id || item.syncLayerId === manifest.id,
+    );
+    if (existing && (existing.renderedContentHash || existing.contentHash) === manifest.contentHash) return;
+    const previousSelectedId = this._selectedId;
+    const selectedReplacement = existing?.id === previousSelectedId;
+    if (existing) this._removeLayerItem(existing, { emit: false });
 
     const layerItem =
       manifest.type === 'gpx' && typeof content === 'string'
@@ -994,7 +1011,10 @@ class LayerManagerControl {
         remoteLayerId: manifest.id,
         syncLayerId: manifest.id,
         contentHash: manifest.contentHash,
+        renderedContentHash: manifest.contentHash,
       });
+      if (selectedReplacement) this._selectedId = local.id;
+      else if (this._layerItems.some((item) => item.id === previousSelectedId)) this._selectedId = previousSelectedId;
       if (local.visible === false) {
         for (const layerId of local.layerIds) {
           if (this._map.getLayer(layerId)) this._map.setLayoutProperty(layerId, 'visibility', 'none');

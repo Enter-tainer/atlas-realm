@@ -12,6 +12,7 @@ import { executeCommand } from './commands.js';
 import { createConfig } from './config.js';
 import { formatOutput } from './format.js';
 import { RoomClient } from './room-client.js';
+import { CliSyncJournal } from './sync-journal.js';
 import type { Command, JsonRecord } from './types.js';
 
 const FEATURE_TYPES = ['point', 'text', 'path', 'polygon', 'route'];
@@ -327,7 +328,7 @@ async function runWhoami(args: JsonRecord): Promise<void> {
 function layerBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|content|metadata|export|add|upsert|update|patch|show|hide|delete|remove|rm|reorder',
+      describe: 'list|get|content|metadata|export|add|replace|update|patch|show|hide|delete|remove|rm|reorder',
       type: 'string',
     })
     .positional('items', {
@@ -351,7 +352,7 @@ function layerBuilder(y: any): any {
 function annotationBuilder(y: any): any {
   return y
     .positional('action', {
-      describe: 'list|get|content|add|upsert|update|patch|clear|delete|remove|rm|reorder|layers',
+      describe: 'list|get|content|add|update|patch|clear|delete|remove|rm|reorder|layers',
       type: 'string',
     })
     .positional('items', {
@@ -452,7 +453,7 @@ async function runLayer(args: JsonRecord): Promise<void> {
     persistence: args.persistence,
   };
 
-  if (action === 'add' || action === 'upsert') command.file ||= items[0];
+  if (action === 'add' || action === 'replace') command.file ||= items[0];
   else if (action === 'reorder') command.ids = items;
   else command.id ||= items[0];
 
@@ -521,7 +522,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     hideLayer: args.hideLayer,
   };
 
-  if (action === 'add' || action === 'upsert') {
+  if (action === 'add') {
     command.featureType = FEATURE_TYPES.includes(items[0]) ? items[0] : undefined;
     command.type = command.featureType;
     if (!command.id && command.featureType && items[1]) command.id = items[1];
@@ -540,14 +541,42 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
 async function runRoomCommand(command: Command, args: JsonRecord): Promise<void> {
   const config = createConfig(args, process.env, { requireClientId: true });
   if (!config.accessToken) config.accessToken = await getStoredToken(config.host);
-  const client = new RoomClient(config);
-  await client.connect();
+  const journal = new CliSyncJournal(config);
+  const client = new RoomClient(config, { journal });
   try {
+    await client.sync.loaded;
+    const recovering = Boolean(client.sync.inFlight || client.sync.pending.length);
+    await client.connect();
+    if (recovering) {
+      await client.waitFor(
+        (event) =>
+          Boolean(event.json?.type.startsWith('sync:')) && !client.sync.pending.length && !client.sync.inFlight,
+        'previous submission recovery',
+      );
+      const result = {
+        ok: client.sync.conflicts.length === 0,
+        recovered: true,
+        requestedCommandExecuted: false,
+        room: config.room,
+        result: client.sync.lastOutcome,
+        conflicts: client.sync.conflicts,
+      };
+      args.io.log(
+        formatOutput(
+          result,
+          { json: args.json, pretty: args.pretty },
+          () =>
+            'Recovered previous edits. The requested command was not executed; inspect the recovery result before issuing a new command.',
+        ),
+      );
+      return;
+    }
     if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
     const response = await executeCommand(client, command);
     args.io.log(formatOutput(response.result, { json: args.json, pretty: args.pretty }, response.human));
   } finally {
-    client.close();
+    await client.close();
+    await journal.close();
   }
 }
 

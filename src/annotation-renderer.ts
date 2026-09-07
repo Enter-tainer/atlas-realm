@@ -549,7 +549,7 @@ function updateTextFeatureCoordinate(store: LayerStore, featureId: string, marke
   if (!coordinate) return;
   const [lng, lat] = coordinate;
   if (feature.coordinate[0] === lng && feature.coordinate[1] === lat) return;
-  store.upsertFeature({
+  store.updateFeature({
     ...feature,
     coordinate,
     updatedAt: Date.now(),
@@ -611,7 +611,7 @@ function updatePolygonVertexCoordinate(
   if (!options.force && current[0] === coordinate[0] && current[1] === coordinate[1]) return;
   const points = feature.points.slice();
   points[vertexIndex] = coordinate;
-  store.upsertFeature(
+  store.updateFeature(
     {
       ...feature,
       points,
@@ -764,7 +764,7 @@ function installTextMarkerResize(
     ) {
       return;
     }
-    store.upsertFeature({
+    store.updateFeature({
       ...feature,
       coordinate: state.nextCoordinate,
       width: state.nextWidth,

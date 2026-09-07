@@ -88,6 +88,25 @@ export async function ensureLayerStorage(room: RoomStorageContext): Promise<void
       last_action TEXT NOT NULL
     )
   `;
+  if (!room.sql<{ name: string }>`PRAGMA table_info(layers)`.some((column) => column.name === 'field_versions_json')) {
+    void room.sql`ALTER TABLE layers ADD COLUMN field_versions_json TEXT NOT NULL DEFAULT '{}'`;
+  }
+  if (
+    !room.sql<{ name: string }>`PRAGMA table_info(annotation_features)`.some(
+      (column) => column.name === 'field_versions_json',
+    )
+  ) {
+    void room.sql`ALTER TABLE annotation_features ADD COLUMN field_versions_json TEXT NOT NULL DEFAULT '{}'`;
+  }
+  void room.sql`CREATE TABLE IF NOT EXISTS sync_state (singleton INTEGER PRIMARY KEY CHECK(singleton = 1), epoch TEXT NOT NULL, seq INTEGER NOT NULL)`;
+  void room.sql`INSERT OR IGNORE INTO sync_state (singleton, epoch, seq) VALUES (1, ${crypto.randomUUID()}, 0)`;
+  void room.sql`CREATE TABLE IF NOT EXISTS sync_clients (
+    client_id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, connection_id TEXT NOT NULL,
+    last_seq INTEGER NOT NULL DEFAULT 0, request_hash TEXT NOT NULL DEFAULT '', result_json TEXT,
+    created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL
+  )`;
+  void room.sql`CREATE INDEX IF NOT EXISTS sync_clients_expiry ON sync_clients(expires_at)`;
+  void room.sql`CREATE INDEX IF NOT EXISTS sync_clients_owner ON sync_clients(owner_id, created_at)`;
   ensureDefaultAnnotationLayer(room);
   await room.ctx.storage.put(SQL_READY_KEY, true);
 }
@@ -163,17 +182,22 @@ export function ensureDefaultAnnotationLayer(room: RoomStorageContext): void {
   const exists = room.sql<{ layer_id: string }>`
     SELECT layer_id FROM layers WHERE layer_id = ${defaultLayer.id} LIMIT 1
   `;
-  if (exists.length > 0) return;
+  if (
+    exists.length > 0 ||
+    room.sql`SELECT layer_id FROM layers LIMIT 1`.length > 0 ||
+    room.sql`SELECT room_id FROM room_meta LIMIT 1`.length > 0
+  )
+    return;
   upsertLayerRow(room, defaultLayer);
 }
 
 export function upsertLayerRow(room: RoomStorageContext, layer: Layer): void {
   void room.sql`
     INSERT OR REPLACE INTO layers
-      (layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by)
+      (layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by, field_versions_json)
     VALUES
       (${layer.id}, ${layer.kind}, ${layer.name}, ${layer.visible ? 1 : 0}, ${layer.sortKey},
-       ${JSON.stringify(layer.payload)}, ${layer.revision}, ${layer.createdAt}, ${layer.updatedAt}, ${layer.updatedBy || null})
+       ${JSON.stringify(layer.payload)}, ${layer.revision}, ${layer.createdAt}, ${layer.updatedAt}, ${layer.updatedBy || null}, ${JSON.stringify(layer.fieldVersions || {})})
   `;
 }
 
@@ -188,6 +212,7 @@ export function layerFromRow(row: {
   created_at: number;
   updated_at: number;
   updated_by: string | null;
+  field_versions_json?: string;
 }): Layer | null {
   try {
     return sanitizeLayer({
@@ -197,6 +222,7 @@ export function layerFromRow(row: {
       visible: Number(row.visible) !== 0,
       sortKey: row.sort_key,
       payload: JSON.parse(String(row.payload_json)),
+      fieldVersions: JSON.parse(row.field_versions_json || '{}'),
       revision: Number(row.revision),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
@@ -220,8 +246,9 @@ export function listLayers(room: RoomStorageContext): Layer[] {
       created_at: number;
       updated_at: number;
       updated_by: string | null;
+      field_versions_json?: string;
     }>`
-      SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by
+      SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by, field_versions_json
       FROM layers
       ORDER BY sort_key ASC, created_at ASC, layer_id ASC
     `
@@ -242,8 +269,9 @@ export function getLayer(room: RoomStorageContext, layerId: string): Layer | nul
     created_at: number;
     updated_at: number;
     updated_by: string | null;
+    field_versions_json?: string;
   }>`
-    SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by
+    SELECT layer_id, kind, name, visible, sort_key, payload_json, revision, created_at, updated_at, updated_by, field_versions_json
     FROM layers
     WHERE layer_id = ${layerId}
     LIMIT 1
@@ -261,6 +289,7 @@ export function annotationFeatureFromRow(row: {
   created_at: number;
   updated_at: number;
   updated_by: string;
+  field_versions_json?: string;
 }): AnnotationFeature | null {
   try {
     return sanitizeAnnotationFeature({
@@ -269,6 +298,7 @@ export function annotationFeatureFromRow(row: {
       featureType: row.feature_type,
       payload: JSON.parse(String(row.feature_json)),
       sortKey: row.sort_key,
+      fieldVersions: JSON.parse(row.field_versions_json || '{}'),
       revision: Number(row.revision),
       createdAt: Number(row.created_at),
       updatedAt: Number(row.updated_at),
@@ -291,8 +321,9 @@ export function listAnnotationFeatures(room: RoomStorageContext, layerId?: strin
         created_at: number;
         updated_at: number;
         updated_by: string;
+        field_versions_json?: string;
       }>`
-      SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+      SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by, field_versions_json
       FROM annotation_features
       WHERE layer_id = ${layerId}
       ORDER BY sort_key ASC, created_at ASC, feature_id ASC
@@ -307,8 +338,9 @@ export function listAnnotationFeatures(room: RoomStorageContext, layerId?: strin
         created_at: number;
         updated_at: number;
         updated_by: string;
+        field_versions_json?: string;
       }>`
-      SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+      SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by, field_versions_json
       FROM annotation_features
       ORDER BY layer_id ASC, sort_key ASC, created_at ASC, feature_id ASC
     `;
@@ -326,8 +358,9 @@ export function getAnnotationFeature(room: RoomStorageContext, featureId: string
     created_at: number;
     updated_at: number;
     updated_by: string;
+    field_versions_json?: string;
   }>`
-    SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by
+    SELECT feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by, field_versions_json
     FROM annotation_features
     WHERE feature_id = ${featureId}
     LIMIT 1
@@ -338,10 +371,10 @@ export function getAnnotationFeature(room: RoomStorageContext, featureId: string
 export function upsertAnnotationFeatureRow(room: RoomStorageContext, feature: AnnotationFeature): void {
   void room.sql`
     INSERT OR REPLACE INTO annotation_features
-      (feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by)
+      (feature_id, layer_id, feature_type, feature_json, sort_key, revision, created_at, updated_at, updated_by, field_versions_json)
     VALUES
       (${feature.id}, ${feature.layerId}, ${feature.featureType}, ${JSON.stringify(feature.payload)}, ${feature.sortKey},
-       ${feature.revision}, ${feature.createdAt}, ${feature.updatedAt}, ${feature.updatedBy})
+       ${feature.revision}, ${feature.createdAt}, ${feature.updatedAt}, ${feature.updatedBy}, ${JSON.stringify(feature.fieldVersions || {})})
   `;
 }
 

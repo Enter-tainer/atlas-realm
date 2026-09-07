@@ -2172,7 +2172,8 @@ body,
 
 .layer-manager-body {
   display: grid;
-  grid-template-rows: auto auto auto minmax(84px, auto) auto;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 10px;
   min-height: 0;
   overflow: auto;
@@ -2304,8 +2305,13 @@ body,
 
 .layer-manager-list {
   display: grid;
+  grid-auto-rows: max-content;
+  align-content: start;
   gap: 6px;
   min-height: 0;
+  max-height: 36vh;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .layer-manager-item {
@@ -3509,4 +3515,30 @@ body,
 /* Image container */
 .orm-popup-images {
   margin: 6px 0;
+}
+
+.collab-sync-notice {
+  position: absolute;
+  z-index: 22;
+  top: 64px;
+  left: 12px;
+  max-width: min(360px, calc(100vw - 24px));
+  max-height: 45vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid #f59e0b;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #78350f;
+  font-size: 13px;
+}
+.collab-sync-notice[hidden] {
+  display: none;
+}
+.collab-sync-notice summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+.collab-sync-notice button {
+  margin: 6px 6px 0 0;
 }

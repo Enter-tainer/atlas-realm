@@ -1,3 +1,4 @@
+import { rejectSyncProtocol } from './room-sync.js';
 import { Server, type Connection, type ConnectionContext, type WSMessage } from 'partyserver';
 import { getRoomAccessSnapshot } from '../room-access.js';
 import type { AnnotationFeature, Layer } from '../layer-model.js';
@@ -62,10 +63,53 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     };
   }
 
+  _syncCounters = {
+    submissions: 0,
+    commands: 0,
+    inputBytes: 0,
+    snapshots: 0,
+    snapshotBytes: 0,
+    results: 0,
+    totalSubmitMs: 0,
+    maxSubmitMs: 0,
+    outcomes: {} as Record<string, number>,
+  };
+  _recordSyncMetric(metric: {
+    event: 'submit' | 'result' | 'snapshot' | 'error';
+    bytes?: number;
+    commands?: number;
+    durationMs?: number;
+    reason?: string;
+  }) {
+    const stats = this._syncCounters;
+    if (metric.event === 'submit') {
+      stats.submissions++;
+      stats.commands += metric.commands || 0;
+      stats.inputBytes += metric.bytes || 0;
+    }
+    if (metric.event === 'snapshot') {
+      stats.snapshots++;
+      stats.snapshotBytes += metric.bytes || 0;
+    }
+    if (metric.event === 'result') {
+      stats.results++;
+      stats.totalSubmitMs += metric.durationMs || 0;
+      stats.maxSubmitMs = Math.max(stats.maxSubmitMs, metric.durationMs || 0);
+    }
+    if (metric.reason) stats.outcomes[metric.reason] = (stats.outcomes[metric.reason] || 0) + 1;
+  }
+  _readSyncMetrics() {
+    const metadata = this
+      .sql`SELECT COUNT(*) AS clientRows, COALESCE(SUM(length(client_id) + length(owner_id) + length(connection_id) + length(request_hash) + COALESCE(length(result_json), 0) + 24), 0) AS logicalBytes FROM sync_clients`[0];
+    return { ...this._syncCounters, metadata };
+  }
+
   _messageContext(): RoomMessageContext {
     return {
       ctx: this.ctx,
       sql: this.sql.bind(this),
+      recordSyncMetric: this._recordSyncMetric.bind(this),
+      readSyncMetrics: this._readSyncMetrics.bind(this),
       broadcast: this.broadcast.bind(this),
       _canEdit: this._canEdit.bind(this),
       _canManage: this._canManage.bind(this),
@@ -385,9 +429,13 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
   }
 
   async onConnect(connection: Connection<PeerState>, { request }: ConnectionContext): Promise<void> {
+    const url = new URL(request.url);
+    if (url.searchParams.get('syncProtocol') !== '2') {
+      rejectSyncProtocol(connection);
+      return;
+    }
     const auth = await this._verifyAuthHeaders(request);
     await this._touchRoom();
-    const url = new URL(request.url);
     const clientType = sanitizeClientType(url.searchParams.get('clientType'));
     const presenceVisible = clientType === 'human' && url.searchParams.get('headless') !== 'true';
     const color = sanitizeColor(
@@ -405,6 +453,8 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     const agent = clientType === 'agent' ? this._touchAgentParticipant(user, 'connect') : null;
 
     connection.setState({
+      syncProtocol: 2,
+      syncConnectionToken: crypto.randomUUID(),
       user,
       auth: auth || undefined,
       clientType,
@@ -434,19 +484,6 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
     );
 
     connection.send(encodeMessage({ type: 'room:status', ...this._roomStatus() }));
-
-    connection.send(
-      encodeMessage({
-        type: 'layer:list',
-        layers: this._listLayers(),
-      }),
-    );
-    connection.send(
-      encodeMessage({
-        type: 'annotation-feature:list',
-        features: this._listAnnotationFeatures(),
-      }),
-    );
 
     if (presenceVisible) {
       this.broadcast(
@@ -491,16 +528,26 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
   async onAlarm(): Promise<void> {
     await this._ensureLayerStorage();
+    void this.sql`DELETE FROM sync_clients WHERE expires_at <= ${Date.now()}`;
+    this._pruneUnreferencedFileContent();
     const room = this.sql<{ persistence: RoomPersistence; expires_at: number | null }>`
       SELECT persistence, expires_at FROM room_meta WHERE room_id = ${this.name} LIMIT 1
     `[0];
-    if (!room || room.persistence === 'persistent') return;
+    if (!room) return;
+    if (room.persistence === 'persistent') {
+      const next = this.sql<{ next_expiry: number | null }>`SELECT MIN(expires_at) AS next_expiry FROM sync_clients`[0]
+        ?.next_expiry;
+      if (next) await this.ctx.storage.setAlarm(Number(next) + 1);
+      return;
+    }
     if (room.expires_at && Number(room.expires_at) > Date.now()) {
       this._pruneAgentParticipants();
       await this.ctx.storage.setAlarm(Number(room.expires_at) + 60_000);
       return;
     }
     void this.sql`DELETE FROM layers`;
+    void this.sql`DELETE FROM sync_clients`;
+    void this.sql`UPDATE sync_state SET epoch = ${crypto.randomUUID()}, seq = 0 WHERE singleton = 1`;
     void this.sql`DELETE FROM annotation_features`;
     void this.sql`DELETE FROM file_contents`;
     void this.sql`DELETE FROM agent_participants`;

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { reset, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
 import { env } from 'cloudflare:workers';
+import { parseRoomMutation, fieldVersion, type RoomCommand } from './room-sync-protocol.js';
 import type { MapCollaboration } from './worker.js';
 import type { Connection, ConnectionContext, WSMessage } from 'partyserver';
 
@@ -116,12 +117,9 @@ class FakeAccessRefreshD1Database {
   }
 }
 
-const HASH_A = 'a'.repeat(64);
-const HASH_B = 'b'.repeat(64);
+const HASH_A = '039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81';
 const CONTENT_A = new Uint8Array([1, 2, 3]);
-const CONTENT_B = new Uint8Array([4, 5, 6, 7]);
 const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
 const INTERNAL_AUTH_SECRET = 'test-internal-auth-secret';
 
 afterEach(async () => {
@@ -179,6 +177,8 @@ function authorizeConnection(
 ): TestConnection {
   connection.setState({
     ...(connection.state || {}),
+    syncProtocol: 2,
+    syncConnectionToken: (connection.state?.syncConnectionToken as string) || crypto.randomUUID(),
     auth: {
       userId,
       role,
@@ -202,25 +202,80 @@ async function connectWorker(
   connection: TestConnection,
   context: ConnectionContext,
 ): Promise<void> {
-  await instance.onConnect(connection as unknown as Connection, context);
+  const url = new URL(context.request.url);
+  url.searchParams.set('syncProtocol', '2');
+  await instance.onConnect(connection as unknown as Connection, {
+    ...context,
+    request: new Request(url, context.request),
+  });
 }
 
+async function openStream(instance: TestMapCollaboration, connection: TestConnection) {
+  await instance.onMessage(workerConnection(connection), JSON.stringify({ type: 'sync:open', protocol: 2 }));
+  return sentJson(connection, 'sync:snapshot').at(-1)!;
+}
+async function submit(
+  instance: TestMapCollaboration,
+  connection: TestConnection,
+  commands: RoomCommand[],
+  extra: Record<string, unknown> = {},
+) {
+  let client = instance.sql<{
+    client_id: string;
+    last_seq: number;
+  }>`SELECT client_id, last_seq FROM sync_clients WHERE connection_id = ${String(connection.state?.syncConnectionToken || connection.id)} ORDER BY created_at DESC LIMIT 1`[0];
+  if (!client) {
+    const snapshot = await openStream(instance, connection);
+    if (!snapshot.clientId) return;
+    client = { client_id: String(snapshot.clientId), last_seq: Number(snapshot.lastProcessedSeq) };
+  }
+  const state = instance.sql<{ epoch: string }>`SELECT epoch FROM sync_state WHERE singleton = 1`[0];
+  const operation = {
+    type: 'sync:submit',
+    protocol: 2,
+    epoch: state.epoch,
+    clientId: client.client_id,
+    seq: client.last_seq + 1,
+    commands,
+    ...extra,
+  };
+  await instance.onMessage(workerConnection(connection), JSON.stringify(operation));
+  return { operation, response: sentJson(connection, 'sync:result').at(-1) as any };
+}
 async function sendWorkerMessage(
   instance: TestMapCollaboration,
   connection: TestConnection,
   message: WSMessage,
 ): Promise<void> {
-  await instance.onMessage(workerConnection(connection), message);
+  const m = typeof message === 'string' ? JSON.parse(message) : null;
+  if (m && parseRoomMutation(m)) {
+    if (m.type === 'layer:create')
+      await submit(instance, connection, [{ type: 'create', kind: 'layer', localId: m.layer.id, data: m.layer }]);
+    else if (m.type === 'annotation-feature:upsert')
+      await submit(instance, connection, [{ type: 'create', kind: 'feature', localId: m.feature.id, data: m.feature }]);
+    else throw new Error('Use explicit commands in new protocol tests');
+  } else await instance.onMessage(workerConnection(connection), message);
 }
 
 function jsonMessage(type: string, payload: Record<string, unknown> = {}): string {
-  return JSON.stringify({ type, ...payload });
+  return JSON.stringify({ type, ...(type === 'sync:request' ? { protocol: 2 } : {}), ...payload });
 }
 
 function sentJson(connection: TestConnection, type?: string): Array<Record<string, unknown>> {
   return connection.sent
     .filter((message) => typeof message === 'string')
-    .map((message) => JSON.parse(message) as unknown)
+    .flatMap((message) => {
+      const parsed = JSON.parse(message);
+      if ((parsed.type === 'sync:result' || parsed.type === 'sync:commit') && type !== parsed.type)
+        return [
+          ...(parsed.delta?.layers || []).map((layer: unknown) => ({ type: 'layer:created', layer })),
+          ...(parsed.delta?.features || []).map((feature: unknown) => ({
+            type: 'annotation-feature:upserted',
+            feature,
+          })),
+        ];
+      return [parsed];
+    })
     .filter((message): message is Record<string, unknown> => {
       if (!message || typeof message !== 'object') return false;
       return !type || (message as Record<string, unknown>).type === type;
@@ -247,21 +302,6 @@ function encodeFileContentFrame(contentHash: string, content: Uint8Array): Uint8
   buffer.set(hashBytes, 2);
   buffer.set(content, 2 + hashBytes.byteLength);
   return buffer;
-}
-
-function decodeFileContentFrame(message: unknown): { contentHash: string; content: Uint8Array } | null {
-  const bytes =
-    message instanceof ArrayBuffer
-      ? new Uint8Array(message)
-      : ArrayBuffer.isView(message)
-        ? new Uint8Array(message.buffer, message.byteOffset, message.byteLength)
-        : null;
-  if (!bytes || bytes[0] !== 1) return null;
-  const hashLength = bytes[1];
-  return {
-    contentHash: textDecoder.decode(bytes.slice(2, 2 + hashLength)),
-    content: bytes.slice(2 + hashLength),
-  };
 }
 
 function fileLayer(id: string, contentHash: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -345,14 +385,6 @@ function contentHashes(instance: TestMapCollaboration): TestSqlValue[] {
   return instance.sql<{ content_hash: string }>`
     SELECT content_hash FROM file_contents ORDER BY content_hash ASC
   `.map((row) => row.content_hash);
-}
-
-function contentCount(instance: TestMapCollaboration): number {
-  return Number(
-    instance.sql<{ count: number }>`
-      SELECT COUNT(*) AS count FROM file_contents
-    `[0]?.count || 0,
-  );
 }
 
 function hex(bytes: ArrayBuffer): string {
@@ -464,7 +496,30 @@ describe('MapCollaboration layer storage', () => {
     expect(result.layers[0]).toMatchObject({ id: 'annotation-default', kind: 'annotation' });
   });
 
-  it('sends layer and annotation-feature lists when a client connects', async () => {
+  it('rejects old clients before joining and closes legacy connections after an upgrade', async () => {
+    const result = await runInDO(roomStub('reject-old-protocol'), async (instance) => {
+      await instance.onStart();
+      const old = createConnection('old');
+      await instance.onConnect(
+        old as unknown as Connection,
+        {
+          request: new Request('https://example.com/parties/map-collaboration/reject-old-protocol'),
+        } as ConnectionContext,
+      );
+      const previous = authorizeConnection(createConnection('previous'));
+      previous.setState({ ...previous.state, syncProtocol: undefined });
+      await instance.onMessage(workerConnection(previous), jsonMessage('client:update'));
+      const current = authorizeConnection(createConnection('current'));
+      await instance.onMessage(workerConnection(current), jsonMessage('layer:list:request'));
+      return [old, previous, current].map((connection) => ({ closed: connection.closed, sent: sentJson(connection) }));
+    });
+    for (const entry of result) {
+      expect(entry.closed?.code).toBe(1008);
+      expect(entry.sent).toEqual([{ type: 'protocol:error', reason: 'upgrade-required', protocol: 2 }]);
+    }
+  });
+
+  it('sends one atomic snapshot only when a v2 client requests it', async () => {
     const stub = roomStub('connect-snapshot');
     const result = await runInDO(stub, async (instance) => {
       await instance.onStart();
@@ -475,13 +530,15 @@ describe('MapCollaboration layer storage', () => {
           headers: await authHeaders('connect-snapshot', { role: 'edit', clientId: connection.id }),
         }),
       } as ConnectionContext);
+      await openStream(instance, connection);
       return sentJson(connection).map((message) => message.type);
     });
 
     expect(result).toContain('presence:init');
     expect(result).toContain('room:status');
-    expect(result).toContain('layer:list');
-    expect(result).toContain('annotation-feature:list');
+    expect(result).toContain('sync:snapshot');
+    expect(result).not.toContain('layer:list');
+    expect(result).not.toContain('annotation-feature:list');
     expect(result).not.toContain('overlay:init');
     expect(result).not.toContain('drawing:snapshot');
   });
@@ -580,14 +637,13 @@ describe('MapCollaboration layer storage', () => {
 
       return {
         viewerDenied: sentJson(viewer, 'permission:denied'),
+        viewerOperation: sentJson(viewer, 'sync:snapshot'),
         managerUpdated: sentJson(manager, 'room:updated').at(-1),
       };
     });
 
-    expect(result.viewerDenied).toEqual([
-      { type: 'permission:denied', action: 'layer:create' },
-      { type: 'permission:denied', action: 'room:update' },
-    ]);
+    expect(result.viewerDenied).toEqual([{ type: 'permission:denied', action: 'room:update' }]);
+    expect(result.viewerOperation).toMatchObject([{ clientId: null }]);
     expect(result.managerUpdated).toMatchObject({ type: 'room:updated', persistence: 'persistent' });
   });
 
@@ -648,75 +704,9 @@ describe('MapCollaboration layer storage', () => {
     expect(result.denied).toEqual([]);
     expect(result.upserted).toMatchObject({
       type: 'annotation-feature:upserted',
-      feature: { id: 'path-a', layerId: 'annotation-default' },
+      feature: { id: expect.any(String), layerId: 'annotation-default' },
     });
     expect(result.stored).toHaveLength(1);
-  });
-
-  it('broadcasts editor layer and annotation updates to active viewers', async () => {
-    const stub = roomStub('viewer-sync');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      withInternalAuth(instance);
-      const viewer = createConnection('viewer');
-      const editor = createConnection('editor');
-      installFakeBroadcast(instance, [viewer, editor]);
-
-      await connectWorker(instance, viewer, {
-        request: new Request('https://example.com/parties/map-collaboration/viewer-sync', {
-          headers: await authHeaders('viewer-sync', {
-            userId: 'user-viewer',
-            role: 'view',
-            clientId: 'viewer-session',
-          }),
-        }),
-      } as ConnectionContext);
-      await connectWorker(instance, editor, {
-        request: new Request('https://example.com/parties/map-collaboration/viewer-sync', {
-          headers: await authHeaders('viewer-sync', {
-            userId: 'user-editor',
-            role: 'edit',
-            clientId: 'editor-session',
-          }),
-        }),
-      } as ConnectionContext);
-      viewer.sent = [];
-      editor.sent = [];
-
-      await sendWorkerMessage(
-        instance,
-        editor,
-        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        editor,
-        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('path-a', 'day-1') }),
-      );
-      await sendWorkerMessage(instance, viewer, jsonMessage('annotation-feature:list:request', { layerId: 'day-1' }));
-
-      return {
-        viewerLayerCreated: sentJson(viewer, 'layer:created').at(-1),
-        viewerFeatureUpserted: sentJson(viewer, 'annotation-feature:upserted').at(-1),
-        viewerFeatureList: sentJson(viewer, 'annotation-feature:list').at(-1),
-        viewerDenied: sentJson(viewer, 'permission:denied'),
-      };
-    });
-
-    expect(result.viewerLayerCreated).toMatchObject({
-      type: 'layer:created',
-      layer: { id: 'day-1', kind: 'annotation' },
-    });
-    expect(result.viewerFeatureUpserted).toMatchObject({
-      type: 'annotation-feature:upserted',
-      feature: { id: 'path-a', layerId: 'day-1', featureType: 'path' },
-    });
-    expect(result.viewerFeatureList).toMatchObject({
-      type: 'annotation-feature:list',
-      layerId: 'day-1',
-      features: [{ id: 'path-a', layerId: 'day-1', featureType: 'path' }],
-    });
-    expect(result.viewerDenied).toEqual([]);
   });
 
   it('downgrades active connections through access refresh before later messages', async () => {
@@ -755,15 +745,18 @@ describe('MapCollaboration layer storage', () => {
         refreshed,
         state: editor.state,
         accessUpdated: sentJson(editor, 'access:updated').at(-1),
-        denied: sentJson(editor, 'permission:denied').at(-1),
-        layers: instance._listLayers().map((layer) => layer.id),
+        denied: sentJson(editor, 'sync:result').at(-1),
+        layers: instance._listLayers().map((layer) => layer.name),
       };
     });
 
     expect(result.refreshed).toBe(1);
     expect(result.state).toMatchObject({ auth: { role: 'view' } });
     expect(result.accessUpdated).toMatchObject({ type: 'access:updated', role: 'view', canEdit: false });
-    expect(result.denied).toEqual({ type: 'permission:denied', action: 'layer:create' });
+    expect(result.denied).toMatchObject({
+      type: 'sync:result',
+      result: { status: 'rejected', reason: 'permission-denied' },
+    });
     expect(result.layers).toContain('before-downgrade');
     expect(result.layers).not.toContain('after-downgrade');
   });
@@ -950,7 +943,7 @@ describe('MapCollaboration layer storage', () => {
     expect(result.editorState).toMatchObject({ auth: { userId: 'anon_editor', role: 'edit' } });
     expect(result.observerFeatureUpserted).toMatchObject({
       type: 'annotation-feature:upserted',
-      feature: { id: 'upgraded-point', layerId: 'annotation-default' },
+      feature: { id: expect.any(String), layerId: 'annotation-default' },
     });
     expect(result.stored).toHaveLength(1);
   });
@@ -1006,83 +999,6 @@ describe('MapCollaboration layer storage', () => {
     expect(result.roomMeta).toMatchObject({ persistence: 'persistent', expires_at: null });
   });
 
-  it('stores file content, creates file layers, serves content requests, and prunes unreferenced content', async () => {
-    const stub = roomStub('file-layer-flow');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection());
-
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A) }),
-      );
-      const needed = sentJson(connection, 'file:content:needed');
-
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:update', {
-          layerId: 'route-a',
-          patch: { name: 'Route A', payload: { style: { color: '#ef4444', opacity: 0.5 } } },
-        }),
-      );
-      await sendWorkerMessage(instance, connection, jsonMessage('file:content:request', { contentHash: HASH_A }));
-      const binary = decodeFileContentFrame(connection.sent.at(-1));
-      await sendWorkerMessage(instance, connection, jsonMessage('layer:delete', { layerId: 'route-a' }));
-
-      return {
-        needed,
-        stored: sentJson(connection, 'file:content:stored'),
-        created: sentJson(connection, 'layer:created').at(-1),
-        updated: sentJson(connection, 'layer:updated').at(-1),
-        binary,
-        layers: instance._listLayers(),
-        contentCount: contentCount(instance),
-      };
-    });
-
-    expect(result.needed).toEqual([{ type: 'file:content:needed', contentHash: HASH_A }]);
-    expect(result.stored).toEqual([{ type: 'file:content:stored', contentHash: HASH_A }]);
-    expect(result.created).toMatchObject({ type: 'layer:created', layer: { id: 'route-a', kind: 'file' } });
-    expect(result.updated).toMatchObject({
-      type: 'layer:updated',
-      layer: { id: 'route-a', name: 'Route A', payload: { style: { color: '#ef4444', opacity: 0.5 } } },
-    });
-    expect(result.binary).toEqual({ contentHash: HASH_A, content: CONTENT_A });
-    expect(result.layers.map((layer) => layer.id)).toEqual(['annotation-default']);
-    expect(result.contentCount).toBe(0);
-  });
-
-  it('does not rewrite identical layer create replays', async () => {
-    const stub = roomStub('layer-create-replay-dedupe');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection());
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-
-      const layer = fileLayer('route-a', HASH_A);
-      await sendWorkerMessage(instance, connection, jsonMessage('layer:create', { layer }));
-      await sendWorkerMessage(instance, connection, jsonMessage('layer:create', { layer }));
-
-      return {
-        layers: instance._listLayers(),
-        created: sentJson(connection, 'layer:created'),
-      };
-    });
-
-    const route = result.layers.find((layer) => layer.id === 'route-a');
-    expect(route).toMatchObject({ id: 'route-a', revision: 1 });
-    expect(result.created).toHaveLength(2);
-    expect(result.created[1].layer).toMatchObject({ id: 'route-a', revision: 1 });
-  });
-
   it('does not rewrite identical file content uploads', async () => {
     const stub = roomStub('file-content-replay-dedupe');
     const result = await runInDO(stub, async (instance) => {
@@ -1110,276 +1026,6 @@ describe('MapCollaboration layer storage', () => {
     expect(result.row).toEqual({ content_hash: HASH_A, created_at: 1_000 });
   });
 
-  it('stores annotation features as rows and rejects features for missing layers', async () => {
-    const stub = roomStub('annotation-feature-flow');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection());
-
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('missing-feature', 'missing-layer') }),
-      );
-      await sendWorkerMessage(instance, connection, encodeFileContentFrame(HASH_A, CONTENT_A));
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: fileLayer('route-layer', HASH_A) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('wrong-kind-feature', 'route-layer') }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('annotation-feature:upsert', { feature: annotationFeature('path-a', 'day-1') }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('annotation-feature:reorder', { updates: [{ featureId: 'path-a', sortKey: '000050' }] }),
-      );
-
-      const beforeDelete = instance._listAnnotationFeatures('day-1');
-      await sendWorkerMessage(instance, connection, jsonMessage('layer:delete', { layerId: 'day-1' }));
-
-      return {
-        rejected: sentJson(connection, 'annotation-feature:rejected'),
-        upserted: sentJson(connection, 'annotation-feature:upserted')[0],
-        reordered: sentJson(connection, 'annotation-feature:reordered')[0],
-        beforeDelete,
-        afterDelete: instance._listAnnotationFeatures('day-1'),
-      };
-    });
-
-    expect(result.rejected).toEqual([
-      {
-        type: 'annotation-feature:rejected',
-        featureId: 'missing-feature',
-        layerId: 'missing-layer',
-        reason: 'missing-layer',
-      },
-      {
-        type: 'annotation-feature:rejected',
-        featureId: 'wrong-kind-feature',
-        layerId: 'route-layer',
-        layerKind: 'file',
-        reason: 'wrong-layer-kind',
-      },
-    ]);
-    expect(result.upserted).toMatchObject({
-      type: 'annotation-feature:upserted',
-      feature: { id: 'path-a', layerId: 'day-1', featureType: 'path' },
-    });
-    expect(result.reordered).toMatchObject({
-      type: 'annotation-feature:reordered',
-      features: [{ id: 'path-a', sortKey: '000050' }],
-    });
-    expect(result.beforeDelete).toHaveLength(1);
-    expect(result.afterDelete).toEqual([]);
-  });
-
-  it('keeps concurrent annotation feature inserts as separate rows', async () => {
-    const stub = roomStub('annotation-feature-concurrent-inserts');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connectionA = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
-      const connectionB = authorizeConnection(createConnection('client-b'), { userId: 'user-b' });
-
-      await sendWorkerMessage(
-        instance,
-        connectionA,
-        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connectionA,
-        jsonMessage('annotation-feature:upsert', {
-          feature: annotationFeature('path-a', 'day-1', { sortKey: '000010', label: 'A' }),
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connectionB,
-        jsonMessage('annotation-feature:upsert', {
-          feature: annotationFeature('path-b', 'day-1', { sortKey: '000020', label: 'B', updatedBy: 'user-b' }),
-        }),
-      );
-
-      return {
-        features: instance._listAnnotationFeatures('day-1'),
-        connectionAUpserts: sentJson(connectionA, 'annotation-feature:upserted'),
-        connectionBUpserts: sentJson(connectionB, 'annotation-feature:upserted'),
-      };
-    });
-
-    expect(result.features.map((feature) => feature.id)).toEqual(['path-a', 'path-b']);
-    expect(result.features.map((feature) => (feature.payload as Record<string, unknown>).label)).toEqual(['A', 'B']);
-    expect(result.connectionAUpserts).toHaveLength(1);
-    expect(result.connectionBUpserts).toHaveLength(1);
-  });
-
-  it('uses last-write-wins for same-feature annotation updates and increments revision', async () => {
-    const stub = roomStub('annotation-feature-last-write-wins');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connectionA = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
-      const connectionB = authorizeConnection(createConnection('client-b'), { userId: 'user-b' });
-
-      await sendWorkerMessage(
-        instance,
-        connectionA,
-        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connectionA,
-        jsonMessage('annotation-feature:upsert', {
-          feature: annotationFeature('path-a', 'day-1', { label: 'First label', updatedBy: 'user-a' }),
-        }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connectionB,
-        jsonMessage('annotation-feature:upsert', {
-          feature: annotationFeature('path-a', 'day-1', { label: 'Second label', updatedBy: 'user-b' }),
-        }),
-      );
-
-      return {
-        features: instance._listAnnotationFeatures('day-1'),
-        firstAck: sentJson(connectionA, 'annotation-feature:upserted')[0],
-        secondAck: sentJson(connectionB, 'annotation-feature:upserted')[0],
-      };
-    });
-
-    expect(result.features).toHaveLength(1);
-    expect(result.features[0]).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
-    expect((result.features[0].payload as Record<string, unknown>).label).toBe('Second label');
-    expect(result.firstAck.feature).toMatchObject({ id: 'path-a', revision: 1 });
-    expect(result.secondAck.feature).toMatchObject({ id: 'path-a', revision: 2, updatedBy: 'user-b' });
-  });
-
-  it('accepts an annotation mutation carrying the current revision', async () => {
-    const stub = roomStub('annotation-feature-current-revision-update');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
-
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('annotation-feature:upsert', {
-          feature: annotationFeature('path-a', 'annotation-default', { label: 'Original label' }),
-        }),
-      );
-      const existing = instance._getAnnotationFeature('path-a');
-      const update = annotationFeature('path-a', 'annotation-default', {
-        label: 'Updated label',
-        revision: existing?.revision,
-        createdAt: existing?.createdAt,
-        updatedAt: existing?.updatedAt,
-        payload: {
-          ...(existing?.payload || {}),
-          label: 'Updated label',
-          createdAt: existing?.createdAt,
-          updatedAt: existing?.updatedAt,
-        },
-      });
-      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature: update }));
-
-      return {
-        stored: instance._getAnnotationFeature('path-a'),
-        acknowledgements: sentJson(connection, 'annotation-feature:upserted'),
-      };
-    });
-
-    expect(result.stored).toMatchObject({ id: 'path-a', revision: 2 });
-    expect(result.stored?.payload).toMatchObject({ label: 'Updated label' });
-    expect(result.acknowledgements.at(-1)?.feature).toMatchObject({ id: 'path-a', revision: 2 });
-  });
-
-  it('does not rewrite identical annotation feature replays', async () => {
-    const stub = roomStub('annotation-feature-replay-dedupe');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection('client-a'), { userId: 'user-a' });
-
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: annotationLayer('day-1', { sortKey: '000030' }) }),
-      );
-      const feature = annotationFeature('path-a', 'day-1', { label: 'Same label', updatedBy: 'user-a' });
-      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature }));
-      await sendWorkerMessage(instance, connection, jsonMessage('annotation-feature:upsert', { feature }));
-
-      return {
-        features: instance._listAnnotationFeatures('day-1'),
-        upserted: sentJson(connection, 'annotation-feature:upserted'),
-      };
-    });
-
-    expect(result.features).toHaveLength(1);
-    expect(result.features[0]).toMatchObject({ id: 'path-a', revision: 1 });
-    expect(result.upserted).toHaveLength(2);
-    expect(result.upserted[1].feature).toMatchObject({ id: 'path-a', revision: 1 });
-  });
-
-  it('reorders mixed file and annotation layers with layer sort keys only', async () => {
-    const stub = roomStub('mixed-reorder');
-    const result = await runInDO(stub, async (instance) => {
-      await instance.onStart();
-      const connection = authorizeConnection(createConnection());
-      await storeContent(instance, connection, HASH_A, CONTENT_A);
-      await storeContent(instance, connection, HASH_B, CONTENT_B);
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: fileLayer('route-a', HASH_A, { sortKey: '000020' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: annotationLayer('notes', { sortKey: '000030' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:create', { layer: fileLayer('area-b', HASH_B, { sortKey: '000040' }) }),
-      );
-      await sendWorkerMessage(
-        instance,
-        connection,
-        jsonMessage('layer:reorder', {
-          updates: [
-            { layerId: 'area-b', sortKey: '000010' },
-            { layerId: 'notes', sortKey: '000020' },
-            { layerId: 'route-a', sortKey: '000030' },
-            { layerId: 'annotation-default', sortKey: '000040' },
-          ],
-        }),
-      );
-
-      return {
-        ack: sentJson(connection, 'layer:reordered').at(-1),
-        layers: instance._listLayers(),
-      };
-    });
-
-    const ackLayers = Array.isArray(result.ack?.layers) ? result.ack.layers : [];
-    expect(ackLayers.map((layer) => layer.id)).toEqual(['area-b', 'notes', 'route-a', 'annotation-default']);
-    expect(result.layers.map((layer) => layer.sortKey)).toEqual(['000010', '000020', '000030', '000040']);
-  });
-
   it('returns a protocol error for old overlay and drawing messages', async () => {
     const stub = roomStub('legacy-protocol-error');
     const result = await runInDO(stub, async (instance) => {
@@ -1393,13 +1039,13 @@ describe('MapCollaboration layer storage', () => {
     expect(result).toEqual([
       {
         type: 'protocol:error',
-        reason: 'unsupported-protocol',
-        message: 'Use layer, annotation-feature, and file:content messages.',
+        reason: 'upgrade-required',
+        protocol: 2,
       },
       {
         type: 'protocol:error',
-        reason: 'unsupported-protocol',
-        message: 'Use layer, annotation-feature, and file:content messages.',
+        reason: 'upgrade-required',
+        protocol: 2,
       },
     ]);
   });
@@ -1455,5 +1101,383 @@ describe('MapCollaboration layer storage', () => {
     expect(after.features).toEqual([]);
     expect(after.content).toEqual([]);
     expect(after.roomMeta).toEqual([]);
+  });
+  it('assigns IDs and retains only the latest compact result per stream', async () => {
+    const data = await runInDO(roomStub('bounded-stream'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const created = await submit(instance, c, [
+        { type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('chosen-id') },
+      ]);
+      const id = created!.response.result.ids.draft;
+      expect(id).not.toBe('chosen-id');
+      for (let i = 0; i < 150; i++)
+        await submit(instance, c, [
+          {
+            type: 'patch',
+            kind: 'layer',
+            id,
+            fields: { name: { expectedVersion: fieldVersion(instance._getLayer(id), 'name'), value: `Edit ${i}` } },
+          },
+        ]);
+      return {
+        row: instance._getLayer(id),
+        clients: instance.sql`SELECT last_seq, result_json FROM sync_clients`,
+        tables: instance.sql`SELECT name FROM sqlite_master WHERE type = 'table'`,
+      };
+    });
+    expect(data.row?.name).toBe('Edit 149');
+    expect(data.clients).toHaveLength(1);
+    expect(data.clients[0].last_seq).toBe(151);
+    expect(String(data.clients[0].result_json).length).toBeLessThan(1000);
+    expect(String(data.clients[0].result_json)).not.toContain('Edit 149');
+    expect(data.tables.map((row) => row.name)).not.toContain('sync_receipts');
+    expect(data.tables.map((row) => row.name)).not.toContain('deleted_layers');
+  });
+
+  it('deduplicates the last batch and rejects altered bodies and sequence gaps', async () => {
+    const data = await runInDO(roomStub('stream-retry'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const first = (await submit(instance, c, [
+        { type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('draft') },
+      ]))!;
+      await instance.onMessage(workerConnection(c), JSON.stringify(first.operation));
+      const replay = sentJson(c, 'sync:result').at(-1);
+      await instance.onMessage(
+        workerConnection(c),
+        JSON.stringify({
+          ...first.operation,
+          commands: [{ type: 'delete', kind: 'layer', id: first.response.result.ids.draft }],
+        }),
+      );
+      await instance.onMessage(workerConnection(c), JSON.stringify({ ...first.operation, seq: 3 }));
+      return { first: first.response, replay, errors: sentJson(c, 'sync:error'), layers: instance._listLayers() };
+    });
+    expect(data.replay?.result).toEqual(data.first.result);
+    expect(data.replay?.delta).toBeUndefined();
+    expect(data.errors.map((error) => error.reason)).toEqual(['sequence-reused', 'sequence-gap']);
+    expect(data.layers).toHaveLength(2);
+  });
+
+  it('merges independent fields but rejects same-field conflicts atomically', async () => {
+    const data = await runInDO(roomStub('field-conflicts'), async (instance) => {
+      await instance.onStart();
+      const a = authorizeConnection(createConnection('a'));
+      const b = authorizeConnection(createConnection('b'));
+      const created = (await submit(instance, a, [
+        { type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('original') },
+      ]))!;
+      const id = created.response.result.ids.draft;
+      await submit(instance, a, [
+        { type: 'patch', kind: 'layer', id, fields: { name: { expectedVersion: 1, value: 'A' } } },
+      ]);
+      await submit(instance, b, [
+        { type: 'patch', kind: 'layer', id, fields: { visible: { expectedVersion: 1, value: false } } },
+      ]);
+      const rejected = (await submit(instance, b, [
+        { type: 'create', kind: 'layer', localId: 'must-rollback', data: annotationLayer('Never') },
+        { type: 'patch', kind: 'layer', id, fields: { name: { expectedVersion: 1, value: 'B' } } },
+      ]))!;
+      return {
+        row: instance._getLayer(id),
+        layers: instance._listLayers(),
+        result: rejected.response.result,
+        client:
+          instance.sql`SELECT last_seq, result_json FROM sync_clients WHERE connection_id = ${String(b.state?.syncConnectionToken)}`[0],
+      };
+    });
+    expect(data.row).toMatchObject({ name: 'A', visible: false, fieldVersions: { name: 2, visible: 3 } });
+    expect(data.layers).toHaveLength(2);
+    expect(data.result).toMatchObject({
+      status: 'rejected',
+      reason: 'revision-conflict',
+      commandIndex: 1,
+      commitVersion: 3,
+    });
+    expect(data.client.last_seq).toBe(2);
+  });
+
+  it('uses the batch baseline for dependent create and patch commands', async () => {
+    const data = await runInDO(roomStub('batch-create-patch'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const response = (await submit(instance, c, [
+        { type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('Original') },
+        { type: 'patch', kind: 'layer', id: 'draft', fields: { name: { expectedVersion: 0, value: 'Renamed' } } },
+        { type: 'create', kind: 'feature', localId: 'point', data: annotationFeature('point', 'draft') },
+      ]))!.response;
+      return { response, layers: instance._listLayers(), features: instance._listAnnotationFeatures() };
+    });
+    expect(data.response.result.status).toBe('accepted');
+    expect(data.layers.find((row) => row.name === 'Renamed')).toBeTruthy();
+    expect(data.features[0].layerId).toBe(data.response.result.ids.draft);
+  });
+
+  it('deletion dominates stale edits without storing tombstones or allowing ID reuse', async () => {
+    const data = await runInDO(roomStub('delete-no-tombstones'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const created = (await submit(instance, c, [
+        { type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('Draft') },
+      ]))!;
+      const id = created.response.result.ids.draft;
+      await submit(instance, c, [
+        { type: 'create', kind: 'feature', localId: 'feature', data: annotationFeature('feature', id) },
+      ]);
+      await submit(instance, c, [{ type: 'delete', kind: 'layer', id }]);
+      const stale = (await submit(instance, c, [
+        { type: 'patch', kind: 'layer', id, fields: { name: { expectedVersion: 1, value: 'Old cache' } } },
+      ]))!.response;
+      const duplicateDelete = (await submit(instance, c, [{ type: 'delete', kind: 'layer', id }]))!.response;
+      const fresh = (await submit(instance, c, [
+        { type: 'create', kind: 'layer', localId: 'fresh', data: annotationLayer(id) },
+      ]))!.response;
+      return { stale, duplicateDelete, fresh, id, features: instance._listAnnotationFeatures() };
+    });
+    expect(data.stale.result.reason).toBe('target_missing');
+    expect(data.features).toEqual([]);
+    expect(data.duplicateDelete.result).toMatchObject({ status: 'accepted', commitVersion: 3 });
+    expect(data.fresh.result.ids.fresh).not.toBe(data.id);
+  });
+
+  it('fences replaced connections and rejects expired streams before metadata collection', async () => {
+    const data = await runInDO(roomStub('lease-fence'), async (instance) => {
+      await instance.onStart();
+      const a = authorizeConnection(createConnection('a'));
+      const b = authorizeConnection(createConnection('b'));
+      const initial = await openStream(instance, a);
+      await instance.onMessage(
+        workerConnection(b),
+        JSON.stringify({ type: 'sync:open', protocol: 2, clientId: initial.clientId, epoch: initial.epoch }),
+      );
+      await instance.onMessage(
+        workerConnection(a),
+        JSON.stringify({
+          type: 'sync:submit',
+          protocol: 2,
+          clientId: initial.clientId,
+          epoch: initial.epoch,
+          seq: 1,
+          commands: [{ type: 'delete', kind: 'layer', id: 'annotation-default' }],
+        }),
+      );
+      instance.sql`UPDATE sync_clients SET expires_at = ${Date.now() - 1}`;
+      await instance.onMessage(
+        workerConnection(b),
+        JSON.stringify({ type: 'sync:open', protocol: 2, clientId: initial.clientId, epoch: initial.epoch }),
+      );
+      return { a: sentJson(a, 'sync:error'), b: sentJson(b, 'sync:error'), layers: instance._listLayers() };
+    });
+    expect(data.a[0].reason).toBe('client_fenced');
+    expect(data.b[0].reason).toBe('client_expired');
+    expect(data.layers).toHaveLength(1);
+  });
+
+  it('does not allow another identity to resume a stream and limits stream creation', async () => {
+    const data = await runInDO(roomStub('stream-owner'), async (instance) => {
+      await instance.onStart();
+      const a = authorizeConnection(createConnection('a'), { userId: 'a' });
+      const b = authorizeConnection(createConnection('b'), { userId: 'b' });
+      const initial = await openStream(instance, a);
+      await instance.onMessage(
+        workerConnection(b),
+        JSON.stringify({ type: 'sync:open', protocol: 2, clientId: initial.clientId, epoch: initial.epoch }),
+      );
+      for (let i = 0; i < 20; i++)
+        await instance.onMessage(workerConnection(a), JSON.stringify({ type: 'sync:open', protocol: 2 }));
+      return {
+        b: sentJson(b, 'sync:error'),
+        a: sentJson(a, 'sync:error'),
+        count: instance.sql`SELECT COUNT(*) AS n FROM sync_clients`[0],
+      };
+    });
+    expect(data.b[0].reason).toBe('client_forbidden');
+    expect(data.a.at(-1)?.reason).toBe('client_limit');
+    expect(data.count.n).toBe(16);
+  });
+
+  it('rolls back business data, stream progress and room version together on storage failure', async () => {
+    const data = await runInDO(roomStub('stream-rollback'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      await openStream(instance, c);
+      const original = instance._upsertLayerRow.bind(instance);
+      const spy = vi.spyOn(instance, '_upsertLayerRow').mockImplementation((row) => {
+        original(row);
+        throw new Error('injected');
+      });
+      await expect(
+        submit(instance, c, [{ type: 'create', kind: 'layer', localId: 'draft', data: annotationLayer('Draft') }]),
+      ).rejects.toThrow('injected');
+      spy.mockRestore();
+      return {
+        layers: instance._listLayers(),
+        state: instance.sql`SELECT seq FROM sync_state`[0],
+        client: instance.sql`SELECT last_seq, result_json FROM sync_clients`[0],
+        results: sentJson(c, 'sync:result'),
+      };
+    });
+    expect(data.layers).toHaveLength(1);
+    expect(data.state.seq).toBe(0);
+    expect(data.client).toMatchObject({ last_seq: 0, result_json: null });
+    expect(data.results).toEqual([]);
+  });
+
+  it('applies semantic moves without changing unrelated position versions', async () => {
+    const data = await runInDO(roomStub('semantic-move'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const created = (await submit(
+        instance,
+        c,
+        ['a', 'b', 'c'].map((id) => ({
+          type: 'create' as const,
+          kind: 'layer' as const,
+          localId: id,
+          data: annotationLayer(id),
+        })),
+      ))!.response.result.ids;
+      await submit(instance, c, [
+        { type: 'move', kind: 'layer', id: created.c, beforeId: created.a, expectedVersion: 1 },
+      ]);
+      const stale = (await submit(instance, c, [
+        { type: 'move', kind: 'layer', id: created.c, beforeId: null, expectedVersion: 1 },
+      ]))!.response;
+      return { rows: instance._listLayers(), ids: created, stale };
+    });
+    expect(data.rows.map((row) => row.name)).toEqual(['Annotations', 'c', 'a', 'b']);
+    expect(
+      fieldVersion(
+        data.rows.find((row) => row.id === data.ids.a),
+        'position',
+      ),
+    ).toBe(1);
+    expect(data.stale.result.reason).toBe('revision-conflict');
+  });
+
+  it('returns an atomic snapshot with the last rejected outcome and no historical receipts', async () => {
+    const data = await runInDO(roomStub('snapshot-progress'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const failed = (await submit(instance, c, [
+        { type: 'patch', kind: 'layer', id: 'missing', fields: { name: { expectedVersion: 0, value: 'No' } } },
+      ]))!;
+      await instance.onMessage(
+        workerConnection(c),
+        JSON.stringify({
+          type: 'sync:request',
+          protocol: 2,
+          clientId: failed.operation.clientId,
+          epoch: failed.operation.epoch,
+        }),
+      );
+      return sentJson(c, 'sync:snapshot').at(-1);
+    });
+    expect(data).toMatchObject({
+      commitVersion: 0,
+      lastProcessedSeq: 1,
+      lastResult: { status: 'rejected', reason: 'target_missing' },
+      features: [],
+    });
+    expect(data).not.toHaveProperty('receipts');
+  });
+
+  it('fences reconnects even when the transport reuses the same connection ID', async () => {
+    const data = await runInDO(roomStub('same-transport-id'), async (instance) => {
+      await instance.onStart();
+      const old = authorizeConnection(createConnection('same'));
+      const fresh = authorizeConnection(createConnection('same'));
+      const initial = await openStream(instance, old);
+      await instance.onMessage(
+        workerConnection(fresh),
+        JSON.stringify({ type: 'sync:open', protocol: 2, clientId: initial.clientId, epoch: initial.epoch }),
+      );
+      await instance.onMessage(
+        workerConnection(old),
+        JSON.stringify({
+          type: 'sync:submit',
+          protocol: 2,
+          clientId: initial.clientId,
+          epoch: initial.epoch,
+          seq: 1,
+          commands: [{ type: 'delete', kind: 'layer', id: 'annotation-default' }],
+        }),
+      );
+      return { errors: sentJson(old, 'sync:error'), layers: instance._listLayers() };
+    });
+    expect(data.errors[0].reason).toBe('client_fenced');
+    expect(data.layers).toHaveLength(1);
+  });
+
+  it('verifies uploaded bytes and materializes prepared geometry inside an atomic batch', async () => {
+    const data = await runInDO(roomStub('prepared-geometry'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const bytes = new TextEncoder().encode(
+        JSON.stringify({
+          type: 'path',
+          points: [
+            [121.5, 31.2],
+            [121.6, 31.3],
+          ],
+          label: 'Prepared',
+          note: '',
+        }),
+      );
+      const hash = hex(await crypto.subtle.digest('SHA-256', bytes));
+      await storeContent(instance, c, HASH_A, bytes);
+      expect(sentJson(c, 'sync:error').at(-1)?.reason).toBe('content-hash-mismatch');
+      const commands: RoomCommand[] = [
+        {
+          type: 'create',
+          kind: 'feature',
+          localId: 'prepared',
+          data: { id: 'prepared', layerId: 'annotation-default', featureType: 'path', payload: { $content: hash } },
+        },
+      ];
+      const initial = await openStream(instance, c);
+      const request = {
+        type: 'sync:submit',
+        protocol: 2,
+        clientId: initial.clientId,
+        epoch: initial.epoch,
+        seq: 1,
+        commands,
+      };
+      await instance.onMessage(workerConnection(c), JSON.stringify(request));
+      expect(sentJson(c, 'sync:error').at(-1)?.reason).toBe('content_needed');
+      await storeContent(instance, c, hash, bytes);
+      await instance.onMessage(workerConnection(c), JSON.stringify(request));
+      return {
+        rows: instance._listAnnotationFeatures(),
+        result: sentJson(c, 'sync:result').at(-1),
+        clients: instance.sql`SELECT last_seq, length(result_json) AS size FROM sync_clients`,
+      };
+    });
+    expect(data.rows[0].payload).toMatchObject({
+      label: 'Prepared',
+      points: [
+        [121.5, 31.2],
+        [121.6, 31.3],
+      ],
+    });
+    expect(data.result).toMatchObject({ result: { seq: 1, status: 'accepted' } });
+    expect(data.clients[0].last_seq).toBe(1);
+    expect(Number(data.clients[0].size)).toBeLessThan(2000);
+  });
+
+  it('exposes bounded diagnostic counters only to room managers', async () => {
+    const data = await runInDO(roomStub('sync-metrics'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      await submit(instance, c, [{ type: 'delete', kind: 'layer', id: 'missing' }]);
+      await instance.onMessage(workerConnection(c), JSON.stringify({ type: 'sync:stats:request', protocol: 2 }));
+      expect(sentJson(c, 'sync:error').at(-1)?.reason).toBe('permission-denied');
+      authorizeConnection(c, { role: 'manage' });
+      await instance.onMessage(workerConnection(c), JSON.stringify({ type: 'sync:stats:request', protocol: 2 }));
+      return sentJson(c, 'sync:stats').at(-1);
+    });
+    expect(data).toMatchObject({ submissions: 1, commands: 1, snapshots: 1, metadata: { clientRows: 1 } });
   });
 });

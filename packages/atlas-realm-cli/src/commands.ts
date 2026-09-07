@@ -31,6 +31,10 @@ const DEFAULT_ANNOTATION_LAYER_ID = 'annotation-default';
 const FEATURE_TYPES = new Set(['point', 'text', 'path', 'polygon', 'route']);
 
 export async function executeCommand(client: RoomClientLike, command: Command): Promise<CommandResponse> {
+  if (command.action === 'upsert' || command.layerAction === 'upsert')
+    throw new Error(
+      'Use add to create a new item, update to edit an existing item, or layers replace to replace file contents.',
+    );
   if (command.subject === 'snapshot' || command.subject === 'status') {
     return { result: await snapshotResult(client, command.content === true) };
   }
@@ -109,7 +113,12 @@ export async function handleLayerCommand(
     return exportLayerContent(client, layer, command.out);
   }
 
-  if (action === 'add' || action === 'upsert') {
+  if (action === 'add' || action === 'replace') {
+    const existing = command.id ? getLayer(client.layers, command.id) : undefined;
+    if (action === 'replace' && existing?.kind !== 'file')
+      throw new Error('layers replace requires an existing file layer --id');
+    if (action === 'add' && existing)
+      throw new Error('Layer already exists. Use layers replace to replace its file contents.');
     if (!command.file) throw new Error('layers add requires a file path');
     const asset = await buildFileLayerAsset(command.file, command);
     client.sendBinary(encodeFileContentMessage(asset.manifest.contentHash, asset.content));
@@ -118,21 +127,31 @@ export async function handleLayerCommand(
         event.json?.type === 'file:content:stored' && event.json.contentHash === asset.manifest.contentHash,
       `file content store ${asset.manifest.contentHash}`,
     );
-    const existing = getLayer(client.layers, asset.manifest.id);
     const layer = fileLayerFromManifest(asset.manifest, {
       sortKey: command.sortKey || existing?.sortKey || nextSortKey(client.layers.length),
       createdAt: existing?.createdAt,
       updatedBy: client.config.agentName,
     });
-    client.sendJson({ type: 'layer:create', layer });
+    if (existing) {
+      layer.name = command.name ?? existing.name;
+      layer.visible = command.visible === undefined ? existing.visible : coerceBoolean(command.visible, true);
+      const style = (layer.payload as FileLayerPayload).style;
+      for (const key of ['color', 'opacity', 'lineWidth'] as const)
+        if (command[key] === undefined) style[key] = (existing.payload as FileLayerPayload).style[key] as never;
+    }
+    client.sendJson({
+      type: existing ? 'layer:replace' : 'layer:create',
+      layer,
+      baseline: existing,
+    });
     const ack = await client.waitFor(
-      (event: RoomEvent) => event.json?.type === 'layer:created' && event.json.layer?.id === layer.id,
-      `layer create ${layer.id}`,
+      (event: RoomEvent) => event.json?.type === (existing ? 'layer:updated' : 'layer:created'),
+      `layer ${existing ? 'update' : 'create'} ${layer.id}`,
     );
     const roomStatus = await applyRoomPersistence(client, command.persistence, { optional: true });
     return {
       result: { ok: true, room: client.config.room, layer: ack.json.layer, roomStatus },
-      human: (data: JsonRecord) => `Upserted layer ${data.layer.id}`,
+      human: (data: JsonRecord) => `${existing ? 'Replaced' : 'Created'} layer ${data.layer.id}`,
     };
   }
 
@@ -144,7 +163,7 @@ export async function handleLayerCommand(
     if (!existing) throw new Error(`Layer not found: ${id}`);
     const patch = layerPatchFromCommand(command, existing);
     if (Object.keys(patch).length === 0) throw new Error('No layer patch options were provided');
-    client.sendJson({ type: 'layer:update', layerId: id, patch });
+    client.sendJson({ type: 'layer:update', layerId: id, patch, baseline: existing });
     const ack = await client.waitFor(
       (event: RoomEvent) => event.json?.type === 'layer:updated' && event.json.layer?.id === id,
       `layer update ${id}`,
@@ -218,8 +237,9 @@ export async function handleAnnotationCommand(
     };
   }
 
-  if (action === 'add' || action === 'upsert') {
+  if (action === 'add') {
     const existing = command.id ? getAnnotationFeature(client.annotationFeatures, command.id) : undefined;
+    if (existing) throw new Error('Annotation already exists. Use annotations update to edit it.');
     const payload = await buildFeatureFromOptions(
       command,
       client.config,
@@ -228,7 +248,7 @@ export async function handleAnnotationCommand(
     );
     await ensureAnnotationLayer(client, payload.layerId, command);
     const feature = annotationFeatureFromPayload(client, payload, existing);
-    client.sendJson({ type: 'annotation-feature:upsert', feature });
+    client.sendJson({ type: 'annotation-feature:upsert', feature, baseline: existing, isCreate: !existing });
     const ack = await waitForFeatureMutation(client, feature, 'upsert');
     return {
       result: { ok: true, room: client.config.room, annotation: ack.json.feature },
@@ -248,7 +268,7 @@ export async function handleAnnotationCommand(
     );
     await ensureAnnotationLayer(client, payload.layerId, command);
     const feature = annotationFeatureFromPayload(client, payload, existing);
-    client.sendJson({ type: 'annotation-feature:upsert', feature });
+    client.sendJson({ type: 'annotation-feature:upsert', feature, baseline: existing, isCreate: !existing });
     const ack = await waitForFeatureMutation(client, feature, 'update');
     return {
       result: { ok: true, room: client.config.room, annotation: ack.json.feature },
@@ -335,21 +355,25 @@ export async function handleAnnotationLayerCommand(
     };
   }
 
-  if (action === 'add' || action === 'create' || action === 'upsert' || action === 'update') {
-    const id = normalizeId(command.id, DEFAULT_ANNOTATION_LAYER_ID);
+  if (action === 'add' || action === 'create' || action === 'update' || action === 'patch') {
+    const creating = action === 'add' || action === 'create';
+    if (!creating && !command.id) throw new Error('annotation layers update requires a layer id');
+    const id = normalizeId(command.id, `draft-${crypto.randomUUID()}`);
     const existing = getLayer(client.layers, id);
+    if (creating && existing) throw new Error('Annotation layer already exists. Use update to edit it.');
+    if (!creating && !existing) throw annotationLayerNotFoundError(client, id, command);
     const now = Date.now();
     if (existing) {
       if (existing.kind !== 'annotation') throw annotationLayerWrongKindError(client, id, existing.kind);
       const patch = annotationLayerPatchFromCommand(command, existing);
-      client.sendJson({ type: 'layer:update', layerId: id, patch });
+      client.sendJson({ type: 'layer:update', layerId: id, patch, baseline: existing });
       const ack = await client.waitFor(
         (event: RoomEvent) => event.json?.type === 'layer:updated' && event.json.layer?.id === id,
         `annotation layer update ${id}`,
       );
       return {
         result: { ok: true, room: client.config.room, layer: ack.json.layer },
-        human: (data: JsonRecord) => `Upserted annotation layer ${data.layer.id}`,
+        human: (data: JsonRecord) => `Updated annotation layer ${data.layer.id}`,
       };
     }
     const layer: Layer = {
@@ -366,7 +390,7 @@ export async function handleAnnotationLayerCommand(
     };
     client.sendJson({ type: 'layer:create', layer });
     const ack = await client.waitFor(
-      (event: RoomEvent) => event.json?.type === 'layer:created' && event.json.layer?.id === id,
+      (event: RoomEvent) => event.json?.type === 'layer:created',
       `annotation layer create ${id}`,
     );
     return {
@@ -486,7 +510,7 @@ async function ensureAnnotationLayer(client: RoomClientLike, layerId: string, co
 
   client.sendJson({ type: 'layer:create', layer });
   const ack = await client.waitFor(
-    (event: RoomEvent) => event.json?.type === 'layer:created' && event.json.layer?.id === layerId,
+    (event: RoomEvent) => event.json?.type === 'layer:created',
     `annotation layer create ${layerId}`,
   );
   return ack.json.layer;
@@ -499,7 +523,7 @@ async function waitForFeatureMutation(
 ): Promise<RoomEvent> {
   const ack = await client.waitFor(
     (event: RoomEvent) =>
-      (event.json?.type === 'annotation-feature:upserted' && event.json.feature?.id === feature.id) ||
+      event.json?.type === 'annotation-feature:upserted' ||
       (event.json?.type === 'annotation-feature:rejected' && event.json.featureId === feature.id),
     `annotation feature ${label} ${feature.id}`,
   );

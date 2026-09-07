@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { applyFields, moveRows } from '../src/sync-protocol.js';
+import { beforeEach, afterEach, describe, expect, it } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -149,6 +150,7 @@ class FakeWebSocket {
   static initialLayers: Array<Record<string, any>> = [];
   static autoLayerUpdates = false;
   static autoLayerReorders = false;
+  seq = 0;
   binaryType = 'arraybuffer';
   readyState = FakeWebSocket.OPEN;
   listeners = new Map<string, Array<(event: unknown) => void>>();
@@ -189,33 +191,47 @@ class FakeWebSocket {
 
   send(data: unknown) {
     const message = JSON.parse(String(data));
-    if (message.type === 'layer:update' && FakeWebSocket.autoLayerUpdates) {
-      const existing = FakeWebSocket.initialLayers.find((layer) => layer.id === message.layerId) || {};
-      const layer = {
-        ...existing,
-        ...message.patch,
-        revision: Number(existing.revision || 0) + 1,
-        updatedAt: NOW + 1,
-      };
+    if (message.type === 'sync:open' || message.type === 'sync:request') {
       queueMicrotask(() =>
         this.dispatch('message', {
-          data: JSON.stringify({ type: 'layer:updated', layer }),
+          data: JSON.stringify({
+            type: 'sync:snapshot',
+            protocol: 2,
+            epoch: 'test',
+            commitVersion: this.seq,
+            clientId: 'test-client',
+            lastProcessedSeq: this.seq,
+            lastResult: null,
+            layers: FakeWebSocket.initialLayers,
+            features: [],
+          }),
         }),
       );
+      return;
     }
-    if (message.type === 'layer:reorder' && FakeWebSocket.autoLayerReorders) {
-      const layers = message.updates.map((update) => {
-        const existing = FakeWebSocket.initialLayers.find((layer) => layer.id === update.layerId) || {};
-        return {
-          ...existing,
-          sortKey: update.sortKey,
-          revision: Number(existing.revision || 0) + 1,
-          updatedAt: NOW + 1,
-        };
-      });
+    if (message.type === 'sync:submit') {
+      for (const command of message.commands) {
+        if (command.type === 'patch' && FakeWebSocket.autoLayerUpdates) {
+          const index = FakeWebSocket.initialLayers.findIndex((layer) => layer.id === command.id);
+          FakeWebSocket.initialLayers[index] = applyFields(
+            'layer',
+            FakeWebSocket.initialLayers[index],
+            Object.fromEntries(Object.entries(command.fields).map(([key, edit]: [string, any]) => [key, edit.value])),
+          );
+        }
+        if (command.type === 'move' && FakeWebSocket.autoLayerReorders)
+          FakeWebSocket.initialLayers = moveRows(FakeWebSocket.initialLayers, command.id, command.beforeId);
+      }
+      this.seq++;
       queueMicrotask(() =>
         this.dispatch('message', {
-          data: JSON.stringify({ type: 'layer:reordered', layers }),
+          data: JSON.stringify({
+            type: 'sync:result',
+            epoch: 'test',
+            clientId: 'test-client',
+            result: { seq: message.seq, status: 'accepted', commitVersion: this.seq, ids: {}, versions: {} },
+            delta: { layers: FakeWebSocket.initialLayers, features: [], deletedLayers: [], deletedFeatures: [] },
+          }),
         }),
       );
     }
@@ -288,7 +304,16 @@ const originalWebSocket = globalThis.WebSocket;
 const originalTokenStore = process.env.ATLAS_REALM_TOKEN_STORE;
 const originalRoomClientId = process.env.ATLAS_REALM_CLIENT_ID;
 
-afterEach(() => {
+let syncDirectory = '';
+const originalStateDirectory = process.env.ATLAS_REALM_STATE_DIR;
+beforeEach(async () => {
+  syncDirectory = await mkdtemp(join(tmpdir(), 'atlas-sync-test-'));
+  process.env.ATLAS_REALM_STATE_DIR = syncDirectory;
+});
+afterEach(async () => {
+  await rm(syncDirectory, { recursive: true, force: true });
+  if (originalStateDirectory === undefined) delete process.env.ATLAS_REALM_STATE_DIR;
+  else process.env.ATLAS_REALM_STATE_DIR = originalStateDirectory;
   globalThis.fetch = originalFetch;
   globalThis.WebSocket = originalWebSocket;
   FakeWebSocket.urls = [];
@@ -325,6 +350,23 @@ async function withTokenStore<T>(callback: (path: string) => Promise<T>): Promis
 }
 
 describe('atlas-realm CLI package', () => {
+  it('never creates a missing annotation layer through update and rejects implicit upsert', async () => {
+    const client = new FakeRoomClient();
+    await expect(
+      executeCommand(client, {
+        subject: 'annotations',
+        action: 'layers',
+        layerAction: 'update',
+        id: 'deleted-layer',
+        name: 'Old cache',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'upsert', id: 'deleted-feature' }),
+    ).rejects.toThrow('Use add');
+    expect(client.sentJson).toEqual([]);
+  });
+
   it('builds PartyServer WebSocket URLs from config', () => {
     const config = createConfig({
       host: 'https://example.com/app/',
@@ -336,7 +378,7 @@ describe('atlas-realm CLI package', () => {
     });
 
     expect(buildSocketUrl(config)).toBe(
-      'wss://example.com/app/parties/map-collaboration/trip-room?_pk=agent-a&userId=agent-a&name=Planner&color=%232563eb&clientType=agent',
+      'wss://example.com/app/parties/map-collaboration/trip-room?syncProtocol=2&_pk=agent-a&userId=agent-a&name=Planner&color=%232563eb&clientType=agent',
     );
   });
 
@@ -1095,6 +1137,7 @@ describe('atlas-realm CLI package', () => {
       type: 'layer:update',
       layerId: 'annotation-default',
       patch: { visible: false },
+      baseline: expect.objectContaining({ id: 'annotation-default' }),
     });
     expect(response.result.layer.visible).toBe(false);
   });
@@ -1169,7 +1212,7 @@ describe('atlas-realm CLI package', () => {
     expect(deleted.result.annotationId).toBe('stop-a');
   });
 
-  it('merges an existing annotation payload for upsert and preserves its revision metadata', async () => {
+  it('merges an existing annotation payload for update and preserves its revision metadata', async () => {
     const client = new FakeRoomClient();
     client.annotationFeatures.push({
       id: 'stop-a',
@@ -1196,7 +1239,7 @@ describe('atlas-realm CLI package', () => {
 
     const response = await executeCommand(client, {
       subject: 'annotations',
-      action: 'upsert',
+      action: 'update',
       featureType: 'point',
       type: 'point',
       id: 'stop-a',

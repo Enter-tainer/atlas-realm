@@ -12,6 +12,14 @@ export interface RoomMessageContext {
     strings: TemplateStringsArray,
     ...values: SqlValue[]
   ): T[];
+  recordSyncMetric?(metric: {
+    event: 'submit' | 'result' | 'snapshot' | 'error';
+    bytes?: number;
+    commands?: number;
+    durationMs?: number;
+    reason?: string;
+  }): void;
+  readSyncMetrics?(): Record<string, unknown>;
   broadcast(message: string | ArrayBuffer | ArrayBufferView, exclude?: string[]): void;
   _canEdit(connection: Connection<PeerState>): boolean;
   _canManage(connection: Connection<PeerState>): boolean;

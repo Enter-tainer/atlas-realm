@@ -20,6 +20,20 @@ class MockPartySocket extends EventTarget {
 
   send(message: unknown) {
     this.sent.push(message);
+    if (typeof message === 'string' && JSON.parse(message).type === 'sync:open')
+      queueMicrotask(() =>
+        this.message({
+          type: 'sync:snapshot',
+          protocol: 2,
+          epoch: 'test',
+          commitVersion: 0,
+          clientId: 'mock-client',
+          lastProcessedSeq: 0,
+          lastResult: null,
+          layers: [],
+          features: [],
+        }),
+      );
   }
 
   open() {
@@ -37,6 +51,18 @@ class MockPartySocket extends EventTarget {
   }
 }
 
+vi.mock('./sync-journal.js', () => ({
+  SyncJournalStorage: class {
+    async load(): Promise<undefined> {
+      return undefined;
+    }
+    async save() {}
+    close() {}
+  },
+}));
+async function settleMessages() {
+  for (let i = 0; i < 30; i++) await Promise.resolve();
+}
 vi.mock('partysocket', () => ({
   default: MockPartySocket,
 }));
@@ -295,7 +321,10 @@ describe('background disconnect', () => {
 
     expect(mockSockets).toHaveLength(1);
     mockSockets[0].open();
-    expect(mockSockets[0].sent).toContain(JSON.stringify({ type: 'layer:list:request' }));
+    await settleMessages();
+    expect(mockSockets[0].sent).toContain(
+      JSON.stringify({ type: 'sync:open', protocol: 2, epoch: '', clientId: null }),
+    );
 
     Object.defineProperty(document, 'hidden', { configurable: true, value: true });
     document.dispatchEvent(new Event('visibilitychange'));
@@ -356,6 +385,7 @@ describe('background disconnect', () => {
     await Promise.resolve();
 
     mockSockets[0].open();
+    await settleMessages();
     Object.defineProperty(document, 'hidden', { configurable: true, value: true });
     document.dispatchEvent(new Event('visibilitychange'));
     mockSockets[0].closeFromServer();
@@ -374,7 +404,7 @@ describe('background disconnect', () => {
     vi.useRealTimers();
   });
 
-  it('diffs initial sync against the local snapshot captured before server lists apply', async () => {
+  it('does not replay a layer or its features deleted between snapshot messages', async () => {
     vi.useFakeTimers();
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     vi.stubGlobal(
@@ -408,27 +438,93 @@ describe('background disconnect', () => {
 
     expect(mockSockets).toHaveLength(1);
     mockSockets[0].open();
+    await settleMessages();
     expect(sentJson(mockSockets[0], 'layer:create')).toHaveLength(0);
     expect(sentJson(mockSockets[0], 'annotation-feature:upsert')).toHaveLength(0);
 
     mockSockets[0].message({
-      type: 'layer:list',
-      layers: [annotationLayer('day-1', { name: 'Server day', revision: 1 })],
+      type: 'sync:snapshot',
+      protocol: 2,
+      epoch: 'test',
+      commitVersion: 0,
+      clientId: 'mock-client',
+      lastProcessedSeq: 0,
+      lastResult: null,
+      layers: [localLayer],
+      features: [localFeature],
     });
     mockSockets[0].message({
-      type: 'annotation-feature:list',
+      type: 'sync:commit',
+      epoch: 'test',
+      commitVersion: 1,
+      delta: { layers: [], features: [], deletedLayers: [localLayer.id], deletedFeatures: [] },
+    });
+    await settleMessages();
+    expect(layerStore.getLayer(localLayer.id)).toBeNull();
+    expect(sentJson(mockSockets[0], 'layer:create')).toHaveLength(0);
+    expect(sentJson(mockSockets[0], 'annotation-feature:upsert')).toHaveLength(0);
+    collab.destroy();
+    vi.useRealTimers();
+  });
+
+  it('replaces stale cached state without uploading it as a new edit', async () => {
+    vi.useFakeTimers();
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url === '/api/auth/me') return Response.json({ user: null });
+        if (url === '/api/rooms') return Response.json({ room: { roomId: 'test-room' } }, { status: 201 });
+        if (url === '/api/rooms/test-room/access') {
+          return Response.json({
+            role: 'edit',
+            canView: true,
+            canEdit: true,
+            canManage: false,
+            room: { linkAccess: 'edit', ownerUserId: null, createdByKind: 'guest', persistence: 'ephemeral' },
+          });
+        }
+        return Response.json({});
+      }),
+    );
+
+    const localLayer = annotationLayer('day-1', { name: 'Local day', revision: 2 });
+    const localFeature = annotationFeature('path-a', 'day-1', { revision: 2 });
+    const layerStore = new LayerStore({ layers: [localLayer], features: [localFeature] });
+    window.history.replaceState(null, '', '/?room=test-room');
+
+    const { installMapCollaboration } = await import('./collaboration.js');
+    const collab = installMapCollaboration(mockMap(), layerStore);
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(mockSockets).toHaveLength(1);
+    mockSockets[0].open();
+    await settleMessages();
+    expect(sentJson(mockSockets[0], 'layer:create')).toHaveLength(0);
+    expect(sentJson(mockSockets[0], 'annotation-feature:upsert')).toHaveLength(0);
+
+    mockSockets[0].message({
+      type: 'sync:snapshot',
+      protocol: 2,
+      epoch: 'test',
+      commitVersion: 0,
+      clientId: 'mock-client',
+      lastProcessedSeq: 0,
+      lastResult: null,
+      layers: [annotationLayer('day-1', { name: 'Server day', revision: 1 })],
       features: [annotationFeature('path-a', 'day-1', { revision: 1 })],
     });
-
+    await settleMessages();
     expect(layerStore.getLayer('day-1')?.name).toBe('Server day');
-    expect(sentJson(mockSockets[0], 'layer:create').at(-1)?.layer).toMatchObject({
-      id: 'day-1',
-      name: 'Local day',
-      revision: 2,
-    });
-    expect(sentJson(mockSockets[0], 'annotation-feature:upsert').at(-1)?.feature).toMatchObject({
-      id: 'path-a',
-      revision: 2,
+    expect(sentJson(mockSockets[0], 'sync:submit')).toHaveLength(0);
+    layerStore.patchLayer('day-1', { name: 'A real edit' });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(sentJson(mockSockets[0], 'sync:submit')[0]).toMatchObject({
+      commands: [
+        { type: 'patch', kind: 'layer', id: 'day-1', fields: { name: { expectedVersion: 0, value: 'A real edit' } } },
+      ],
     });
 
     collab.destroy();

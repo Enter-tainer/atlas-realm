@@ -141,7 +141,7 @@ export async function createProtocolClient(
 ): Promise<RealRoomClient> {
   await ensureRealRoom(page, room);
   await page.evaluate(
-    ({ room, name }) => {
+    async ({ room, name }) => {
       type ClientWindow = Window &
         typeof globalThis & {
           __e2eRoomClients?: Record<
@@ -149,6 +149,8 @@ export async function createProtocolClient(
             {
               ws: WebSocket;
               messages: JsonRecord[];
+              send(message: JsonRecord): Promise<void>;
+              ready(): boolean;
             }
           >;
         };
@@ -156,6 +158,7 @@ export async function createProtocolClient(
       targetWindow.__e2eRoomClients ||= {};
       const url = new URL(`/parties/map-collaboration/${encodeURIComponent(room)}`, window.location.href);
       url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      url.searchParams.set('syncProtocol', '2');
       url.searchParams.set('clientType', 'human');
       url.searchParams.set('headless', 'true');
       url.searchParams.set('userId', `e2e-${Math.random().toString(36).slice(2)}`);
@@ -163,11 +166,79 @@ export async function createProtocolClient(
       url.searchParams.set('color', '#0f766e');
       const ws = new WebSocket(url.href);
       const messages: JsonRecord[] = [];
-      targetWindow.__e2eRoomClients[room] = { ws, messages };
+      const syncModule = '/src/room-sync-client.ts';
+      const protocolModule = '/src/room-sync-protocol.ts';
+      const { RoomSyncClient } = await import(syncModule);
+      const { parseRoomMutation } = await import(protocolModule);
+      const sync = new RoomSyncClient({
+        send: (message: object | Uint8Array) => {
+          ws.send(message instanceof Uint8Array ? message : JSON.stringify(message));
+          return true;
+        },
+        publish: () => {},
+        settled: (result: any, drafts: any[]) => {
+          if (result.status !== 'accepted') return;
+          for (const { command: c } of drafts) {
+            if (c.type === 'create')
+              messages.push(
+                c.kind === 'layer'
+                  ? { type: 'layer:created', localId: c.localId, layer: sync.canonical.getLayer(result.ids[c.localId]) }
+                  : {
+                      type: 'annotation-feature:upserted',
+                      localId: c.localId,
+                      feature: sync.canonical.getAnnotationFeature(result.ids[c.localId]),
+                    },
+              );
+            if (c.type === 'patch')
+              messages.push(
+                c.kind === 'layer'
+                  ? { type: 'layer:updated', layer: sync.canonical.getLayer(c.id) }
+                  : { type: 'annotation-feature:upserted', feature: sync.canonical.getAnnotationFeature(c.id) },
+              );
+            if (c.type === 'delete')
+              messages.push({
+                type: c.kind === 'layer' ? 'layer:deleted' : 'annotation-feature:deleted',
+                layerId: c.id,
+                featureId: c.id,
+              });
+            if (c.type === 'move')
+              messages.push({ type: c.kind === 'layer' ? 'layer:reordered' : 'annotation-feature:reordered' });
+          }
+        },
+      });
+      targetWindow.__e2eRoomClients[room] = {
+        ws,
+        messages,
+        ready: () => sync.ready,
+        send: async (message) => {
+          const mutation = parseRoomMutation(message);
+          if (mutation) await sync.enqueue(mutation);
+          else ws.send(JSON.stringify(message));
+        },
+      };
+      const connect = () => sync.connect(true);
+      if (ws.readyState === WebSocket.OPEN) connect();
+      else ws.addEventListener('open', connect);
       ws.addEventListener('message', (event) => {
         if (typeof event.data !== 'string') return;
         try {
-          messages.push(JSON.parse(event.data) as JsonRecord);
+          const message = JSON.parse(event.data);
+          messages.push(message);
+          if (message.type === 'file:content:stored') sync.contentStored(message.contentHash);
+          if (
+            message.type === 'sync:snapshot' ||
+            message.type === 'sync:commit' ||
+            message.type === 'sync:result' ||
+            message.type === 'sync:error'
+          ) {
+            void sync.receive(message);
+            if (message.type === 'sync:snapshot')
+              messages.push(
+                { type: 'layer:list', layers: message.layers },
+                { type: 'annotation-feature:list', features: message.features },
+              );
+            else messages.push(...(message.changes || []));
+          }
         } catch {
           // Ignore non-JSON protocol frames.
         }
@@ -176,19 +247,23 @@ export async function createProtocolClient(
     { room, name },
   );
   await page.waitForFunction((room) => {
-    const client = (window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket }> })
-      .__e2eRoomClients?.[String(room)];
-    return client?.ws.readyState === WebSocket.OPEN;
+    const client = (
+      window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket; ready(): boolean }> }
+    ).__e2eRoomClients?.[String(room)];
+    return client?.ws.readyState === WebSocket.OPEN && client.ready();
   }, room);
 
   return {
     async send(message: JsonRecord) {
       await page.evaluate(
         ({ room, message }) => {
-          const client = (window as typeof window & { __e2eRoomClients?: Record<string, { ws: WebSocket }> })
-            .__e2eRoomClients?.[room];
+          const client = (
+            window as typeof window & {
+              __e2eRoomClients?: Record<string, { ws: WebSocket; send(message: JsonRecord): void }>;
+            }
+          ).__e2eRoomClients?.[room];
           if (!client || client.ws.readyState !== WebSocket.OPEN) throw new Error(`Room client not open: ${room}`);
-          client.ws.send(JSON.stringify(message));
+          return client.send(message);
         },
         { room, message },
       );

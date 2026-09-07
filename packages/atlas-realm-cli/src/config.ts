@@ -33,6 +33,7 @@ export function buildSocketUrl({
   const basePath = input.pathname.replace(/\/+$/, '');
   const path = `${basePath}/parties/${encodeURIComponent(party)}/${encodeURIComponent(room)}`;
   const url = new URL(`${protocol}//${input.host}${path}`);
+  url.searchParams.set('syncProtocol', '2');
   url.searchParams.set('_pk', clientId);
   url.searchParams.set('userId', clientId);
   url.searchParams.set('name', agentName);

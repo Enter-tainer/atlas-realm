@@ -38,7 +38,7 @@ test.describe('real collaboration protocol stress', () => {
       await openRealRoom(pageB, room);
       const client = await createProtocolClient(pageA, room, 'Burst writer');
       await client.send({ type: 'layer:create', layer: annotationLayer('stress-layer', 'Stress burst') });
-      await client.waitFor('layer:created', (message) => (message.layer as JsonRecord)?.id === 'stress-layer');
+      await client.waitFor('layer:created', (message) => message.localId === 'stress-layer');
       await expectLayerVisible(pageA, 'Stress burst');
       await expectLayerVisible(pageB, 'Stress burst');
 
@@ -153,7 +153,7 @@ test.describe('real collaboration protocol stress', () => {
     }
   });
 
-  test('keeps last-write-wins semantics for duplicate feature ids', async ({ browser }, testInfo) => {
+  test('applies sequential edits to the same feature through versioned operations', async ({ browser }, testInfo) => {
     const room = uniqueRoomName('e2e-lww', testInfo.title);
     const context = await browser.newContext({ locale: 'en-US' });
     const page = await context.newPage();
@@ -193,7 +193,12 @@ test.describe('real collaboration protocol stress', () => {
         type: 'annotation-feature:upsert',
         feature: pointFeature({ id: 'orphan-feature', layerId: 'missing-layer', label: 'Orphan marker' }),
       });
-      await client.waitFor('annotation-feature:rejected', (message) => message.featureId === 'orphan-feature');
+      await client.waitFor(
+        'sync:result',
+        (message) =>
+          (message.result as JsonRecord)?.status === 'rejected' &&
+          (message.result as JsonRecord)?.reason === 'parent_missing',
+      );
       await expectFeatureMissing(page, 'Orphan marker');
 
       await client.send({ type: 'layer:create', layer: annotationLayer('valid-layer', 'Valid after rejection') });
@@ -240,7 +245,7 @@ test.describe('real collaboration protocol stress', () => {
       await expectFeatureLabel(pageB, 'Child marker 14');
 
       await client.send({ type: 'layer:delete', layerId: 'child-layer' });
-      await client.waitFor('layer:deleted', (message) => message.layerId === 'child-layer');
+      await client.waitFor('layer:deleted', (message) => Boolean(message.layerId));
       await expectLayerMissing(pageB, 'Child cleanup');
       await expectFeatureMissing(pageB, 'Child marker 14');
       await client.close();
@@ -260,7 +265,7 @@ test.describe('real collaboration protocol stress', () => {
       const client = await createProtocolClient(page, room, 'Reorder writer');
       await client.send({ type: 'layer:create', layer: annotationLayer('layer-one', 'Layer One', 0) });
       await client.send({ type: 'layer:create', layer: annotationLayer('layer-two', 'Layer Two', 1) });
-      await client.waitFor('layer:created', (message) => (message.layer as JsonRecord)?.id === 'layer-two');
+      await client.waitFor('layer:created', (message) => message.localId === 'layer-two');
       await expectLayerVisible(page, 'Layer One');
       await expectLayerVisible(page, 'Layer Two');
 
@@ -335,7 +340,7 @@ test.describe('real collaboration protocol stress', () => {
       const client = await createProtocolClient(page, room, 'Random writer');
       await client.send({ type: 'layer:create', layer: annotationLayer('random-layer-a', 'Random Layer A', 0) });
       await client.send({ type: 'layer:create', layer: annotationLayer('random-layer-b', 'Random Layer B', 1) });
-      await client.waitFor('layer:created', (message) => (message.layer as JsonRecord)?.id === 'random-layer-b');
+      await client.waitFor('layer:created', (message) => message.localId === 'random-layer-b');
       await expectLayerVisible(page, 'Random Layer A');
       await expectLayerVisible(page, 'Random Layer B');
 

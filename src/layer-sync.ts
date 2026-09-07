@@ -11,8 +11,8 @@ import {
 } from './layer-model.js';
 
 export type LayerClientMessage =
-  | { type: 'layer:list:request' }
   | { type: 'layer:create'; layer: Layer }
+  | { type: 'layer:replace'; layer: Layer }
   | { type: 'layer:update'; layerId: string; patch: LayerUpdatePatch }
   | { type: 'layer:delete'; layerId: string }
   | { type: 'layer:reorder'; updates: Array<{ layerId: string; sortKey: string }> };
@@ -25,7 +25,6 @@ export type LayerServerMessage =
   | { type: 'layer:reordered'; layers: Layer[] };
 
 export type AnnotationFeatureClientMessage =
-  | { type: 'annotation-feature:list:request'; layerId?: string }
   | { type: 'annotation-feature:upsert'; feature: AnnotationFeature }
   | { type: 'annotation-feature:delete'; featureId: string }
   | { type: 'annotation-feature:reorder'; updates: Array<{ featureId: string; sortKey: string }> };
@@ -51,10 +50,9 @@ function isRecord(value: unknown): value is JsonRecord {
 
 export function parseLayerClientMessage(value: unknown, now = Date.now()): LayerClientMessage | null {
   if (!isRecord(value)) return null;
-  if (value.type === 'layer:list:request') return { type: 'layer:list:request' };
-  if (value.type === 'layer:create') {
+  if (value.type === 'layer:create' || value.type === 'layer:replace') {
     const layer = sanitizeLayer(value.layer, now);
-    return layer ? { type: 'layer:create', layer } : null;
+    return layer ? { type: value.type, layer } : null;
   }
   if (value.type === 'layer:update') {
     const layerId = sanitizeEntityId(value.layerId);
@@ -96,10 +94,6 @@ export function parseAnnotationFeatureClientMessage(
   now = Date.now(),
 ): AnnotationFeatureClientMessage | null {
   if (!isRecord(value)) return null;
-  if (value.type === 'annotation-feature:list:request') {
-    const layerId = sanitizeEntityId(value.layerId);
-    return layerId ? { type: 'annotation-feature:list:request', layerId } : { type: 'annotation-feature:list:request' };
-  }
   if (value.type === 'annotation-feature:upsert') {
     const feature = sanitizeAnnotationFeature(value.feature, now);
     return feature ? { type: 'annotation-feature:upsert', feature } : null;

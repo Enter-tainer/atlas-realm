@@ -1,3 +1,5 @@
+import { RoomSyncClient, type Draft, type SyncJournal } from './sync-client.js';
+import type { BatchResult, ServerMessage } from './sync-protocol.js';
 import { buildApiUrl, buildSocketUrl } from './config.js';
 import { decodeFileContentMessage } from './protocol.js';
 import type {
@@ -13,25 +15,6 @@ import type {
   WebSocketLike,
 } from './types.js';
 
-function compareRows(
-  a: { id: string; sortKey?: string; createdAt?: number },
-  b: { id: string; sortKey?: string; createdAt?: number },
-) {
-  return (
-    String(a.sortKey || '').localeCompare(String(b.sortKey || '')) ||
-    Number(a.createdAt || 0) - Number(b.createdAt || 0) ||
-    String(a.id || '').localeCompare(String(b.id || ''))
-  );
-}
-
-function sortLayers(layers: Layer[]) {
-  return layers.slice().sort(compareRows);
-}
-
-function sortAnnotationFeatures(features: AnnotationFeature[]) {
-  return features.slice().sort(compareRows);
-}
-
 export class RoomClient {
   config: AgentRoomConfig;
   WebSocketImpl: WebSocketConstructorLike;
@@ -43,13 +26,20 @@ export class RoomClient {
   agents: AgentParticipant[];
   roomStatus: RoomStatus | null;
   socket: WebSocketLike | null;
+  sync: RoomSyncClient;
+  private currentRequest: string | null = null;
+  private pendingRequest = Promise.resolve();
+  private requests = new Map<string, { ids: Set<string>; mutation: JsonRecord }>();
+  private uploadContent = new Map<string, Uint8Array>();
 
   constructor(
     config: AgentRoomConfig,
     {
       WebSocketImpl = globalThis.WebSocket as WebSocketConstructorLike | undefined,
+      journal,
     }: {
       WebSocketImpl?: WebSocketConstructorLike;
+      journal?: { load(): Promise<SyncJournal | undefined>; save(state: SyncJournal): Promise<void> };
     } = {},
   ) {
     this.config = config;
@@ -62,6 +52,21 @@ export class RoomClient {
     this.agents = [];
     this.roomStatus = null;
     this.socket = null;
+    this.sync = new RoomSyncClient({
+      batchDelay: 0,
+      load: journal ? () => journal.load() : undefined,
+      save: journal ? (state) => journal.save(state) : undefined,
+      send: (message) => {
+        if (!this.socket || this.socket.readyState !== this.WebSocketImpl.OPEN) return false;
+        this.socket.send(message instanceof Uint8Array ? message : JSON.stringify(message));
+        return true;
+      },
+      publish: (layers, features) => {
+        this.layers = layers as Layer[];
+        this.annotationFeatures = features as AnnotationFeature[];
+      },
+      settled: (result, drafts) => this.settled(result, drafts),
+    });
   }
 
   async ensureRoomRegistry(): Promise<void> {
@@ -80,6 +85,8 @@ export class RoomClient {
   }
 
   async connect(): Promise<void> {
+    await this.sync.loaded;
+    if (this.sync.storageError) throw new Error(this.sync.storageError);
     if (typeof this.WebSocketImpl === 'undefined') {
       throw new Error('This CLI requires a Node.js runtime with a global WebSocket implementation');
     }
@@ -116,14 +123,14 @@ export class RoomClient {
       this.socket?.addEventListener('message', (event: MessageEvent) => this.handleMessage(event.data));
     });
 
+    this.sync.connect(true);
     await Promise.all([
       this.waitFor((event: RoomEvent) => event.json?.type === 'presence:init', 'presence:init'),
-      this.waitFor((event: RoomEvent) => event.json?.type === 'layer:list', 'layer:list'),
-      this.waitFor((event: RoomEvent) => event.json?.type === 'annotation-feature:list', 'annotation-feature:list'),
+      this.waitFor((event: RoomEvent) => event.json?.type === 'sync:snapshot', 'sync:snapshot'),
     ]);
   }
 
-  handleMessage(data: unknown): void {
+  async handleMessage(data: unknown): Promise<void> {
     const binaryFrame = decodeFileContentMessage(data);
     if (binaryFrame) {
       this.addEvent({ binary: binaryFrame });
@@ -138,7 +145,12 @@ export class RoomClient {
       return;
     }
 
-    this.applyJsonMessage(json);
+    if (['sync:snapshot', 'sync:commit', 'sync:result', 'sync:error'].includes(json.type))
+      await this.sync.receive(json as ServerMessage);
+    else {
+      if (json.type === 'file:content:stored') this.sync.contentStored(json.contentHash);
+      this.applyJsonMessage(json);
+    }
     this.addEvent({ json });
   }
 
@@ -161,52 +173,7 @@ export class RoomClient {
       const index = this.agents.findIndex((agent: AgentParticipant) => agent.id === json.agent.id);
       if (index === -1) this.agents.unshift(json.agent);
       else this.agents[index] = json.agent;
-    } else if (json.type === 'layer:list') {
-      this.layers = sortLayers(Array.isArray(json.layers) ? json.layers : []);
-    } else if ((json.type === 'layer:created' || json.type === 'layer:updated') && json.layer?.id) {
-      this.upsertLayer(json.layer);
-    } else if (json.type === 'layer:deleted' && json.layerId) {
-      this.layers = this.layers.filter((layer: Layer) => layer.id !== json.layerId);
-      this.annotationFeatures = this.annotationFeatures.filter(
-        (feature: AnnotationFeature) => feature.layerId !== json.layerId,
-      );
-    } else if (json.type === 'layer:reordered') {
-      this.layers = sortLayers(Array.isArray(json.layers) ? json.layers : this.layers);
-    } else if (json.type === 'annotation-feature:list') {
-      const features = Array.isArray(json.features) ? json.features : [];
-      if (typeof json.layerId === 'string') {
-        this.annotationFeatures = sortAnnotationFeatures([
-          ...this.annotationFeatures.filter((feature: AnnotationFeature) => feature.layerId !== json.layerId),
-          ...features,
-        ]);
-      } else {
-        this.annotationFeatures = sortAnnotationFeatures(features);
-      }
-    } else if (json.type === 'annotation-feature:upserted' && json.feature?.id) {
-      this.upsertAnnotationFeature(json.feature);
-    } else if (json.type === 'annotation-feature:deleted' && json.featureId) {
-      this.annotationFeatures = this.annotationFeatures.filter(
-        (feature: AnnotationFeature) => feature.id !== json.featureId,
-      );
-    } else if (json.type === 'annotation-feature:reordered') {
-      this.annotationFeatures = sortAnnotationFeatures(
-        Array.isArray(json.features) ? json.features : this.annotationFeatures,
-      );
     }
-  }
-
-  upsertLayer(layer: Layer): void {
-    const index = this.layers.findIndex((item: Layer) => item.id === layer.id);
-    if (index === -1) this.layers.push(layer);
-    else this.layers[index] = layer;
-    this.layers = sortLayers(this.layers);
-  }
-
-  upsertAnnotationFeature(feature: AnnotationFeature): void {
-    const index = this.annotationFeatures.findIndex((item: AnnotationFeature) => item.id === feature.id);
-    if (index === -1) this.annotationFeatures.push(feature);
-    else this.annotationFeatures[index] = feature;
-    this.annotationFeatures = sortAnnotationFeatures(this.annotationFeatures);
   }
 
   addEvent(event: RoomEvent): void {
@@ -216,33 +183,77 @@ export class RoomClient {
     }
   }
 
-  waitFor(
+  private settled(result: BatchResult, drafts: Draft[]) {
+    for (const [requestId, request] of this.requests) {
+      if (!drafts.some((draft) => request.ids.has(draft.id))) continue;
+      for (const draft of drafts) request.ids.delete(draft.id);
+      if (result.status === 'rejected') {
+        this.addEvent({ json: { type: 'command:rejected', requestId, reason: result.reason, seq: result.seq } });
+        this.requests.delete(requestId);
+      } else if (request.ids.size === 0) {
+        this.publishCommandResult(requestId, request.mutation);
+        this.requests.delete(requestId);
+      }
+    }
+  }
+
+  private publishCommandResult(requestId: string, message: JsonRecord) {
+    const id = message.layer?.id || message.feature?.id || message.layerId || message.featureId;
+    const actualId = this.sync.aliases[id] || id;
+    let result: JsonRecord;
+    if (message.type === 'layer:create')
+      result = { type: 'layer:created', layer: this.layers.find((row) => row.id === actualId) };
+    else if (message.type === 'layer:update' || message.type === 'layer:replace')
+      result = { type: 'layer:updated', layer: this.layers.find((row) => row.id === actualId) };
+    else if (message.type === 'layer:delete') result = { type: 'layer:deleted', layerId: actualId };
+    else if (message.type === 'layer:reorder') result = { type: 'layer:reordered', layers: this.layers };
+    else if (message.type === 'annotation-feature:delete')
+      result = { type: 'annotation-feature:deleted', featureId: actualId };
+    else if (message.type === 'annotation-feature:reorder')
+      result = { type: 'annotation-feature:reordered', features: this.annotationFeatures };
+    else
+      result = {
+        type: 'annotation-feature:upserted',
+        feature: this.annotationFeatures.find((row) => row.id === actualId),
+      };
+    this.addEvent({ json: { ...result, requestId } });
+  }
+
+  async waitFor(
     predicate: (event: RoomEvent) => boolean,
     label: string,
     timeoutMs = this.config.timeoutMs,
   ): Promise<RoomEvent> {
+    const requestId = this.currentRequest;
+    await this.pendingRequest;
+    const failure = (event: RoomEvent) =>
+      event.json?.type === 'command:rejected' && event.json.requestId === requestId
+        ? new Error(`Sync rejected: ${event.json.reason}. Read the current state before retrying.`)
+        : event.json?.type === 'protocol:error'
+          ? new Error('Sync protocol mismatch. Upgrade the CLI.')
+          : null;
+    const matches = (event: RoomEvent) => (!requestId || event.json?.requestId === requestId) && predicate(event);
     for (const event of this.events) {
-      try {
-        if (predicate(event)) return Promise.resolve(event);
-      } catch {
-        // Keep waiting.
-      }
+      const error = failure(event);
+      if (error) throw error;
+      if (matches(event)) return event;
     }
-
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.waiters.delete(waiter);
-        reject(new Error(`Timed out waiting for ${label}`));
+        reject(
+          new Error(
+            `Timed out waiting for ${label}. Submission outcome may be unknown; inspect shared state before repeating a create.`,
+          ),
+        );
       }, timeoutMs);
       const waiter: RoomWaiter = {
-        tryResolve: (event: RoomEvent) => {
-          try {
-            if (!predicate(event)) return false;
-          } catch {
-            return false;
-          }
+        tryResolve: (event) => {
+          const error = failure(event);
+          if (!error && !matches(event)) return false;
           clearTimeout(timer);
-          resolve(event);
+          if (error) reject(error);
+          else resolve(event);
           return true;
         },
       };
@@ -252,16 +263,33 @@ export class RoomClient {
 
   sendJson(message: JsonRecord): void {
     if (!this.socket) throw new Error('WebSocket is not connected');
-    this.socket.send(JSON.stringify(message));
+    if (/^(layer|annotation-feature):/.test(message.type) && !message.type.endsWith(':request')) {
+      const requestId = crypto.randomUUID();
+      this.currentRequest = requestId;
+      const hash = message.layer?.payload?.contentHash;
+      const bytes = this.uploadContent.get(hash);
+      this.pendingRequest = this.sync.enqueue(message, bytes ? { hash, bytes } : undefined).then((ids) => {
+        if (ids.length) this.requests.set(requestId, { ids: new Set(ids), mutation: structuredClone(message) });
+        else this.publishCommandResult(requestId, message);
+      });
+    } else {
+      this.currentRequest = null;
+      this.socket.send(JSON.stringify(message));
+    }
   }
 
   sendBinary(bytes: Uint8Array): void {
     if (!this.socket) throw new Error('WebSocket is not connected');
+    this.currentRequest = null;
+    const frame = decodeFileContentMessage(bytes);
+    if (frame) this.uploadContent.set(frame.contentHash, frame.content);
     this.socket.send(bytes);
   }
 
-  close(): void {
+  async close(): Promise<void> {
+    this.sync.dispose();
     for (const waiter of this.waiters) this.waiters.delete(waiter);
     if (this.socket && this.socket.readyState <= this.WebSocketImpl.OPEN) this.socket.close(1000, 'done');
+    await this.sync.drain();
   }
 }

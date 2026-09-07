@@ -12,6 +12,34 @@ import {
 } from './support/map-interactions';
 
 test.describe('layer manager workflows in a real browser', () => {
+  test('keeps 24 layers inside a scrollable list above the editor on desktop and mobile', async ({ page }) => {
+    await openApp(page);
+    const panel = await openLayers(page);
+    for (let i = 1; i < 24; i++) await panel.getByRole('button', { name: 'New annotation layer' }).click();
+    for (const viewport of [
+      { width: 1280, height: 720 },
+      { width: 393, height: 852 },
+    ]) {
+      await page.setViewportSize(viewport);
+      const bounds = await panel.evaluate((panel) => {
+        const list = panel.querySelector('.layer-manager-list') as HTMLElement;
+        const details = panel.querySelector('.layer-manager-details') as HTMLElement;
+        return {
+          count: list.children.length,
+          height: list.clientHeight,
+          contentHeight: list.scrollHeight,
+          bottom: list.getBoundingClientRect().bottom,
+          detailsTop: details.getBoundingClientRect().top,
+          panelHeight: panel.getBoundingClientRect().height,
+        };
+      });
+      expect(bounds.count).toBe(24);
+      expect(bounds.contentHeight).toBeGreaterThan(bounds.height);
+      expect(bounds.detailsTop).toBeGreaterThanOrEqual(bounds.bottom);
+      expect(bounds.panelHeight).toBeLessThanOrEqual(viewport.height);
+    }
+  });
+
   test('creates and renames an annotation layer', async ({ page }) => {
     const errors = await installBrowserErrorWatch(page);
     await openApp(page);

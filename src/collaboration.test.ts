@@ -1,12 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  activeAgentParticipants,
-  anonymousGuestName,
-  collaborationCanEditForAccess,
-  shouldSyncKnownLocalLayer,
-} from './collaboration.js';
-import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
-import type { Layer } from './layer-model.js';
+import { activeAgentParticipants, anonymousGuestName, collaborationCanEditForAccess } from './collaboration.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -23,21 +16,6 @@ function agent(id: string, extra: Record<string, unknown> = {}) {
   };
 }
 
-function annotationLayer(id: string, extra: Partial<Layer> = {}): Layer {
-  return {
-    id,
-    kind: 'annotation',
-    name: 'Annotations',
-    visible: true,
-    sortKey: '000010',
-    payload: { version: 1 },
-    revision: 0,
-    createdAt: NOW,
-    updatedAt: NOW,
-    ...extra,
-  };
-}
-
 describe('collaboration agent presence', () => {
   it('keeps only agents that are active and not expired at render time', () => {
     expect(
@@ -50,15 +28,6 @@ describe('collaboration agent presence', () => {
         NOW,
       ).map((item) => item.id),
     ).toEqual(['active-agent']);
-  });
-});
-
-describe('collaboration local layer sync', () => {
-  it('does not upload the implicit empty default annotation layer on connect', () => {
-    expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID), 0)).toBe(false);
-    expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID), 1)).toBe(true);
-    expect(shouldSyncKnownLocalLayer(annotationLayer(ANNOTATION_DEFAULT_LAYER_ID, { revision: 1 }), 0)).toBe(true);
-    expect(shouldSyncKnownLocalLayer(annotationLayer('annotation-layer-a'), 0)).toBe(true);
   });
 });
 

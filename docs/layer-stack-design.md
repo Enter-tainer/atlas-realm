@@ -1,5 +1,7 @@
 # Unified Layer And Annotation Storage Design
 
+The core layer/feature storage model below remains current. The original synchronization and destructive clean-break rollout sections are historical. [Room synchronization v2](room-sync-v2.md) defines the implemented bounded-stream protocol, field-group conflict rules, and the additive upgrade that preserves existing room data. Earlier unpublished protocol experiments are not supported.
+
 This document describes the clean-break design for layer management, annotation storage, and synchronization.
 
 The key change from the current implementation is:

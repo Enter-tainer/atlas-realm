@@ -564,7 +564,15 @@ class AnnotationToolsControl {
     this._status.setAttribute('aria-live', 'polite');
 
     this._installDraftLayer();
-    this._unsubscribeStore = this._store.subscribe(() => this._sync());
+    this._unsubscribeStore = this._store.subscribe((event) => {
+      if (event.type === 'ids:remap') {
+        this._activeLayerId = event.ids[this._activeLayerId] || this._activeLayerId;
+        this._selectedId = event.ids[this._selectedId] || this._selectedId;
+        this._editingId = event.ids[this._editingId] || this._editingId;
+        this._lastActiveFeatureId = event.ids[this._lastActiveFeatureId] || this._lastActiveFeatureId;
+      }
+      this._sync();
+    });
     map.on('click', this._boundMapClick);
     map.on('dblclick', this._boundMapDblClick);
     map.getContainer().addEventListener('annotation:featureclick', this._boundFeatureClick);
@@ -1071,7 +1079,7 @@ class AnnotationToolsControl {
     if (next.type === 'route') {
       next.profile = profileFromValue(this._profileSelect.value);
     }
-    this._store.upsertFeature(next);
+    this._store.updateFeature(next);
   }
 
   _updateEditingFromEditor() {
@@ -1099,7 +1107,7 @@ class AnnotationToolsControl {
         next.fillOpacity,
       );
     }
-    this._store.upsertFeature(next);
+    this._store.updateFeature(next);
     this._syncEditorSwatches(next.color);
   }
 

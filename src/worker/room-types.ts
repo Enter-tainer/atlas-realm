@@ -73,6 +73,8 @@ export interface ViewportState {
 }
 
 export interface PeerState {
+  syncProtocol?: 2;
+  syncConnectionToken?: string;
   user?: UserProfile;
   auth?: AuthContext;
   clientType?: ClientType;

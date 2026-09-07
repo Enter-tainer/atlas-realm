@@ -1,6 +1,8 @@
 declare const process: {
   env: Record<string, string | undefined>;
   argv: string[];
+  pid: number;
+  kill(pid: number, signal: number): void;
   exit(code?: number): never;
   exitCode?: number;
 };
@@ -18,6 +20,13 @@ declare module 'node:crypto' {
 }
 
 declare module 'node:fs/promises' {
+  export function open(
+    path: string,
+    flags: string,
+    mode?: number,
+  ): Promise<{ writeFile(data: string): Promise<void>; sync(): Promise<void>; close(): Promise<void> }>;
+  export function rename(from: string, to: string): Promise<void>;
+  export function unlink(path: string): Promise<void>;
   export function mkdir(path: string, options?: unknown): Promise<void>;
   export function readFile(path: string, encoding: string): Promise<string>;
   export function readFile(path: string): Promise<any>;
@@ -35,4 +44,8 @@ declare module 'node:path' {
 declare module 'node:zlib' {
   export function gzipSync(data: Uint8Array): any;
   export function gunzipSync(data: Uint8Array): any;
+}
+
+declare module 'node:os' {
+  export function homedir(): string;
 }

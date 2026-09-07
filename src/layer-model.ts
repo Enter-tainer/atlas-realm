@@ -39,6 +39,7 @@ export type Layer = {
   sortKey: string;
   payload: AnnotationLayerPayload | FileLayerPayload;
   revision: number;
+  fieldVersions?: Record<string, number>;
   createdAt: number;
   updatedAt: number;
   updatedBy?: string;
@@ -54,6 +55,7 @@ export type AnnotationFeature = {
   payload: AnnotationFeaturePayload;
   sortKey: string;
   revision: number;
+  fieldVersions?: Record<string, number>;
   createdAt: number;
   updatedAt: number;
   updatedBy: string;
@@ -77,6 +79,18 @@ const DEFAULT_FILE_COLOR = '#3b82f6';
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function sanitizeFieldVersions(value: unknown): Record<string, number> | undefined {
+  if (!isRecord(value)) return undefined;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key, version]) =>
+          key.length <= 32 && typeof version === 'number' && Number.isSafeInteger(version) && version >= 0,
+      )
+      .slice(0, 24),
+  ) as Record<string, number>;
 }
 
 export function sanitizeEntityId(value: unknown, fallback = '') {
@@ -199,6 +213,7 @@ export function sanitizeLayer(value: unknown, now = Date.now(), fallback?: Parti
     visible: typeof value.visible === 'boolean' ? value.visible : (fallback?.visible ?? true),
     sortKey: sanitizeSortKey(value.sortKey, fallback?.sortKey || '000010'),
     payload,
+    fieldVersions: sanitizeFieldVersions(value.fieldVersions),
     revision: Math.round(sanitizeNumber(value.revision, 0, Number.MAX_SAFE_INTEGER, fallback?.revision || 0)),
     createdAt: Math.round(sanitizeNumber(value.createdAt, 0, Number.MAX_SAFE_INTEGER, fallback?.createdAt || now)),
     updatedAt: Math.round(sanitizeNumber(value.updatedAt, 0, Number.MAX_SAFE_INTEGER, now)),
@@ -241,6 +256,7 @@ export function sanitizeAnnotationFeature(value: unknown, now = Date.now()): Ann
     featureType,
     payload,
     sortKey: sanitizeSortKey(value.sortKey, '000010'),
+    fieldVersions: sanitizeFieldVersions(value.fieldVersions),
     revision: Math.round(sanitizeNumber(value.revision, 0, Number.MAX_SAFE_INTEGER, 0)),
     createdAt: Math.round(sanitizeNumber(value.createdAt, 0, Number.MAX_SAFE_INTEGER, payload.createdAt || now)),
     updatedAt: Math.round(sanitizeNumber(value.updatedAt, 0, Number.MAX_SAFE_INTEGER, now)),

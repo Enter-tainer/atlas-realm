@@ -1,16 +1,13 @@
+import { SyncJournalStorage } from './sync-journal.js';
 import PartySocket from 'partysocket';
-import {
-  buildFileLayerSyncAsset,
-  decodeFileContentMessage,
-  encodeFileContentMessage,
-  materializeFileLayerContent,
-} from './file-layer-sync.js';
-import type { FileLayerContent, FileLayerManifest, FileLayerSyncAsset } from './file-layer-sync.js';
+import { RoomSyncClient } from './room-sync-client.js';
+import { readFields, parseRoomMutation } from './room-sync-protocol.js';
+import { buildFileLayerSyncAsset, decodeFileContentMessage, materializeFileLayerContent } from './file-layer-sync.js';
+import type { FileLayerContent, FileLayerManifest } from './file-layer-sync.js';
 import type { LayerStore } from './layer-store.js';
-import type { AnnotationFeatureServerMessage, LayerServerMessage } from './layer-sync.js';
 import { ANNOTATION_DEFAULT_LAYER_ID } from './annotation-model.js';
 import { COLLABORATION_ACCESS_EVENT } from './collaboration-permissions.js';
-import { initialSortKey, type AnnotationFeature, type Layer } from './layer-model.js';
+import { initialSortKey, type Layer } from './layer-model.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 
 const PARTY_NAME = 'map-collaboration';
@@ -218,15 +215,6 @@ const ANONYMOUS_GUEST_NAMES = [
 
 export function activeAgentParticipants(agents: Iterable<AgentParticipant>, now = Date.now()): AgentParticipant[] {
   return [...agents].filter((agent) => agent.active && Number(agent.expiresAt) > now);
-}
-
-export function shouldSyncKnownLocalLayer(layer: Layer, annotationFeatureCount = 0) {
-  return !(
-    layer.kind === 'annotation' &&
-    layer.id === ANNOTATION_DEFAULT_LAYER_ID &&
-    layer.revision === 0 &&
-    annotationFeatureCount === 0
-  );
 }
 
 function stableHash(value: string) {
@@ -628,47 +616,6 @@ function applyViewState(map: CollaborationMap, viewState: CollaborationViewState
   );
 }
 
-function localLayerNeedsUpload(localLayer: Layer, remoteLayer: Layer | null | undefined) {
-  if (!remoteLayer) return true;
-  return Number(localLayer.revision || 0) > Number(remoteLayer.revision || 0);
-}
-
-function localFeatureNeedsUpload(
-  localFeature: { revision?: number },
-  remoteFeature: { revision?: number } | null | undefined,
-) {
-  if (!remoteFeature) return true;
-  return Number(localFeature.revision || 0) > Number(remoteFeature.revision || 0);
-}
-
-function fileLayerPayloadEquals(localPayload: unknown, remotePayload: unknown) {
-  if (!isRecord(localPayload) || !isRecord(remotePayload)) return false;
-  const localStyle = isRecord(localPayload.style) ? localPayload.style : {};
-  const remoteStyle = isRecord(remotePayload.style) ? remotePayload.style : {};
-  return (
-    localPayload.fileType === remotePayload.fileType &&
-    localPayload.contentHash === remotePayload.contentHash &&
-    localPayload.contentType === remotePayload.contentType &&
-    localPayload.contentEncoding === remotePayload.contentEncoding &&
-    Number(localPayload.contentByteLength || 0) === Number(remotePayload.contentByteLength || 0) &&
-    Number(localPayload.rawByteLength || 0) === Number(remotePayload.rawByteLength || 0) &&
-    JSON.stringify(localPayload.bounds || null) === JSON.stringify(remotePayload.bounds || null) &&
-    localStyle.color === remoteStyle.color &&
-    Number(localStyle.opacity || 0) === Number(remoteStyle.opacity || 0) &&
-    Number(localStyle.lineWidth || 0) === Number(remoteStyle.lineWidth || 0)
-  );
-}
-
-function fileLayerMessageEqualsRemote(localLayer: Layer, remoteLayer: Layer | null | undefined) {
-  if (!remoteLayer || localLayer.kind !== 'file' || remoteLayer.kind !== 'file') return false;
-  return (
-    localLayer.name === remoteLayer.name &&
-    localLayer.visible === remoteLayer.visible &&
-    localLayer.sortKey === remoteLayer.sortKey &&
-    fileLayerPayloadEquals(localLayer.payload, remoteLayer.payload)
-  );
-}
-
 export function installMapCollaboration(
   map: CollaborationMap,
   layerStore?: LayerStore,
@@ -683,20 +630,24 @@ export function installMapCollaboration(
   const roomGrants = new Map<string, RoomGrantMember>();
   const fileLayerManifests = new Map<string, FileLayerManifest>();
   const fileLayerContentBytes = new Map<string, Uint8Array>();
-  const pendingFileLayerAssets = new Map<string, Map<string, FileLayerSyncAsset>>();
   const requestedFileLayerContent = new Set<string>();
   const localFileLayerIds = new Set<string>();
+  const renderedFileLayerHashes = new Map<string, string>();
   const knownLocalFileLayers = new Map<string, LocalFileLayer>();
-  const uploadedLocalFileLayerHashes = new Map<string, string>();
-  const serverLayers = new Map<string, Layer>();
-  const serverFeatures = new Map<string, AnnotationFeature>();
-  let snapshotLocalFileLayers: LocalFileLayer[] = [];
-  let snapshotLocalLayers: Layer[] = [];
-  let snapshotLocalFeatures: AnnotationFeature[] = [];
-  let snapshotLocalFeatureCounts = new Map<string, number>();
+  const deletedLayerIds = new Set<string>();
 
   let socket: CollaborationSocket | null = null;
   let currentRoom = fixture?.roomId || getInitialRoom();
+  let roomSync: RoomSyncClient | null = null;
+  let journalStorage: SyncJournalStorage | null = null;
+  let syncRoom = '';
+  let syncIdentity = '';
+  let syncGeneration = 0;
+  let standaloneImport: {
+    layers: Layer[];
+    features: ReturnType<LayerStore['getAnnotationFeatures']>;
+    files: LocalFileLayer[];
+  } | null = null;
   let localCursor: CursorState = { visible: false, lngLat: null };
   let localLocation: LocationState = { ...EMPTY_LOCATION };
   let ownConnectionId = clientId;
@@ -712,7 +663,6 @@ export function installMapCollaboration(
   let accessDeniedRetryTimer = 0;
   let backgroundTimer = 0;
   let wasBgDisconnect = false;
-  let syncSnapshotReady = false;
   let panelExpanded = false;
   let currentUser: AccountUser | null = null;
   let roomAccess = defaultRoomAccess();
@@ -748,6 +698,86 @@ export function installMapCollaboration(
   compactSummary.appendChild(compactMeta);
   compactToggle.appendChild(compactAvatars);
   compactToggle.appendChild(compactSummary);
+
+  const syncNotice = document.createElement('details');
+  syncNotice.className = 'collab-sync-notice';
+  syncNotice.hidden = true;
+  const syncSummary = document.createElement('summary');
+  const syncDetails = document.createElement('div');
+  const syncExport = createElement('button', 'collab-button', { type: 'button' });
+  syncExport.textContent = 'Export saved edits';
+  const syncDiscard = createElement('button', 'collab-button', { type: 'button' });
+  syncDiscard.textContent = 'Discard conflicts';
+  for (const node of [syncSummary, syncDetails, syncExport, syncDiscard]) syncNotice.appendChild(node);
+  syncExport.addEventListener('click', async () => {
+    if (!roomSync) return;
+    const url = URL.createObjectURL(
+      new Blob([JSON.stringify(await roomSync.exportJournal(), null, 2)], { type: 'application/json' }),
+    );
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `atlas-edits-${currentRoom}.json`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  syncDiscard.addEventListener('click', () => roomSync?.discardConflicts());
+  function renderSyncNotice() {
+    const count = roomSync?.conflicts.length || 0;
+    const error = roomSync?.storageError || '';
+    const waiting = !roomSync?.ready || !roomSync?.writable ? roomSync?.pending.length || 0 : 0;
+    syncNotice.hidden = !count && !error && !waiting;
+    syncSummary.textContent =
+      error || (count ? `${count} edits need review` : `${waiting} edits saved on this device, waiting to sync`);
+    syncDetails.replaceChildren();
+    for (const conflict of roomSync?.conflicts || []) {
+      const row = document.createElement('p');
+      const command = conflict.command;
+      const label =
+        command.type === 'create'
+          ? command.data.name || command.data.payload?.label || 'New item'
+          : command.type === 'patch'
+            ? command.fields.name?.value || command.fields.label?.value || command.id
+            : command.id;
+      const reasons: Record<string, string> = {
+        target_missing: 'This item was deleted on another device.',
+        parent_missing: 'Its annotation layer was deleted.',
+        'revision-conflict': 'This item changed on another device.',
+        'dependency-conflict': 'An earlier edit it depends on could not be applied.',
+        result_unknown: 'This editing session expired. Check the shared map before publishing this draft again.',
+        'entity-exists': 'An item with this ID already exists.',
+        'permission-denied': 'You no longer have permission to edit this room.',
+      };
+      row.dataset.reason = conflict.reason;
+      row.textContent = `${label}: ${reasons[conflict.reason] || 'This edit could not be applied.'} Your edit is saved; the shared map keeps the server version.`;
+      if (command.type === 'patch') {
+        const current =
+          command.kind === 'layer'
+            ? roomSync?.canonical.getLayer(command.id)
+            : roomSync?.canonical.getAnnotationFeature(command.id);
+        const details = document.createElement('pre');
+        details.className = 'collab-sync-comparison';
+        const comparisons = Object.entries(command.fields).map(([field, edit]) => ({
+          field,
+          original: conflict.baseValues[field],
+          yours: edit.value,
+          shared: current ? readFields(command.kind, current)[field] : '(deleted)',
+        }));
+        details.textContent = JSON.stringify(comparisons, null, 2);
+        row.appendChild(details);
+      }
+      const keep = createElement('button', 'collab-button', { type: 'button' });
+      keep.textContent = command.type === 'create' ? 'Create as new item' : 'Use my edit';
+      keep.disabled = command.type !== 'create' && !roomSync?.canonical.get(command.kind, command.id);
+      keep.addEventListener('click', () => void roomSync?.resolveConflict(conflict.id, true));
+      const discard = createElement('button', 'collab-button', { type: 'button' });
+      discard.textContent = 'Keep shared version';
+      discard.addEventListener('click', () => void roomSync?.resolveConflict(conflict.id, false));
+      row.appendChild(keep);
+      row.appendChild(discard);
+      syncDetails.appendChild(row);
+    }
+    syncDiscard.hidden = !count;
+  }
 
   const panelBody = createElement('div', 'collab-panel-body');
 
@@ -1089,6 +1119,7 @@ export function installMapCollaboration(
   }
 
   function renderAccessUi() {
+    roomSync?.setWritable(roomAccess.canEdit);
     renderAccount();
     renderRoleBadge();
     renderClaimButton();
@@ -1554,10 +1585,74 @@ export function installMapCollaboration(
     return true;
   }
 
+  function getRoomSync() {
+    const identity = activeProfile().userId;
+    if (roomSync && syncRoom === currentRoom && syncIdentity === identity) return roomSync;
+    roomSync?.dispose();
+    renderedFileLayerHashes.clear();
+    journalStorage?.close();
+    syncRoom = currentRoom;
+    syncIdentity = identity;
+    syncGeneration += 1;
+    const storage = new SyncJournalStorage(`${identity}:${currentRoom}`);
+    journalStorage = storage;
+    roomSync = new RoomSyncClient({
+      load: () => storage.load(),
+      send: (message) => {
+        if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
+        socket.send(message instanceof Uint8Array ? new Uint8Array(message).buffer : JSON.stringify(message));
+        return true;
+      },
+      save: (state) => storage.save(state),
+      remap: (ids) => {
+        for (const [from, to] of Object.entries(ids)) {
+          if (localFileLayerIds.delete(from)) localFileLayerIds.add(to);
+          const renderedHash = renderedFileLayerHashes.get(from);
+          if (renderedHash) {
+            renderedFileLayerHashes.delete(from);
+            renderedFileLayerHashes.set(to, renderedHash);
+          }
+          const file = knownLocalFileLayers.get(from);
+          if (file) {
+            file.syncLayerId = to;
+            knownLocalFileLayers.delete(from);
+            knownLocalFileLayers.set(to, file);
+          }
+          const manifest = fileLayerManifests.get(from);
+          if (manifest) {
+            manifest.id = to;
+            fileLayerManifests.delete(from);
+            fileLayerManifests.set(to, manifest);
+          }
+        }
+        layerStore?.remapIds(ids);
+      },
+      changed: () => renderSyncNotice(),
+      publish: (layers, features) => {
+        const currentIds = new Set(layers.map((layer) => layer.id));
+        for (const id of fileLayerManifests.keys()) if (!currentIds.has(id)) forgetDeletedLayer(id);
+        for (const [hash, blob] of Object.entries(roomSync?.files || {})) {
+          if (!fileLayerContentBytes.has(hash))
+            void blob.arrayBuffer().then((bytes) => {
+              fileLayerContentBytes.set(hash, new Uint8Array(bytes));
+              for (const manifest of fileLayerManifests.values())
+                if (manifest.contentHash === hash) void dispatchRemoteFileLayerAdd(manifest, new Uint8Array(bytes));
+            });
+        }
+        layerStore?.replaceSnapshot(layers, features);
+        const manifests = layers.map(fileLayerMessageToFileLayerManifest).filter(Boolean);
+        applyFileLayerManifestList(manifests);
+      },
+    });
+    renderSyncNotice();
+    return roomSync;
+  }
+
   function sendLayerMessage(message: JsonRecord) {
-    if (!canWriteToRoom()) return false;
-    if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return false;
-    socket.send(JSON.stringify(message));
+    if (fixture || destroyed || !currentRoom) return false;
+    const mutation = parseRoomMutation(message);
+    if (!mutation) return false;
+    void getRoomSync().enqueue(mutation);
     return true;
   }
 
@@ -1572,15 +1667,20 @@ export function installMapCollaboration(
     );
   }
 
-  function dispatchRemoteFileLayerDelete(fileLayerId: string) {
-    mapContainer.dispatchEvent(
-      new CustomEvent('layer-sync:remote-delete', {
-        detail: { layerId: fileLayerId },
-      }),
-    );
-  }
-
   function rememberFileLayerManifests(manifests: FileLayerManifest[]) {
+    const hashes = new Set([
+      ...manifests.map((manifest) => manifest.contentHash),
+      ...Object.keys(roomSync?.files || {}),
+    ]);
+    for (const hash of fileLayerContentBytes.keys()) if (!hashes.has(hash)) fileLayerContentBytes.delete(hash);
+    for (const hash of requestedFileLayerContent) if (!hashes.has(hash)) requestedFileLayerContent.delete(hash);
+    for (const manifest of manifests) {
+      const local = knownLocalFileLayers.get(manifest.id);
+      if (local?.contentHash && local.contentHash !== manifest.contentHash) {
+        knownLocalFileLayers.delete(manifest.id);
+        localFileLayerIds.delete(manifest.id);
+      }
+    }
     fileLayerManifests.clear();
     for (const manifest of manifests || []) {
       if (manifest?.id && manifest?.contentHash) fileLayerManifests.set(manifest.id, manifest);
@@ -1601,14 +1701,22 @@ export function installMapCollaboration(
   }
 
   async function dispatchRemoteFileLayerAdd(manifest: FileLayerManifest, contentBytes: Uint8Array) {
-    if (!manifest || !contentBytes || localFileLayerIds.has(manifest.id)) return;
+    if (!manifest || !contentBytes || renderedFileLayerHashes.get(manifest.id) === manifest.contentHash) return;
     try {
       const content = await materializeFileLayerContent(manifest, contentBytes);
+      if (
+        destroyed ||
+        fileLayerManifests.get(manifest.id) !== manifest ||
+        deletedLayerIds.has(manifest.id) ||
+        renderedFileLayerHashes.get(manifest.id) === manifest.contentHash
+      )
+        return;
       mapContainer.dispatchEvent(
         new CustomEvent('layer-sync:remote-add', {
           detail: { manifest, content },
         }),
       );
+      renderedFileLayerHashes.set(manifest.id, manifest.contentHash || '');
     } catch (error) {
       console.error('Failed to materialize shared file layer:', error);
     }
@@ -1631,6 +1739,11 @@ export function installMapCollaboration(
   async function handleFileContentMessage(data: unknown) {
     const frame = decodeFileContentMessage(data);
     if (!frame) return;
+    if (
+      ![...fileLayerManifests.values()].some((manifest) => manifest.contentHash === frame.contentHash) &&
+      !roomSync?.files[frame.contentHash]
+    )
+      return;
     fileLayerContentBytes.set(frame.contentHash, frame.content);
     requestedFileLayerContent.delete(frame.contentHash);
     for (const manifest of fileLayerManifests.values()) {
@@ -1641,174 +1754,43 @@ export function installMapCollaboration(
   }
 
   async function syncLocalFileLayer(fileLayer: LocalFileLayer | undefined) {
-    if (!fileLayer?.id || !fileLayer?.data) return;
-    knownLocalFileLayers.set(fileLayer.syncLayerId || fileLayer.remoteLayerId || fileLayer.id, fileLayer);
-    if (!canWriteToRoom()) return;
-    if (!socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
+    if (fixture || !fileLayer?.id || !fileLayer?.data || fileLayer.remoteLayerId) return;
+    const syncId = fileLayer.syncLayerId || fileLayer.id;
+    knownLocalFileLayers.set(syncId, fileLayer);
+    if (!currentRoom) return;
+    const sync = getRoomSync();
+    const generation = syncGeneration;
+    if (deletedLayerIds.has(syncId)) return;
+    knownLocalFileLayers.set(syncId, fileLayer);
+    localFileLayerIds.add(syncId);
     try {
       const asset = await buildFileLayerSyncAsset(fileLayer);
-      if (!asset || !socket || socket.readyState !== WebSocket.OPEN || destroyed) return;
-      const fileLayerId = asset.envelope.manifest.id;
-      const layerMessage = fileLayerManifestToLayerMessage(asset.envelope.manifest);
-      const remoteLayer = serverLayers.get(fileLayerId);
-      if (fileLayerMessageEqualsRemote(layerMessage, remoteLayer)) {
-        localFileLayerIds.add(fileLayerId);
-        fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
-        uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
+      if (
+        !asset ||
+        destroyed ||
+        generation !== syncGeneration ||
+        syncRoom !== currentRoom ||
+        deletedLayerIds.has(syncId)
+      )
         return;
-      }
-      const remotePayload: JsonRecord | null = isRecord(remoteLayer?.payload) ? remoteLayer.payload : null;
-      if (remoteLayer?.kind === 'file' && remotePayload?.contentHash === asset.envelope.manifest.contentHash) {
-        localFileLayerIds.add(fileLayerId);
-        fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
-        fileLayerContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
-        uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
-        sendLayerMessage({ type: 'layer:create', layer: layerMessage });
-        return;
-      }
-      const previousHash = uploadedLocalFileLayerHashes.get(fileLayerId);
-      if (previousHash === asset.envelope.manifest.contentHash) {
-        sendLayerMessage({
-          type: 'layer:create',
-          layer: layerMessage,
-        });
-        return;
-      }
-      localFileLayerIds.add(fileLayerId);
-      fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
-      const pendingForHash = pendingFileLayerAssets.get(asset.envelope.manifest.contentHash) || new Map();
-      pendingForHash.set(fileLayerId, asset);
-      pendingFileLayerAssets.set(asset.envelope.manifest.contentHash, pendingForHash);
-      fileLayerContentBytes.set(asset.envelope.manifest.contentHash, asset.content);
-      uploadedLocalFileLayerHashes.set(fileLayerId, asset.envelope.manifest.contentHash);
-      if (!canWriteToRoom()) return;
-      socket.send(encodeFileContentMessage(asset.envelope.manifest.contentHash, asset.content));
-    } catch (error) {
-      console.error('Failed to sync file layer:', error);
-    }
-  }
-
-  async function syncKnownLocalFileLayers(fileLayers: Iterable<LocalFileLayer> = knownLocalFileLayers.values()) {
-    if (!syncSnapshotReady) return;
-    if (!canWriteToRoom()) return;
-    for (const fileLayer of fileLayers) {
-      if (!fileLayer.remoteLayerId) await syncLocalFileLayer(fileLayer);
-    }
-  }
-
-  function syncKnownLocalLayers(
-    layers: Iterable<Layer> = layerStore?.getLayers?.() || [],
-    features: Iterable<AnnotationFeature> = layerStore?.getAnnotationFeatures?.() || [],
-    featureCounts?: Map<string, number>,
-  ) {
-    if (!syncSnapshotReady) return;
-    if (!canWriteToRoom()) return;
-    if (!layerStore) return;
-    for (const layer of layers) {
-      const featureCount =
-        layer.kind === 'annotation'
-          ? featureCounts
-            ? (featureCounts.get(layer.id) ?? 0)
-            : (layerStore.getAnnotationFeatureCount?.(layer.id) ?? 0)
-          : 0;
-      if (!shouldSyncKnownLocalLayer(layer, featureCount)) continue;
-      if (!localLayerNeedsUpload(layer, serverLayers.get(layer.id))) continue;
-      sendLayerMessage({ type: 'layer:create', layer });
-    }
-    for (const feature of features) {
-      if (!localFeatureNeedsUpload(feature, serverFeatures.get(feature.id))) continue;
-      sendLayerMessage({ type: 'annotation-feature:upsert', feature });
-    }
-  }
-
-  function captureSnapshotLocalCandidates() {
-    snapshotLocalFileLayers = Array.from(knownLocalFileLayers.values());
-    snapshotLocalLayers = Array.from(layerStore?.getLayers?.() || []);
-    snapshotLocalFeatures = Array.from(layerStore?.getAnnotationFeatures?.() || []);
-    snapshotLocalFeatureCounts = new Map();
-    for (const layer of snapshotLocalLayers) {
-      if (layer.kind !== 'annotation') continue;
-      snapshotLocalFeatureCounts.set(
-        layer.id,
-        snapshotLocalFeatures.filter((feature) => feature.layerId === layer.id).length,
-      );
-    }
-  }
-
-  function clearSnapshotLocalCandidates() {
-    snapshotLocalFileLayers = [];
-    snapshotLocalLayers = [];
-    snapshotLocalFeatures = [];
-    snapshotLocalFeatureCounts.clear();
-  }
-
-  function refreshSnapshotLocalFileLayerCandidates() {
-    if (!pendingSnapshotLayers && !pendingSnapshotFeatures) return;
-    snapshotLocalFileLayers = Array.from(knownLocalFileLayers.values());
-  }
-
-  let pendingSnapshotLayers = false;
-  let pendingSnapshotFeatures = false;
-
-  function requestSyncSnapshot() {
-    syncSnapshotReady = false;
-    pendingSnapshotLayers = true;
-    pendingSnapshotFeatures = true;
-    serverLayers.clear();
-    serverFeatures.clear();
-    captureSnapshotLocalCandidates();
-    sendLayerMessage({ type: 'layer:list:request' });
-    sendLayerMessage({ type: 'annotation-feature:list:request' });
-  }
-
-  function maybeCompleteSyncSnapshot() {
-    if (syncSnapshotReady || pendingSnapshotLayers || pendingSnapshotFeatures) return;
-    syncSnapshotReady = true;
-    const localFileLayers = snapshotLocalFileLayers;
-    const localLayers = snapshotLocalLayers;
-    const localFeatures = snapshotLocalFeatures;
-    const localFeatureCounts = new Map(snapshotLocalFeatureCounts);
-    clearSnapshotLocalCandidates();
-    syncKnownLocalFileLayers(localFileLayers);
-    syncKnownLocalLayers(localLayers, localFeatures, localFeatureCounts);
-  }
-
-  function completePendingFileLayerUpload(contentHash: string | undefined) {
-    const assets = pendingFileLayerAssets.get(contentHash);
-    if (!assets) return;
-    pendingFileLayerAssets.delete(contentHash);
-    for (const asset of assets.values()) {
-      if (!canWriteToRoom()) return;
-      sendLayerMessage({
-        type: 'layer:create',
-        layer: fileLayerManifestToLayerMessage(asset.envelope.manifest),
-      });
-    }
-  }
-
-  function patchPendingFileLayerAsset(fileLayerId: string, patch: JsonRecord) {
-    const localFileLayer = knownLocalFileLayers.get(fileLayerId);
-    if (localFileLayer) Object.assign(localFileLayer, patch);
-    for (const assets of pendingFileLayerAssets.values()) {
-      const asset = assets.get(fileLayerId);
-      if (!asset) continue;
-      if (asset.envelope.manifest.id !== fileLayerId) continue;
-      asset.envelope.manifest = {
+      const manifest: FileLayerManifest = {
         ...asset.envelope.manifest,
-        ...patch,
-        id: asset.envelope.manifest.id,
-        type: asset.envelope.manifest.type,
-        contentHash: asset.envelope.manifest.contentHash,
-        updatedAt: Date.now(),
+        name: String(fileLayer.name || asset.envelope.manifest.name),
+        visible: fileLayer.visible !== false,
       };
-      fileLayerManifests.set(fileLayerId, asset.envelope.manifest);
+      for (const key of ['color', 'opacity', 'lineWidth', 'sortKey'] as const) {
+        if (fileLayer[key] !== undefined) manifest[key] = fileLayer[key] as never;
+      }
+      fileLayer.contentHash = manifest.contentHash;
+      fileLayerContentBytes.set(manifest.contentHash, asset.content);
+      renderedFileLayerHashes.set(syncId, manifest.contentHash);
+      const mutation = parseRoomMutation({ type: 'layer:create', layer: fileLayerManifestToLayerMessage(manifest) });
+      if (mutation) sync.enqueue(mutation, { hash: manifest.contentHash, bytes: asset.content });
+    } catch (error) {
+      console.error('Failed to prepare file layer for sync:', error);
+      sync.storageError = 'Could not prepare this file for sync. Export it before closing this tab.';
+      renderSyncNotice();
     }
-  }
-
-  function resendPendingFileLayerContent(contentHash: string | undefined) {
-    const asset = pendingFileLayerAssets.get(contentHash)?.values().next().value;
-    if (!asset || !socket || socket.readyState !== WebSocket.OPEN) return;
-    socket.send(encodeFileContentMessage(contentHash, asset.content));
   }
 
   function scheduleSend(immediate = false) {
@@ -1929,12 +1911,7 @@ export function installMapCollaboration(
     }
 
     if (message.type === 'file:content:stored') {
-      completePendingFileLayerUpload(message.contentHash);
-      return;
-    }
-
-    if (message.type === 'file:content:needed') {
-      resendPendingFileLayerContent(message.contentHash);
+      roomSync?.contentStored(String(message.contentHash));
       return;
     }
 
@@ -1962,8 +1939,7 @@ export function installMapCollaboration(
         roomGrants.clear();
       }
       if (!couldEdit && roomAccess.canEdit) {
-        syncKnownLocalFileLayers();
-        syncKnownLocalLayers();
+        roomSync?.setWritable(true);
       }
       return;
     }
@@ -1975,80 +1951,30 @@ export function installMapCollaboration(
     }
 
     if (
-      message.type === 'layer:list' ||
-      message.type === 'layer:created' ||
-      message.type === 'layer:updated' ||
-      message.type === 'layer:deleted' ||
-      message.type === 'layer:reordered'
+      message.type === 'sync:snapshot' ||
+      message.type === 'sync:commit' ||
+      message.type === 'sync:result' ||
+      message.type === 'sync:error'
     ) {
-      if (message.type === 'layer:list' || message.type === 'layer:reordered') {
-        serverLayers.clear();
-        for (const layer of (message.layers || []) as Layer[]) {
-          if (layer?.id) serverLayers.set(layer.id, layer);
+      await getRoomSync().receive(message as unknown as Parameters<RoomSyncClient['receive']>[0]);
+      if (message.type === 'sync:snapshot' && standaloneImport) {
+        const imported = standaloneImport;
+        standaloneImport = null;
+        for (const layer of imported.layers) {
+          if (layer.kind === 'annotation' && layer.id !== ANNOTATION_DEFAULT_LAYER_ID)
+            sendLayerMessage({ type: 'layer:create', layer });
         }
-        if (message.type === 'layer:list') {
-          pendingSnapshotLayers = false;
-        }
-      } else if ((message.type === 'layer:created' || message.type === 'layer:updated') && isRecord(message.layer)) {
-        serverLayers.set(String(message.layer.id), message.layer as Layer);
-      } else if (message.type === 'layer:deleted' && message.layerId) {
-        serverLayers.delete(message.layerId);
-      }
-      layerStore?.applyLayerServerMessage(message as LayerServerMessage);
-      if (message.type === 'layer:list') {
-        applyFileLayerManifestList((message.layers || []).map(fileLayerMessageToFileLayerManifest).filter(Boolean));
-        maybeCompleteSyncSnapshot();
-      } else if (message.type === 'layer:created' || message.type === 'layer:updated') {
-        const manifest = fileLayerMessageToFileLayerManifest(message.layer);
-        if (manifest) {
-          fileLayerManifests.set(manifest.id, manifest);
-          applyFileLayerManifestList(Array.from(fileLayerManifests.values()));
-          const content = fileLayerContentBytes.get(manifest.contentHash || '');
-          if (content) await dispatchRemoteFileLayerAdd(manifest, content);
-        }
-      } else if (message.type === 'layer:deleted' && message.layerId) {
-        fileLayerManifests.delete(message.layerId);
-        dispatchRemoteFileLayerDelete(message.layerId);
-      } else if (message.type === 'layer:reordered') {
-        applyFileLayerManifestList((message.layers || []).map(fileLayerMessageToFileLayerManifest).filter(Boolean));
+        for (const feature of imported.features) sendLayerMessage({ type: 'annotation-feature:upsert', feature });
+        for (const file of imported.files) void syncLocalFileLayer(file);
       }
       return;
     }
-
-    if (
-      message.type === 'annotation-feature:list' ||
-      message.type === 'annotation-feature:upserted' ||
-      message.type === 'annotation-feature:deleted' ||
-      message.type === 'annotation-feature:reordered' ||
-      message.type === 'annotation-feature:rejected'
-    ) {
-      if (message.type === 'annotation-feature:list') {
-        if (message.layerId) {
-          for (const [featureId, feature] of Array.from(serverFeatures.entries())) {
-            if (feature.layerId === message.layerId) serverFeatures.delete(featureId);
-          }
-        } else {
-          serverFeatures.clear();
-          pendingSnapshotFeatures = false;
-        }
-        for (const feature of (message.features || []) as AnnotationFeature[]) {
-          if (feature?.id) serverFeatures.set(feature.id, feature);
-        }
-      } else if (message.type === 'annotation-feature:upserted' && isRecord(message.feature)) {
-        serverFeatures.set(String(message.feature.id), message.feature as AnnotationFeature);
-      } else if (
-        (message.type === 'annotation-feature:deleted' || message.type === 'annotation-feature:rejected') &&
-        message.featureId
-      ) {
-        serverFeatures.delete(message.featureId);
-      } else if (message.type === 'annotation-feature:reordered') {
-        serverFeatures.clear();
-        for (const feature of (message.features || []) as AnnotationFeature[]) {
-          if (feature?.id) serverFeatures.set(feature.id, feature);
-        }
-      }
-      layerStore?.applyAnnotationFeatureServerMessage(message as AnnotationFeatureServerMessage);
-      if (message.type === 'annotation-feature:list') maybeCompleteSyncSnapshot();
+    // Unversioned lists/events cannot be merged into the versioned room history.
+    if (String(message.type).startsWith('layer:') || String(message.type).startsWith('annotation-feature:')) return;
+    if (message.type === 'protocol:error') {
+      getRoomSync().disconnect();
+      getRoomSync().storageError = 'Sync protocol mismatch. Refresh the app; pending edits are saved on this device.';
+      renderSyncNotice();
       return;
     }
 
@@ -2083,13 +2009,13 @@ export function installMapCollaboration(
       return;
     }
     const room = normalizeRoom(roomValue);
+    if (!currentRoom && layerStore)
+      standaloneImport = {
+        layers: layerStore.getLayers(),
+        features: layerStore.getAnnotationFeatures(),
+        files: [...knownLocalFileLayers.values()],
+      };
     currentRoom = room;
-    syncSnapshotReady = false;
-    pendingSnapshotLayers = false;
-    pendingSnapshotFeatures = false;
-    clearSnapshotLocalCandidates();
-    serverLayers.clear();
-    serverFeatures.clear();
     roomInput.value = room;
     updateRoomUrl(room);
     if (!currentUser) syncLocalProfileUi();
@@ -2135,6 +2061,7 @@ export function installMapCollaboration(
       query: () => {
         const localProfile = activeProfile();
         return {
+          syncProtocol: '2',
           userId: localProfile.userId,
           name: localProfile.name,
           color: localProfile.color,
@@ -2150,7 +2077,7 @@ export function installMapCollaboration(
       if (socket !== nextSocket) return;
       setStatus('Live', 'live');
       if (isMobileViewport()) setPanelExpanded(false);
-      requestSyncSnapshot();
+      getRoomSync().connect(canWriteToRoom());
       scheduleSend(true);
     });
     nextSocket.addEventListener('close', () => {
@@ -2160,6 +2087,7 @@ export function installMapCollaboration(
         disconnect({ preserveRoomState: true });
         return;
       }
+      roomSync?.disconnect();
       setStatus('Offline', 'offline');
     });
     nextSocket.addEventListener('error', () => {
@@ -2169,6 +2097,7 @@ export function installMapCollaboration(
         disconnect({ preserveRoomState: true });
         return;
       }
+      roomSync?.disconnect();
       setStatus('Offline', 'offline');
     });
     nextSocket.addEventListener('message', (event: MessageEvent) => {
@@ -2180,6 +2109,7 @@ export function installMapCollaboration(
   }
 
   function disconnect({ preserveRoomState = false }: { preserveRoomState?: boolean } = {}) {
+    roomSync?.disconnect();
     if (socket) {
       const closing = socket;
       socket = null;
@@ -2195,17 +2125,10 @@ export function installMapCollaboration(
     peers.clear();
     fileLayerManifests.clear();
     fileLayerContentBytes.clear();
-    pendingFileLayerAssets.clear();
     requestedFileLayerContent.clear();
     localFileLayerIds.clear();
-    uploadedLocalFileLayerHashes.clear();
-    serverLayers.clear();
-    serverFeatures.clear();
-    syncSnapshotReady = false;
-    pendingSnapshotLayers = false;
-    pendingSnapshotFeatures = false;
-    clearSnapshotLocalCandidates();
     if (!preserveRoomState) {
+      deletedLayerIds.clear();
       roomGrants.clear();
       roomAccess = defaultRoomAccess();
       roomAccessLoaded = false;
@@ -2235,6 +2158,7 @@ export function installMapCollaboration(
     }
     connect(nextRoom).catch((error) => {
       console.error('Failed to connect collaboration room:', error);
+      roomSync?.disconnect();
       setStatus('Offline', 'offline');
     });
   });
@@ -2392,24 +2316,16 @@ export function installMapCollaboration(
   };
   const handleLocalFileLayerUpsert = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
-    if (!syncSnapshotReady) {
-      if (detail?.layer?.id) {
-        const layer = detail.layer as LocalFileLayer;
-        knownLocalFileLayers.set(layer.syncLayerId || layer.remoteLayerId || layer.id, layer);
-        refreshSnapshotLocalFileLayerCandidates();
-      }
-      return;
-    }
-    syncLocalFileLayer(detail?.layer);
+    void syncLocalFileLayer(detail?.layer);
   };
   const handleLocalFileLayerPatch = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
     const fileLayerId = typeof detail?.layerId === 'string' ? detail.layerId : '';
     const patch = isRecord(detail?.patch) ? detail.patch : null;
     if (!fileLayerId || !patch) return;
-    patchPendingFileLayerAsset(fileLayerId, patch);
-    refreshSnapshotLocalFileLayerCandidates();
-    if (!syncSnapshotReady) return;
+    const preparing = knownLocalFileLayers.get(fileLayerId);
+    if (preparing) Object.assign(preparing, patch);
+    if (fixture || !currentRoom || !getRoomSync().view.getLayer(fileLayerId)) return;
     const stylePatch: JsonRecord = {};
     if (typeof patch.color === 'string') stylePatch.color = patch.color;
     if (typeof patch.opacity === 'number') stylePatch.opacity = patch.opacity;
@@ -2427,29 +2343,9 @@ export function installMapCollaboration(
   const handleLocalFileLayerReorder = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
     const stackItems = Array.isArray(detail?.stackItems) ? detail.stackItems : [];
-    if (pendingFileLayerAssets.size > 0) {
-      const order = new Map(
-        stackItems
-          .map((item: JsonRecord, index: number) => {
-            const layerId = typeof item?.layerId === 'string' ? item.layerId : '';
-            return layerId ? [layerId, index] : null;
-          })
-          .filter(Boolean) as Array<[string, number]>,
-      );
-      for (const assets of pendingFileLayerAssets.values()) {
-        for (const asset of assets.values()) {
-          const id = asset.envelope.manifest.id;
-          if (!order.has(id)) continue;
-          const orderIndex = order.get(id);
-          asset.envelope.manifest = {
-            ...asset.envelope.manifest,
-            pendingOrderIndex: orderIndex,
-            sortKey: typeof orderIndex === 'number' ? initialSortKey(orderIndex) : asset.envelope.manifest.sortKey,
-            updatedAt: Date.now(),
-          };
-          fileLayerManifests.set(id, asset.envelope.manifest);
-        }
-      }
+    for (const [index, item] of stackItems.entries()) {
+      const preparing = knownLocalFileLayers.get(item.layerId);
+      if (preparing) preparing.sortKey = initialSortKey(index);
     }
     const updates =
       stackItems.length > 0
@@ -2468,24 +2364,26 @@ export function installMapCollaboration(
             .filter(Boolean)
         : [];
     if (updates.length === 0) return;
-    if (!syncSnapshotReady) return;
-    sendLayerMessage({ type: 'layer:reorder', updates });
+    if (fixture || !currentRoom) return;
+    const knownUpdates = updates.filter((item: { layerId: string; sortKey: string }) =>
+      getRoomSync().view.getLayer(item.layerId),
+    );
+    if (knownUpdates.length) sendLayerMessage({ type: 'layer:reorder', updates: knownUpdates });
   };
+  function forgetDeletedLayer(layerId: string) {
+    deletedLayerIds.add(layerId);
+    localFileLayerIds.delete(layerId);
+    renderedFileLayerHashes.delete(layerId);
+    knownLocalFileLayers.delete(layerId);
+    fileLayerManifests.delete(layerId);
+  }
+
   const handleLocalFileLayerDelete = (event: Event) => {
     const detail = event instanceof CustomEvent ? event.detail : undefined;
     const fileLayerId = typeof detail?.layerId === 'string' ? detail.layerId : '';
     if (!fileLayerId) return;
-    localFileLayerIds.delete(fileLayerId);
-    knownLocalFileLayers.delete(fileLayerId);
-    snapshotLocalFileLayers = snapshotLocalFileLayers.filter((fileLayer) => {
-      const candidateId = fileLayer.syncLayerId || fileLayer.remoteLayerId || fileLayer.id;
-      return candidateId !== fileLayerId;
-    });
-    uploadedLocalFileLayerHashes.delete(fileLayerId);
-    for (const [id, manifest] of fileLayerManifests) {
-      if (manifest.id === fileLayerId) fileLayerManifests.delete(id);
-    }
-    if (!syncSnapshotReady) return;
+    forgetDeletedLayer(fileLayerId);
+
     sendLayerMessage({
       type: 'layer:delete',
       layerId: fileLayerId,
@@ -2499,10 +2397,9 @@ export function installMapCollaboration(
   mapContainer.addEventListener('layer-sync:local-delete', handleLocalFileLayerDelete);
 
   const unsubscribeLayerStore = layerStore?.subscribe((event) => {
-    if (event.remote) return;
-    if (!syncSnapshotReady) {
-      if (pendingSnapshotLayers || pendingSnapshotFeatures) captureSnapshotLocalCandidates();
-      return;
+    if (event.remote || fixture || event.type === 'snapshot') return;
+    if (event.type === 'layer:delete') {
+      forgetDeletedLayer(event.layerId);
     }
     if (event.type === 'layer:upsert') {
       sendLayerMessage({ type: 'layer:create', layer: event.layer });
@@ -2564,8 +2461,21 @@ export function installMapCollaboration(
     });
   }
 
+  const handleNetworkOffline = () => {
+    if (fixture || !currentRoom) return;
+    disconnect({ preserveRoomState: true });
+    setStatus('Offline', 'offline');
+  };
+  const handleNetworkOnline = () => {
+    if (fixture || !currentRoom || document.hidden || destroyed) return;
+    if (!socket || socket.readyState !== WebSocket.OPEN) void connect(currentRoom);
+  };
+  window.addEventListener('offline', handleNetworkOffline);
+  window.addEventListener('online', handleNetworkOnline);
+
   mapContainer.appendChild(overlay);
   mapContainer.appendChild(panel);
+  mapContainer.appendChild(syncNotice);
   setPanelExpanded(false);
   setStatus('Ready', 'idle');
   if (fixture) {
@@ -2579,6 +2489,7 @@ export function installMapCollaboration(
   if (!fixture && currentRoom) {
     connect(currentRoom).catch((error) => {
       console.error('Failed to connect collaboration room:', error);
+      roomSync?.disconnect();
       setStatus('Offline', 'offline');
     });
   }
@@ -2586,6 +2497,11 @@ export function installMapCollaboration(
   return {
     destroy() {
       destroyed = true;
+      roomSync?.dispose();
+      journalStorage?.close();
+      syncNotice.remove();
+      window.removeEventListener('offline', handleNetworkOffline);
+      window.removeEventListener('online', handleNetworkOnline);
       clearTimeout(sendTimer);
       clearTimeout(followTimer);
       clearTimeout(shareResetTimer);
