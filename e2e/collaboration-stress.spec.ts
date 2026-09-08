@@ -37,6 +37,7 @@ test.describe('real collaboration protocol stress', () => {
       await openRealRoom(pageA, room);
       await openRealRoom(pageB, room);
       const client = await createProtocolClient(pageA, room, 'Burst writer');
+      const readerClient = process.env.CI ? await createProtocolClient(pageB, room, 'Burst reader') : null;
       await client.send({ type: 'layer:create', layer: annotationLayer('stress-layer', 'Stress burst') });
       await client.waitFor('layer:created', (message) => message.localId === 'stress-layer');
       await expectLayerVisible(pageA, 'Stress burst');
@@ -61,12 +62,17 @@ test.describe('real collaboration protocol stress', () => {
           const errors = msgs.filter(
             (m) => m.type === 'sync:error' || (m.type === 'sync:result' && m.result && m.result.status !== 'accepted'),
           );
+          const rMsgs = readerClient ? await readerClient.messages() : [];
+          const commits = rMsgs.filter((m) => m.type === 'sync:commit');
           console.log(
             'CI-DIAG burst',
             JSON.stringify({
               errCount: saw.length,
               has119: saw.includes('Burst marker 119'),
               clientErrs: errors.slice(0, 4).map((m) => (m.result && m.result.reason) || m.reason || m.type),
+              readerCommits: commits.length,
+              readerDeltas: commits.slice(0, 3).map((m) => (m.delta && (m.delta.features || []).length) || 0),
+              readerLastDelta: commits.slice(-1)[0]?.delta?.features?.length || 0,
             }),
           );
         } catch {}
