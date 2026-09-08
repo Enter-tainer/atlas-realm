@@ -9,6 +9,7 @@ type TestMap = Parameters<typeof addGeoJsonToMap>[0] & {
   layers: Array<{ id?: string; type?: string }>;
   fitBoundsCalls: Array<{ bounds: [[number, number], [number, number]]; options?: Record<string, unknown> }>;
   ready: boolean;
+  style?: { _loaded?: boolean };
 };
 
 function createTestMap(ready = true): TestMap {
@@ -162,5 +163,36 @@ describe('gpx and geojson layer import', () => {
         options: { padding: 60, maxZoom: 15 },
       },
     ]);
+  });
+
+  it('imports immediately when the style is parsed but tiles are still loading', () => {
+    const map = createTestMap(false);
+    map.style = { _loaded: true };
+
+    processOrQueueGeoJson(
+      map,
+      {
+        type: 'FeatureCollection',
+        features: [
+          {
+            type: 'Feature',
+            properties: { name: 'Early line' },
+            geometry: {
+              type: 'LineString',
+              coordinates: [
+                [121.5, 31.2],
+                [121.7, 31.4],
+              ],
+            },
+          },
+        ],
+      },
+      { name: 'Early' },
+    );
+
+    // Queued items are drained only by the map's 'load' handler, which can be
+    // delayed indefinitely while tiles load — the layer must be added right away.
+    expect(map.sources).toHaveLength(1);
+    expect(map.layers.map((item) => item.type)).toEqual(['line', 'line', 'symbol']);
   });
 });

@@ -255,6 +255,7 @@ type FileLayerOptions = JsonRecord & {
 type FileLayerMap = {
   _layerStyleReady?: boolean;
   loaded?: () => boolean;
+  style?: { _loaded?: boolean };
   getContainer(): HTMLElement;
   addSource(id: string, source: unknown): void;
   addLayer(layer: unknown): void;
@@ -434,7 +435,12 @@ async function sha256(text: string) {
 }
 
 function isMapReadyForLayer(map: FileLayerMap) {
-  return Boolean(map._layerStyleReady || map.loaded?.());
+  // `map.loaded()` also waits for every in-view tile, which can stay false for a
+  // long time (or never settle). Adding a source only needs the parsed style, so
+  // a loaded style is enough to import immediately instead of queueing — queued
+  // items are only drained when the map's 'load' event runs, and that event is
+  // not guaranteed to fire.
+  return Boolean(map._layerStyleReady || map.loaded?.() || map.style?._loaded);
 }
 
 /** Merge two [[sw],[ne]] bounds into one, returns first if second is null */

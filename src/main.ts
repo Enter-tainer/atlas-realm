@@ -880,6 +880,10 @@ async function init() {
     };
     map.on('load', runMapReadySetup);
     if (map.loaded()) runMapReadySetup();
+    // 'load' waits for every in-view tile and can be delayed indefinitely — or
+    // never fire — which would strand the deferred GPX/GeoJSON queue and leave
+    // popups uninstalled. A parsed style is enough for everything set up here.
+    else runWhenStyleInfrastructureReady(map, runMapReadySetup);
 
     installMapLibreErrorLogging(map);
   } catch (error) {
