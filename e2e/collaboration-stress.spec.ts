@@ -57,9 +57,15 @@ test.describe('real collaboration protocol stress', () => {
       if (process.env.CI) {
         try {
           const saw = await annotationLabels(pageB);
+          const msgs = await client.messages();
+          const errors = msgs.filter((m) => m.type === 'sync:error' || (m.type === 'sync:result' && m.result && m.result.status !== 'accepted'));
           console.log(
             'CI-DIAG burst',
-            JSON.stringify({ count: saw.length, has119: saw.includes('Burst marker 119'), tail: saw.slice(115, 120) }),
+            JSON.stringify({
+              errCount: saw.length,
+              has119: saw.includes('Burst marker 119'),
+              clientErrs: errors.slice(0, 4).map((m) => (m.result && m.result.reason) || m.reason || m.type),
+            }),
           );
         } catch {}
       }
