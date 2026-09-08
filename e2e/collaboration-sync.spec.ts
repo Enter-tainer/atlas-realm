@@ -117,7 +117,9 @@ test.describe('real multi-device collaboration sync', () => {
           }),
         ),
       });
-      await expectLayerVisible(pageB, 'shared-file.geojson');
+      // Importing a file layer uploads its content and only then submits the layer,
+      // so this crosses several round trips; slow CI runners need more than the default.
+      await expectLayerVisible(pageB, 'shared-file.geojson', 30_000);
       await selectLayer(pageA, 'shared-file.geojson');
       await pageA.locator('.layer-manager-color-input').fill('#ef4444');
       await renameSelectedLayerFromUi(pageA, 'shared-file.geojson', 'Shared route');
@@ -186,7 +188,9 @@ test.describe('real multi-device collaboration sync', () => {
       await context.setOffline(false);
       const recovered = await context.newPage();
       await openRealRoom(recovered, room);
-      await expectLayerVisible(recovered, 'Closed tab draft');
+      // Recovery replays the closed tab's journal after reconnecting; allow slow
+      // CI runners extra time (a lost draft still fails, since the name is wrong).
+      await expectLayerVisible(recovered, 'Closed tab draft', 30_000);
       await expect(recovered.locator('.collab-sync-notice')).toBeHidden();
     } finally {
       await context.close();

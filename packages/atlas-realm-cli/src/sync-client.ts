@@ -199,36 +199,34 @@ export class RoomSyncClient {
       );
     return { ...journal, files };
   }
-  private checkpoint() {
-    // Coalesce journal writes: while a save is in flight, remember the newest
-    // snapshot and write it once the in-flight save settles, instead of
-    // issuing one full IndexedDB write per call. Callers await this promise,
-    // which resolves when the current save completes — a queued snapshot is
-    // written right after, so bursts block together on one write instead of
-    // serializing one write per enqueue (see schedulePump).
-    if (this.saveInFlight) {
-      this.saveQueued = structuredClone(this.journal());
-      return this.saving;
+  private checkpoint(): Promise<void> {
+    // Coalesce journal writes: remember the newest snapshot and let the running
+    // writer pick it up, so a burst of enqueues costs one or two writes instead
+    // of one per enqueue. The returned promise resolves only once every queued
+    // snapshot has been written — including the one captured here — so the
+    // latest state is durable before a tab can close (an offline draft must
+    // survive a closed tab, see schedulePump).
+    this.saveQueued = structuredClone(this.journal());
+    if (!this.saveInFlight) {
+      this.saveInFlight = true;
+      this.saving = this.drainSaves();
     }
-    this.saveInFlight = true;
-    const snapshot = structuredClone(this.journal());
-    const write = Promise.resolve(this.options.save?.(snapshot));
-    this.saving = write.then(
-      () => {
-        this.saveInFlight = false;
-        const queued = this.saveQueued;
-        this.saveQueued = undefined;
-        if (queued) void this.checkpoint();
-        this.storageError = '';
-        this.options.changed?.();
-      },
-      () => {
-        this.saveInFlight = false;
-        this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
-        this.options.changed?.();
-      },
-    );
     return this.saving;
+  }
+  private async drainSaves(): Promise<void> {
+    try {
+      while (this.saveQueued) {
+        const snapshot = this.saveQueued;
+        this.saveQueued = undefined;
+        await this.options.save?.(snapshot);
+      }
+      this.storageError = '';
+    } catch {
+      this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
+    } finally {
+      this.saveInFlight = false;
+      this.options.changed?.();
+    }
   }
   private project(publish = true) {
     this.view.replace(this.canonical.getLayers(), this.canonical.getAnnotationFeatures());

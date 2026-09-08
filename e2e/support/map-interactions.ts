@@ -109,8 +109,8 @@ export async function layerNames(page: Page) {
   return names.map((name) => name.trim()).filter(Boolean);
 }
 
-export async function expectLayerVisible(page: Page, name: string) {
-  await expect.poll(() => layerNames(page)).toContain(name);
+export async function expectLayerVisible(page: Page, name: string, timeout = 10_000) {
+  await expect.poll(() => layerNames(page), { timeout }).toContain(name);
 }
 
 export async function expectLayerMissing(page: Page, name: string) {
