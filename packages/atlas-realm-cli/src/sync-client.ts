@@ -137,8 +137,6 @@ export class RoomSyncClient {
   loaded: Promise<void>;
   private settledEvents: Array<{ result: BatchResult; drafts: Draft[] }> = [];
   private saving = Promise.resolve();
-  private saveActive = false;
-  private saveDirty: SyncJournal | undefined;
   private receiving = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -200,34 +198,19 @@ export class RoomSyncClient {
     return { ...journal, files };
   }
   private checkpoint() {
-    // Coalesce journal writes: while a write is in flight, remember the newest
-    // snapshot and write it once the in-flight write settles. Without this, a
-    // burst of enqueues issues one full localStorage write per enqueue and the
-    // serial saves serialize the enqueues, which degrades a burst of upserts
-    // into one tiny submit each under load (see schedulePump).
-    if (this.saveActive) {
-      this.saveDirty = structuredClone(this.journal());
-      return this.saving;
-    }
-    this.saveActive = true;
     const snapshot = structuredClone(this.journal());
     const write = this.saving.then(() => this.options.save?.(snapshot));
     this.saving = write.then(
       () => {
-        this.saveActive = false;
-        const next = this.saveDirty;
-        this.saveDirty = undefined;
-        if (next) void this.checkpoint();
         this.storageError = '';
         this.options.changed?.();
       },
       () => {
-        this.saveActive = false;
         this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
         this.options.changed?.();
       },
     );
-    return write;
+    return this.saving;
   }
   private project(publish = true) {
     this.view.replace(this.canonical.getLayers(), this.canonical.getAnnotationFeatures());
@@ -712,7 +695,9 @@ export class RoomSyncClient {
   }
   async flush() {
     await this.loaded;
-    await this.saving;
+    // Do not await an in-flight journal save here: pending drafts are already
+    // in memory and the journal is re-checkpointed once the batch is built below,
+    // so blocking on a slow save would only add latency to every submit round.
     if (
       this.pumping ||
       this.disposed ||
