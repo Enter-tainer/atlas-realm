@@ -137,6 +137,8 @@ export class RoomSyncClient {
   loaded: Promise<void>;
   private settledEvents: Array<{ result: BatchResult; drafts: Draft[] }> = [];
   private saving = Promise.resolve();
+  private saveInFlight = false;
+  private saveQueued: SyncJournal | undefined;
   private receiving = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -198,14 +200,30 @@ export class RoomSyncClient {
     return { ...journal, files };
   }
   private checkpoint() {
+    // Coalesce journal writes: while a save is in flight, remember the newest
+    // snapshot and write it once the in-flight save settles, instead of
+    // issuing one full IndexedDB write per call. Callers await this promise,
+    // which resolves when the current save completes — queued snapsacks are
+    // written afterwards, so a burst of enqueues blocks together on one write
+    // rather than serializing one write per enqueue.
+    if (this.saveInFlight) {
+      this.saveQueued = structuredClone(this.journal());
+      return this.saving;
+    }
+    this.saveInFlight = true;
     const snapshot = structuredClone(this.journal());
-    const write = this.saving.then(() => this.options.save?.(snapshot));
+    const write = Promise.resolve(this.options.save?.(snapshot));
     this.saving = write.then(
       () => {
+        this.saveInFlight = false;
+        const queued = this.saveQueued;
+        this.saveQueued = undefined;
+        if (queued) void this.checkpoint();
         this.storageError = '';
         this.options.changed?.();
       },
       () => {
+        this.saveInFlight = false;
         this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
         this.options.changed?.();
       },
@@ -262,13 +280,13 @@ export class RoomSyncClient {
       this.project(false);
     }
     this.project();
-    // Do not await the journal save here: a burst of enqueues over a slow
-    // storage would otherwise serialize on successive writes and each enqueue
-    // would complete far later than the next, collapsing the batch window and
-    // turning one large submit into many tiny ones. The coalesced checkpoint
-    // still persists the final state, and flush() awaits `saving` before each
-    // submit so the journal stays consistent with what is sent.
-    void this.checkpoint();
+    // Await the coalesced checkpoint: it resolves once the current journal
+    // write settles (further saves are batched into it), so a burst of
+    // enqueues waits together on one write instead of one write per enqueue.
+    // This keeps the batch window wide enough to merge the burst into a few
+    // submits while still guaranteeing the draft is persisted before the tab
+    // can close (an offline draft must survive a closed tab).
+    await this.checkpoint();
     this.schedulePump();
     return ids;
   }
