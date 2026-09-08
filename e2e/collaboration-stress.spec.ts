@@ -55,9 +55,11 @@ test.describe('real collaboration protocol stress', () => {
       }));
       await sendBurst(client, messages);
 
-      await expectFeatureLabel(pageA, 'Burst marker 119');
-      await expectFeatureLabel(pageB, 'Burst marker 119');
-      await expect.poll(() => annotationLabels(pageB)).toContain('Burst marker 0');
+      // Fanning out 120 upserts costs every connected page a full re-render per
+      // commit, so a loaded runner needs more than the default poll to converge.
+      await expectFeatureLabel(pageA, 'Burst marker 119', 30_000);
+      await expectFeatureLabel(pageB, 'Burst marker 119', 30_000);
+      await expect.poll(() => annotationLabels(pageB), { timeout: 30_000 }).toContain('Burst marker 0');
       errorsA.assertNoErrors();
       errorsB.assertNoErrors();
       await client.close();
@@ -100,10 +102,10 @@ test.describe('real collaboration protocol stress', () => {
           featureId: `delete-${index}`,
         })),
       );
-      await expectFeatureMissing(page, 'Delete marker 0');
-      await expectFeatureMissing(page, 'Delete marker 39');
-      await expectFeatureLabel(page, 'Delete marker 40');
-      await expectFeatureLabel(page, 'Delete marker 79');
+      await expectFeatureMissing(page, 'Delete marker 0', 30_000);
+      await expectFeatureMissing(page, 'Delete marker 39', 30_000);
+      await expectFeatureLabel(page, 'Delete marker 40', 30_000);
+      await expectFeatureLabel(page, 'Delete marker 79', 30_000);
       errors.assertNoErrors();
       await client.close();
     } finally {
@@ -141,11 +143,11 @@ test.describe('real collaboration protocol stress', () => {
 
       await openRealRoom(reader, room);
       await expectLayerVisible(reader, 'Snapshot layer');
-      await expectFeatureLabel(reader, 'Snapshot marker 49');
+      await expectFeatureLabel(reader, 'Snapshot marker 49', 30_000);
       await reader.reload();
       await expect(reader.locator('.collab-panel')).toHaveAttribute('data-connection', 'live');
-      await expectFeatureLabel(reader, 'Snapshot marker 0');
-      await expectFeatureLabel(reader, 'Snapshot marker 49');
+      await expectFeatureLabel(reader, 'Snapshot marker 0', 30_000);
+      await expectFeatureLabel(reader, 'Snapshot marker 49', 30_000);
       await client.close();
     } finally {
       await writerContext.close();

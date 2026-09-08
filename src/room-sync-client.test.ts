@@ -191,6 +191,65 @@ describe('bounded stream synchronization', () => {
     });
     expect(h.client.view.getLayers()).toEqual([]);
   });
+  it('drains the newest journal state without blocking local edits on storage', async () => {
+    const gates: Array<() => void> = [];
+    const saved: ReturnType<RoomSyncClient['journal']>[] = [];
+    const client = new RoomSyncClient({
+      send: () => true,
+      publish: () => {},
+      save: (journal) => {
+        saved.push(structuredClone(journal));
+        return new Promise<void>((resolve) => gates.push(resolve));
+      },
+      batchDelay: 1000,
+    });
+    clients.push(client);
+    await client.loaded;
+    client.connect(true);
+    await client.receive(snapshot());
+    // Both enqueues resolve while the first journal write is still gated: the
+    // sync path must not wait on IndexedDB.
+    await client.enqueue({ type: 'layer:update', layerId: 'notes', patch: { name: 'First' } });
+    await client.enqueue({ type: 'layer:update', layerId: 'notes', patch: { visible: false } });
+    let drained = false;
+    void client.drain().then(() => {
+      drained = true;
+    });
+    for (let spin = 0; spin < 50 && !drained; spin += 1) {
+      while (gates.length) gates.shift()!();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(drained).toBe(true);
+    // A tab that closes once drain() resolves must find both drafts.
+    expect(saved.at(-1)?.pending.map((draft) => draft.command)).toEqual([
+      { type: 'patch', kind: 'layer', id: 'notes', fields: { name: { expectedVersion: 1, value: 'First' } } },
+      { type: 'patch', kind: 'layer', id: 'notes', fields: { visible: { expectedVersion: 1, value: false } } },
+    ]);
+  });
+  it('coalesces a burst of edits into far fewer journal writes', async () => {
+    const saved: ReturnType<RoomSyncClient['journal']>[] = [];
+    const client = new RoomSyncClient({
+      send: () => true,
+      publish: () => {},
+      save: async (journal) => {
+        saved.push(structuredClone(journal));
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      },
+      batchDelay: 1000,
+    });
+    clients.push(client);
+    await client.loaded;
+    client.connect(true);
+    await client.receive(snapshot());
+    await Promise.all(
+      Array.from({ length: 40 }, (_, index) =>
+        client.enqueue({ type: 'layer:update', layerId: 'notes', patch: { name: `Name ${index}` } }),
+      ),
+    );
+    await client.drain();
+    expect(saved.length).toBeLessThan(10);
+    expect(JSON.stringify(saved.at(-1)?.pending)).toContain('Name 39');
+  });
   it('uploads a large geometry before sending its small immutable batch reference', async () => {
     const h = await harness();
     const points = Array.from({ length: 16000 }, (_, i) => [100 + i / 100000, 30 + i / 100000]);
