@@ -54,6 +54,15 @@ test.describe('real collaboration protocol stress', () => {
         }),
       }));
       await sendBurst(client, messages);
+      if (process.env.CI) {
+        try {
+          const saw = await annotationLabels(pageB);
+          console.log(
+            'CI-DIAG burst',
+            JSON.stringify({ count: saw.length, has119: saw.includes('Burst marker 119'), tail: saw.slice(115, 120) }),
+          );
+        } catch {}
+      }
 
       await expectFeatureLabel(pageA, 'Burst marker 119');
       await expectFeatureLabel(pageB, 'Burst marker 119');
@@ -91,6 +100,15 @@ test.describe('real collaboration protocol stress', () => {
           }),
         })),
       );
+      if (process.env.CI) {
+        try {
+          const saw = await annotationLabels(page);
+          console.log(
+            'CI-DIAG delete',
+            JSON.stringify({ count: saw.length, has79: saw.includes('Delete marker 79'), tail: saw.slice(75, 80) }),
+          );
+        } catch {}
+      }
       await expectFeatureLabel(page, 'Delete marker 79');
 
       await sendBurst(
