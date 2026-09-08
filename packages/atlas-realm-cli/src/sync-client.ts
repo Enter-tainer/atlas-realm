@@ -663,11 +663,20 @@ export class RoomSyncClient {
   }
   private schedulePump() {
     if (this.disposed) return;
-    // Debounce: coalesce bursts of enqueues into a single batch instead of
-    // flushing one pending draft per pump when enqueues are slow (e.g. in a
-    // throttled CI browser). Without this, a burst of N upserts produces N
-    // tiny submits and the room converges too slowly under load.
-    clearTimeout(this.pumpTimer);
+    // Arm the pump at most once per batch window so a sustained stream of
+    // enqueues cannot postpone the flush indefinitely. As soon as a
+    // significant number of drafts is pending, flush immediately so large
+    // bursts stay batched even when enqueues are slow (e.g. a throttled CI
+    // browser) instead of degrading into one tiny submit each.
+    if (this.pending.length >= MAX_BATCH_COMMANDS) {
+      if (this.pumpTimer) {
+        clearTimeout(this.pumpTimer);
+        this.pumpTimer = undefined;
+      }
+      void this.flush();
+      return;
+    }
+    if (this.pumpTimer) return;
     this.pumpTimer = setTimeout(() => {
       this.pumpTimer = undefined;
       void this.flush();
