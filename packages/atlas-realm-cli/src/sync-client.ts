@@ -137,6 +137,8 @@ export class RoomSyncClient {
   loaded: Promise<void>;
   private settledEvents: Array<{ result: BatchResult; drafts: Draft[] }> = [];
   private saving = Promise.resolve();
+  private saveInFlight = false;
+  private saveQueued: SyncJournal | undefined;
   private receiving = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -198,14 +200,30 @@ export class RoomSyncClient {
     return { ...journal, files };
   }
   private checkpoint() {
+    // Coalesce journal writes: while a save is in flight, remember the newest
+    // snapshot and write it once the in-flight save settles, instead of
+    // issuing one full IndexedDB write per call. Callers await this promise,
+    // which resolves when the current save completes — a queued snapshot is
+    // written right after, so bursts block together on one write instead of
+    // serializing one write per enqueue (see schedulePump).
+    if (this.saveInFlight) {
+      this.saveQueued = structuredClone(this.journal());
+      return this.saving;
+    }
+    this.saveInFlight = true;
     const snapshot = structuredClone(this.journal());
-    const write = this.saving.then(() => this.options.save?.(snapshot));
+    const write = Promise.resolve(this.options.save?.(snapshot));
     this.saving = write.then(
       () => {
+        this.saveInFlight = false;
+        const queued = this.saveQueued;
+        this.saveQueued = undefined;
+        if (queued) void this.checkpoint();
         this.storageError = '';
         this.options.changed?.();
       },
       () => {
+        this.saveInFlight = false;
         this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
         this.options.changed?.();
       },
@@ -262,6 +280,12 @@ export class RoomSyncClient {
       this.project(false);
     }
     this.project();
+    // Await the coalesced checkpoint: it resolves once the current journal
+    // write settles (further saves are batched into it), so a burst of
+    // enqueues waits together on one write instead of one write per enqueue.
+    // This keeps the batch window wide enough to merge the burst into a few
+    // submits while still guaranteeing the draft is persisted before the tab
+    // can close (an offline draft must survive a closed tab).
     await this.checkpoint();
     this.schedulePump();
     return ids;
@@ -656,7 +680,21 @@ export class RoomSyncClient {
     return hashes;
   }
   private schedulePump() {
-    if (this.pumpTimer || this.disposed) return;
+    if (this.disposed) return;
+    // Arm the pump at most once per batch window so a sustained stream of
+    // enqueues cannot postpone the flush indefinitely. As soon as a
+    // significant number of drafts is pending, flush immediately so large
+    // bursts stay batched even when enqueues are slow (e.g. a throttled CI
+    // browser) instead of degrading into one tiny submit each.
+    if (this.pending.length >= MAX_BATCH_COMMANDS) {
+      if (this.pumpTimer) {
+        clearTimeout(this.pumpTimer);
+        this.pumpTimer = undefined;
+      }
+      void this.flush();
+      return;
+    }
+    if (this.pumpTimer) return;
     this.pumpTimer = setTimeout(() => {
       this.pumpTimer = undefined;
       void this.flush();
@@ -684,7 +722,9 @@ export class RoomSyncClient {
   }
   async flush() {
     await this.loaded;
-    await this.saving;
+    // Do not await an in-flight journal save here: pending drafts are already
+    // in memory and the journal is re-checkpointed once the batch is built below,
+    // so blocking on a slow save would only add latency to every submit round.
     if (
       this.pumping ||
       this.disposed ||

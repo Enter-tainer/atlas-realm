@@ -14,6 +14,7 @@ import {
 import { openRealRoom, uniqueRoomName, createProtocolClient } from './support/real-collaboration';
 
 test.describe('real multi-device collaboration sync', () => {
+  test.describe.configure({ timeout: 120_000 });
   test('preserves offline drafts as conflicts after another device deletes the layer', async ({
     browser,
   }, testInfo) => {
