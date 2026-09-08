@@ -137,6 +137,8 @@ export class RoomSyncClient {
   loaded: Promise<void>;
   private settledEvents: Array<{ result: BatchResult; drafts: Draft[] }> = [];
   private saving = Promise.resolve();
+  private saveInFlight = false;
+  private saveQueued: SyncJournal | undefined;
   private receiving = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -197,20 +199,37 @@ export class RoomSyncClient {
       );
     return { ...journal, files };
   }
+  // Persist the newest journal snapshot without blocking the caller. While a
+  // write is running only the latest snapshot is kept, so a burst of local edits
+  // or remote commits costs one or two IndexedDB writes instead of a full-journal
+  // write each, and the sync state machine never waits on storage. Callers that
+  // must know the journal reached disk before they finish — the CLI, and the
+  // closed-tab recovery coverage — use drain() as the barrier.
   private checkpoint() {
-    const snapshot = structuredClone(this.journal());
-    const write = this.saving.then(() => this.options.save?.(snapshot));
-    this.saving = write.then(
-      () => {
-        this.storageError = '';
-        this.options.changed?.();
-      },
-      () => {
-        this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
-        this.options.changed?.();
-      },
-    );
+    this.saveQueued = structuredClone(this.journal());
+    if (!this.saveInFlight) {
+      this.saveInFlight = true;
+      this.saving = this.drainSaves();
+    }
     return this.saving;
+  }
+  private async drainSaves() {
+    try {
+      while (this.saveQueued) {
+        const snapshot = this.saveQueued;
+        this.saveQueued = undefined;
+        await this.options.save?.(snapshot);
+      }
+      this.storageError = '';
+    } catch {
+      // Drop the queued snapshot rather than leave it pending forever: the next
+      // edit re-queues the newest state, and drain() must not spin on a broken store.
+      this.saveQueued = undefined;
+      this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
+    } finally {
+      this.saveInFlight = false;
+      this.options.changed?.();
+    }
   }
   private project(publish = true) {
     this.view.replace(this.canonical.getLayers(), this.canonical.getAnnotationFeatures());
@@ -262,7 +281,7 @@ export class RoomSyncClient {
       this.project(false);
     }
     this.project();
-    await this.checkpoint();
+    this.checkpoint();
     this.schedulePump();
     return ids;
   }
@@ -394,7 +413,8 @@ export class RoomSyncClient {
   async drain() {
     await this.loaded;
     await this.receiving;
-    await this.saving;
+    // The writer coalesces snapshots, so wait until nothing is queued or running.
+    while (this.saveInFlight || this.saveQueued) await this.saving;
   }
   setWritable(value: boolean) {
     this.writable = value;
@@ -456,7 +476,7 @@ export class RoomSyncClient {
         this.lastProcessedSeq = 0;
         this.recoveringExpired = true;
         this.project();
-        await this.checkpoint();
+        this.checkpoint();
         this.requestSnapshot(true);
         return;
       }
@@ -516,7 +536,7 @@ export class RoomSyncClient {
         (m.result.commitVersion > this.commitVersion && !m.delta)
       ) {
         this.project();
-        await this.checkpoint();
+        this.checkpoint();
         this.requestSnapshot();
         return;
       }
@@ -529,7 +549,7 @@ export class RoomSyncClient {
     if (!this.inFlight) this.retryAttempt = 0;
     this.gcFiles();
     this.project();
-    await this.checkpoint();
+    this.checkpoint();
     for (const event of this.settledEvents.splice(0)) this.options.settled?.(event.result, event.drafts);
     this.schedulePump();
   }
@@ -684,7 +704,8 @@ export class RoomSyncClient {
   }
   async flush() {
     await this.loaded;
-    await this.saving;
+    // The batch is built from in-memory drafts and re-checkpointed below, so a
+    // pending journal write must not delay the submit round.
     if (
       this.pumping ||
       this.disposed ||

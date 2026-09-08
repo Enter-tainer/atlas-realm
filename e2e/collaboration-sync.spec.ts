@@ -12,8 +12,12 @@ import {
   selectLayer,
 } from './support/map-interactions';
 import { openRealRoom, uniqueRoomName, createProtocolClient } from './support/real-collaboration';
+import { waitForJournalDraft } from './support/journal';
 
 test.describe('real multi-device collaboration sync', () => {
+  // Every case drives several real round trips through the worker, and a slow
+  // runner can take well over the default 45s before the room converges.
+  test.describe.configure({ timeout: 120_000 });
   test('preserves offline drafts as conflicts after another device deletes the layer', async ({
     browser,
   }, testInfo) => {
@@ -32,6 +36,7 @@ test.describe('real multi-device collaboration sync', () => {
       await expect(pageA.locator('.collab-panel')).toHaveAttribute('data-connection', 'offline');
       await pageA.locator('.layer-manager-name-input').fill('My offline draft');
       await expect(pageA.locator('.layer-manager-name-input')).toHaveValue('My offline draft');
+      await waitForJournalDraft(pageA, 'My offline draft');
       await deleteLayerFromUi(pageB, 'Offline original');
       await a.setOffline(false);
       await pageA.reload();
@@ -71,6 +76,7 @@ test.describe('real multi-device collaboration sync', () => {
       await a.setOffline(true);
       await expect(pageA.locator('.collab-panel')).toHaveAttribute('data-connection', 'offline');
       await createAnnotationLayerFromUi(pageA, 'Created offline');
+      await waitForJournalDraft(pageA, 'Created offline');
       await a.setOffline(false);
       await pageA.reload();
       await expectLayerVisible(pageB, 'Created offline');
@@ -116,7 +122,9 @@ test.describe('real multi-device collaboration sync', () => {
           }),
         ),
       });
-      await expectLayerVisible(pageB, 'shared-file.geojson');
+      // Importing uploads the file content before submitting the layer, so this
+      // crosses several round trips on a slow runner.
+      await expectLayerVisible(pageB, 'shared-file.geojson', 30_000);
       await selectLayer(pageA, 'shared-file.geojson');
       await pageA.locator('.layer-manager-color-input').fill('#ef4444');
       await renameSelectedLayerFromUi(pageA, 'shared-file.geojson', 'Shared route');
@@ -149,6 +157,7 @@ test.describe('real multi-device collaboration sync', () => {
       await a.setOffline(true);
       await selectLayer(pa, 'Field baseline');
       await pa.locator('.layer-manager-name-input').fill('My offline name');
+      await waitForJournalDraft(pa, 'My offline name');
       const panelB = await selectLayer(pb, 'Field baseline');
       await panelB.locator('.layer-manager-item.selected .layer-manager-visibility-button').click();
       await a.setOffline(false);
@@ -158,6 +167,7 @@ test.describe('real multi-device collaboration sync', () => {
       await a.setOffline(true);
       await selectLayer(pa, 'My offline name');
       await pa.locator('.layer-manager-name-input').fill('My conflicting name');
+      await waitForJournalDraft(pa, 'My conflicting name');
       await renameSelectedLayerFromUi(pb, 'My offline name', 'Other name');
       await a.setOffline(false);
       await pa.reload();
@@ -181,6 +191,9 @@ test.describe('real multi-device collaboration sync', () => {
       await openRealRoom(first, room);
       await context.setOffline(true);
       await createAnnotationLayerFromUi(first, 'Closed tab draft');
+      // The draft is persisted asynchronously; closing the tab before the write
+      // lands would drop it before the recovery path ever runs.
+      await waitForJournalDraft(first, 'Closed tab draft');
       await first.close();
       await context.setOffline(false);
       const recovered = await context.newPage();
@@ -221,7 +234,9 @@ test.describe('real multi-device collaboration sync', () => {
           }),
         ),
       });
-      await expectLayerVisible(page, 'replace.geojson');
+      // Parsing and registering the imported file is real work; a loaded runner
+      // can need longer than the default poll.
+      await expectLayerVisible(page, 'replace.geojson', 30_000);
       const client = await createProtocolClient(page, room, 'File replacer');
       const replacement = await page.evaluate(async (room) => {
         const target = (window as any).__e2eRoomClients[room];

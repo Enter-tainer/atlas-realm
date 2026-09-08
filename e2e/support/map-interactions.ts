@@ -109,8 +109,8 @@ export async function layerNames(page: Page) {
   return names.map((name) => name.trim()).filter(Boolean);
 }
 
-export async function expectLayerVisible(page: Page, name: string) {
-  await expect.poll(() => layerNames(page)).toContain(name);
+export async function expectLayerVisible(page: Page, name: string, timeout?: number) {
+  await expect.poll(() => layerNames(page), { timeout }).toContain(name);
 }
 
 export async function expectLayerMissing(page: Page, name: string) {
@@ -171,8 +171,8 @@ export async function annotationFeatureTypes(page: Page) {
   return Array.from(types);
 }
 
-export async function expectFeatureLabel(page: Page, label: string) {
-  await expect.poll(() => annotationLabels(page)).toContain(label);
+export async function expectFeatureLabel(page: Page, label: string, timeout?: number) {
+  await expect.poll(() => annotationLabels(page), { timeout }).toContain(label);
 }
 
 export async function openAnnotationEditorFromCanvas(page: Page, label: string) {
@@ -221,8 +221,8 @@ export async function openAnnotationEditorFromCanvas(page: Page, label: string) 
   await expect(editor.locator('input.annotation-input')).toHaveValue(label);
 }
 
-export async function expectFeatureMissing(page: Page, label: string) {
-  await expect.poll(() => annotationLabels(page)).not.toContain(label);
+export async function expectFeatureMissing(page: Page, label: string, timeout?: number) {
+  await expect.poll(() => annotationLabels(page), { timeout }).not.toContain(label);
 }
 
 export async function searchSourceFeatureCount(page: Page) {
