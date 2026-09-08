@@ -58,7 +58,9 @@ test.describe('real collaboration protocol stress', () => {
         try {
           const saw = await annotationLabels(pageB);
           const msgs = await client.messages();
-          const errors = msgs.filter((m) => m.type === 'sync:error' || (m.type === 'sync:result' && m.result && m.result.status !== 'accepted'));
+          const errors = msgs.filter(
+            (m) => m.type === 'sync:error' || (m.type === 'sync:result' && m.result && m.result.status !== 'accepted'),
+          );
           console.log(
             'CI-DIAG burst',
             JSON.stringify({
