@@ -137,8 +137,8 @@ export class RoomSyncClient {
   loaded: Promise<void>;
   private settledEvents: Array<{ result: BatchResult; drafts: Draft[] }> = [];
   private saving = Promise.resolve();
-  private saveInFlight = false;
-  private saveQueued: SyncJournal | undefined;
+  private writeScheduled = false;
+  private dirty = false;
   private receiving = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
   private pumpTimer: ReturnType<typeof setTimeout> | undefined;
@@ -200,30 +200,29 @@ export class RoomSyncClient {
     return { ...journal, files };
   }
   private checkpoint() {
-    // Coalesce journal writes: while a save is in flight, remember the newest
-    // snapshot and write it once the in-flight save settles, instead of
-    // issuing one full IndexedDB write per call. Callers await this promise,
-    // which resolves when the current save completes — queued snapsacks are
-    // written afterwards, so a burst of enqueues blocks together on one write
-    // rather than serializing one write per enqueue.
-    if (this.saveInFlight) {
-      this.saveQueued = structuredClone(this.journal());
+    // Coalesced journal writer: only one save loop runs at a time. While it is
+    // running, further checkpoints mark the store dirty and resolve together on
+    // the same promise, so a burst of enqueues blocks on one write (or two) and
+    // the last state is guaranteed persisted before any caller resolves — an
+    // offline draft survives a closed tab, and bursts stay batched.
+    if (this.writeScheduled) {
+      this.dirty = true;
       return this.saving;
     }
-    this.saveInFlight = true;
-    const snapshot = structuredClone(this.journal());
-    const write = Promise.resolve(this.options.save?.(snapshot));
-    this.saving = write.then(
+    this.writeScheduled = true;
+    this.saving = (async () => {
+      do {
+        this.dirty = false;
+        const current = structuredClone(this.journal());
+        await this.options.save?.(current);
+      } while (this.dirty);
+      this.writeScheduled = false;
+    })().then(
       () => {
-        this.saveInFlight = false;
-        const queued = this.saveQueued;
-        this.saveQueued = undefined;
-        if (queued) void this.checkpoint();
         this.storageError = '';
         this.options.changed?.();
       },
       () => {
-        this.saveInFlight = false;
         this.storageError = 'Could not save edits on this device. Keep this tab open and export your edits.';
         this.options.changed?.();
       },
