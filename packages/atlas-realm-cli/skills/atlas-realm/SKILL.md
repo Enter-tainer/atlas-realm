@@ -263,7 +263,12 @@ Weather options:
 
 - `--coordinate "lng,lat"` or `--lng/--lat` — the place to forecast (required)
 - `--date YYYY-MM-DD` — first forecast day (default: today)
-- `--days <1-30>` — number of consecutive days (default: 1)
+- `--days <1-30>` — number of consecutive days (default: 1). Ask for one day,
+  or the length of a short stay: weather a fortnight out is a guess, and 30 is
+  only the input limit, not a supported horizon. The daily numbers come from
+  Open-Meteo — the deterministic forecast covers roughly the first 15 days, and
+  anything past that falls back to `gfs05` ensemble member averages (out to
+  ~35 days), which are probabilistic rather than a forecast of record.
 - `--label "..."` — place name shown on the card and in the forecast
 - `--note "..."` — Markdown note shown in the card tooltip / editor
 - `--color <hex>` — card accent color

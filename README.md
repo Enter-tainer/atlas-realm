@@ -120,7 +120,7 @@ Open the Annotations panel to create:
 
 - Marker annotations for places.
 - Text annotations for map labels and notes.
-- Weather cards pinned at the place to forecast, with a chosen start date and day count (default: one day). Collapsed, a card is a dot plus one text line — condition icon, high/low, humidity, rain in mm, and for a range only its first day. A single click expands it straight into the full card: place and date range in the header (one row for a single day, one cell per day for a range, with each day's humidity and rain in its tooltip) above the embedded weather.mgt.moe forecast. Below zoom 7 only a bare dot is drawn.
+- Weather cards pinned at the place to forecast, with a chosen start date and day count (default: one day). Collapsed, a card is a dot plus one text line — condition icon, high/low, humidity, rain in mm, and for a range only its first day. A single click expands it straight into the full card: place and date range in the header (one row for a single day, one cell per day for a range, with each day's humidity and rain in its tooltip) above the embedded weather.mgt.moe forecast. Ask for a day or two, not a month: 30 is the input limit, not a horizon worth planning against. Days come from Open-Meteo — the deterministic forecast covers roughly the first 15 days, and anything beyond that falls back to `gfs05` ensemble member averages (out to about 35 days), which are probabilistic rather than a forecast of record. Below zoom 7 only a bare dot is drawn.
 - Line annotations for freeform paths.
 - Area annotations for polygons.
 - Route annotations with path metadata.

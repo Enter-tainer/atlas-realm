@@ -124,4 +124,44 @@ test.describe('weather card annotations in a real browser', () => {
 
     errors.assertNoErrors();
   });
+
+  test('serves a range past the deterministic horizon from the ensemble', async ({ page }) => {
+    const errors = await installBrowserErrorWatch(page);
+    await openApp(page, {}, { nominatim: 'success' });
+    await openAnnotations(page);
+
+    // Start ten days out and run twenty days: the deterministic API stops at
+    // today + 15, so the tail can only come from the ensemble (~35 days). It
+    // used to reject the request outright and leave the whole card blank.
+    const start = new Date();
+    start.setDate(start.getDate() + 10);
+    const startDate = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(
+      start.getDate(),
+    ).padStart(2, '0')}`;
+
+    await page.getByRole('button', { name: 'Weather', exact: true }).click();
+    await clickMap(page, 0.5, 0.72);
+    const editor = page.locator('.annotation-editor');
+    await expect(editor).toBeVisible();
+    await editor.locator('input.annotation-input[type="text"]').fill('Long Range');
+    await editor.locator('input.annotation-input[type="date"]').fill(startDate);
+    await editor.locator('input.annotation-input[type="number"]').fill('20');
+    await editor.locator('.annotation-editor-close').click();
+
+    const label = page.locator('.annotation-weather-label');
+    await expect(label.locator('.annotation-weather-label-text')).toHaveText('28°/20° · 60% · 0mm');
+    await label.click();
+
+    const card = page.locator('.annotation-weather-card');
+    await expect(card).toBeVisible();
+    const days = card.locator('.annotation-weather-card-day');
+    await expect(days).toHaveCount(20);
+    await expect(card.locator('.annotation-weather-card-strip-note')).toHaveCount(0);
+    // Day 20 is ~14 days past the deterministic horizon, so only ensemble
+    // members can have produced it.
+    await expect(days.nth(19).locator('.annotation-weather-card-day-temps')).toHaveText('9° 1°');
+    await expect(days.nth(19)).toHaveAttribute('title', /73% · 23.8mm$/);
+
+    errors.assertNoErrors();
+  });
 });

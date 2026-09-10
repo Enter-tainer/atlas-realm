@@ -8,14 +8,12 @@ import {
   saveStoredToken,
   startDeviceLogin,
 } from './auth.js';
-import { executeCommand } from './commands.js';
+import { executeCommand, FEATURE_TYPES } from './commands.js';
 import { createConfig } from './config.js';
 import { formatOutput } from './format.js';
 import { RoomClient } from './room-client.js';
 import { CliSyncJournal } from './sync-journal.js';
 import type { Command, JsonRecord } from './types.js';
-
-const FEATURE_TYPES = ['point', 'text', 'path', 'polygon', 'route'];
 
 export function buildParser(argv: readonly string[] = []) {
   return yargs(argv)
@@ -371,9 +369,9 @@ function annotationBuilder(y: any): any {
     .option('note', { type: 'string', describe: 'Annotation note' })
     .option('note-file', { type: 'string', describe: 'Read annotation note from a UTF-8 text file' })
     .option('color', { type: 'string', describe: 'Annotation color hex' })
-    .option('lng', { type: 'number', describe: 'Point/text longitude' })
-    .option('lat', { type: 'number', describe: 'Point/text latitude' })
-    .option('coordinate', { type: 'string', describe: 'Point/text coordinate as "lng,lat" or JSON' })
+    .option('lng', { type: 'number', describe: 'Point/text/weather longitude' })
+    .option('lat', { type: 'number', describe: 'Point/text/weather latitude' })
+    .option('coordinate', { type: 'string', describe: 'Point/text/weather coordinate as "lng,lat" or JSON' })
     .option('points', { type: 'string', describe: 'Path/polygon points JSON or "lng,lat;lng,lat"' })
     .option('waypoints', { type: 'string', describe: 'Route waypoints JSON or "lng,lat;lng,lat"' })
     .option('geometry', { type: 'string', describe: 'Route geometry JSON or "lng,lat;lng,lat"' })
@@ -389,7 +387,10 @@ function annotationBuilder(y: any): any {
     .option('distance-text', { type: 'string', describe: 'Route distance label' })
     .option('duration-text', { type: 'string', describe: 'Route duration label' })
     .option('date', { type: 'string', describe: 'Weather card forecast start date (YYYY-MM-DD, empty = today)' })
-    .option('days', { type: 'number', describe: 'Weather card forecast days, 1-30' })
+    .option('days', {
+      type: 'number',
+      describe: 'Weather card forecast days, 1-30 (keep it to a day or two)',
+    })
     .option('updated-by', { type: 'string', describe: 'Annotation editor id/name' })
     .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
@@ -469,7 +470,8 @@ async function runAnnotation(args: JsonRecord): Promise<void> {
   await runRoomCommand(command, args);
 }
 
-function normalizeAnnotationCommand(action: string | undefined, items: string[], args: JsonRecord): Command {
+/** Exported for tests: this is where a leading positional becomes a feature type. */
+export function normalizeAnnotationCommand(action: string | undefined, items: string[], args: JsonRecord): Command {
   if (action === 'layers') {
     return {
       subject: 'annotations',
@@ -525,7 +527,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
   };
 
   if (action === 'add') {
-    command.featureType = FEATURE_TYPES.includes(items[0]) ? items[0] : undefined;
+    command.featureType = FEATURE_TYPES.has(items[0]) ? items[0] : undefined;
     command.type = command.featureType;
     if (!command.id && command.featureType && items[1]) command.id = items[1];
     if (!command.id && !command.featureType && items[0]) command.id = items[0];
@@ -533,7 +535,7 @@ function normalizeAnnotationCommand(action: string | undefined, items: string[],
     command.ids = items;
   } else {
     command.id ||= items[0];
-    command.featureType = FEATURE_TYPES.includes(items[1]) ? items[1] : undefined;
+    command.featureType = FEATURE_TYPES.has(items[1]) ? items[1] : undefined;
     command.type = command.featureType;
   }
 

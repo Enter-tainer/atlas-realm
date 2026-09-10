@@ -213,6 +213,30 @@ function openMeteoFixtureResponse(url: URL) {
   };
 }
 
+/**
+ * Ensemble members are spread around the deterministic values and average back
+ * to them, so card text is identical whichever source serves a given day.
+ */
+function openMeteoEnsembleFixtureResponse(url: URL) {
+  const daily = openMeteoFixtureResponse(url).daily;
+  const shift = (values: number[], delta: number) => values.map((value) => value + delta);
+  return {
+    daily: {
+      ...daily,
+      weather_code_member01: daily.weather_code,
+      weather_code_member02: daily.weather_code,
+      temperature_2m_max_member01: shift(daily.temperature_2m_max, -1),
+      temperature_2m_max_member02: shift(daily.temperature_2m_max, 1),
+      temperature_2m_min_member01: shift(daily.temperature_2m_min, -1),
+      temperature_2m_min_member02: shift(daily.temperature_2m_min, 1),
+      relative_humidity_2m_mean_member01: shift(daily.relative_humidity_2m_mean, -2),
+      relative_humidity_2m_mean_member02: shift(daily.relative_humidity_2m_mean, 2),
+      precipitation_sum_member01: daily.precipitation_sum,
+      precipitation_sum_member02: daily.precipitation_sum,
+    },
+  };
+}
+
 function osrmFixtureResponse(url: URL) {
   const coordinateText = url.pathname.split('/').pop() || '';
   const points = coordinateText
@@ -347,6 +371,9 @@ async function routeExternalMapResources(page: Page, options: ExternalRouteOptio
   await page.route(/https:\/\/weather\.mgt\.moe\/.*/, fulfillHtml);
   await page.route(/https:\/\/api\.open-meteo\.com\/v1\/forecast.*/, (route) =>
     fulfillJson(route, openMeteoFixtureResponse(new URL(route.request().url()))),
+  );
+  await page.route(/https:\/\/ensemble-api\.open-meteo\.com\/v1\/ensemble.*/, (route) =>
+    fulfillJson(route, openMeteoEnsembleFixtureResponse(new URL(route.request().url()))),
   );
   await page.route(/https:\/\/photon\.komoot\.io\/api\/.*/, (route) => fulfillJson(route, photonFixture));
   await page.route(/https:\/\/router\.project-osrm\.org\/route\/v1\/.*/, (route) =>

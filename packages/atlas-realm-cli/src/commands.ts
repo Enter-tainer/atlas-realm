@@ -28,7 +28,8 @@ import type {
 } from './types.js';
 
 const DEFAULT_ANNOTATION_LAYER_ID = 'annotation-default';
-const FEATURE_TYPES = new Set(['point', 'text', 'path', 'polygon', 'route', 'weather']);
+/** The single allowlist for annotation feature types: the parser and the command layer share it. */
+export const FEATURE_TYPES = new Set(['point', 'text', 'path', 'polygon', 'route', 'weather']);
 
 export async function executeCommand(client: RoomClientLike, command: Command): Promise<CommandResponse> {
   if (command.action === 'upsert' || command.layerAction === 'upsert')
