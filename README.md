@@ -18,6 +18,12 @@ npx skills add Enter-tainer/atlas-realm --skill atlas-realm --global --yes --ful
 
 Then give an agent a room URL such as `https://map.mgt.moe/?room=your-room-id` and ask it to inspect layers, add annotations, or maintain the shared map context.
 
+For trip planning, install the companion SOP skill from the same repo — it defines the house style: one layer per day, per-day palette, main/backup/hiking channels, hotel points, and note templates:
+
+```bash
+npx skills add Enter-tainer/atlas-realm --skill atlas-realm-trip-sop --global --yes --full-depth
+```
+
 Useful companion skills:
 
 - [AMap LBS Skill](https://github.com/AMap-Web/amap-lbs-skill): China-focused POI search, route planning, travel planning, nearby search, and map visualization. It uses AMap Web Service APIs, so configure an AMap Web Service Key before using it.
@@ -147,7 +153,7 @@ For local development from this repository:
 npx skills add . --skill atlas-realm --global --yes --full-depth
 ```
 
-Skill documentation lives in [packages/atlas-realm-cli/skills/atlas-realm/SKILL.md](packages/atlas-realm-cli/skills/atlas-realm/SKILL.md).
+Skill documentation lives in [packages/atlas-realm-cli/skills/](packages/atlas-realm-cli/skills/): `atlas-realm` covers CLI and protocol mechanics, `atlas-realm-trip-sop` covers how to lay out a trip (layers, palette, backups, hiking, notes).
 
 ## Project Structure
 
@@ -160,7 +166,7 @@ src/
   annotation-*               # Annotation model, tools, and renderer
   account-* / room-*         # Login, room, and permission APIs
 
-packages/atlas-realm-cli/     # Atlas Realm CLI and agent skill
+packages/atlas-realm-cli/     # Atlas Realm CLI and agent skills
 migrations/                  # D1 database migrations
 scripts/styles/              # OpenRailwayMap style generation scripts
 scripts/                     # Automation and style tooling
