@@ -1948,6 +1948,324 @@ body,
   cursor: nesw-resize;
 }
 
+/* Weather annotation cards: a compact chip that expands into the dashboard. */
+.annotation-weather-card,
+.annotation-weather-card * {
+  box-sizing: border-box;
+}
+
+.annotation-weather-card {
+  --annotation-weather-color: #0ea5e9;
+  position: relative;
+  width: min(360px, 84vw);
+  overflow: hidden;
+  border: 1px solid rgba(14, 165, 233, 0.28);
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 10px 24px rgba(15, 23, 42, 0.22);
+  color: #0f172a;
+  font:
+    650 12px/1.3 Inter,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    'Segoe UI',
+    sans-serif;
+  text-align: left;
+}
+
+/* One day is the common case: fold the forecast into the title row so the
+   expanded card keeps a compact single-line header. */
+.annotation-weather-card-detail {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.annotation-weather-card-detail .annotation-weather-card-strip {
+  align-items: center;
+  gap: 5px;
+  overflow: visible;
+  padding: 0;
+  border-top: none;
+  background: transparent;
+}
+
+.annotation-weather-card-detail .annotation-weather-card-day-glyph {
+  width: 13px;
+  height: 13px;
+}
+
+.annotation-weather-card-detail .annotation-weather-card-day-temps {
+  font-size: 11.5px;
+  font-weight: 850;
+}
+
+.annotation-weather-card-detail .annotation-weather-card-day-detail {
+  color: #475569;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.annotation-weather-card:hover,
+.annotation-weather-card:focus-within {
+  outline: 2px solid rgba(14, 165, 233, 0.3);
+  outline-offset: 2px;
+}
+
+/* The card is always the expanded dashboard embed, so it needs the wider box. */
+.annotation-weather-card.annotation-weather-card-expanded[data-days] {
+  z-index: 5;
+  width: min(560px, 92vw);
+}
+
+.annotation-weather-card-header {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-left: 4px solid var(--annotation-weather-color);
+  appearance: none;
+  background: #f0f9ff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.annotation-weather-card-icon,
+.annotation-weather-card-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--annotation-weather-color);
+}
+
+.annotation-weather-icon {
+  width: 16px;
+  height: 16px;
+}
+
+.annotation-weather-card-chevron {
+  color: #64748b;
+  transition: transform 160ms ease;
+}
+
+.annotation-weather-card-expanded .annotation-weather-card-chevron {
+  transform: rotate(180deg);
+}
+
+.annotation-weather-card-text {
+  display: grid;
+  min-width: 0;
+}
+
+.annotation-weather-card-title {
+  overflow: hidden;
+  color: #0c4a6e;
+  font-size: 12.5px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-weather-card-meta {
+  overflow: hidden;
+  color: #475569;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.annotation-weather-card-strip {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 7px 9px;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  background: #ffffff;
+  scrollbar-width: thin;
+}
+
+.annotation-weather-card-strip-note {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.annotation-weather-card-day {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 1px;
+  justify-items: center;
+  min-width: 46px;
+  padding: 4px 3px;
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.annotation-weather-card-day-date {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.annotation-weather-card-day-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.annotation-weather-card-day-glyph {
+  width: 15px;
+  height: 15px;
+}
+
+.annotation-weather-card-day-temps {
+  color: #0f172a;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.annotation-weather-card-body {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  border-top: 1px solid rgba(15, 23, 42, 0.1);
+  background: #ffffff;
+}
+.annotation-weather-card-body[hidden] {
+  display: none;
+}
+
+.annotation-weather-card-frame {
+  display: block;
+  width: 100%;
+  height: 360px;
+  border: 0;
+  background: #ffffff;
+}
+
+.annotation-weather-card-actions {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px solid rgba(15, 23, 42, 0.08);
+  background: #f8fafc;
+}
+
+.annotation-weather-card-edit {
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 0;
+  border-right: 1px solid rgba(15, 23, 42, 0.08);
+  background: transparent;
+  color: #0369a1;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.annotation-weather-card-edit:hover,
+.annotation-weather-card-edit:focus {
+  background: #e0f2fe;
+  outline: none;
+}
+
+.annotation-weather-card-open {
+  display: block;
+  flex: 1 1 auto;
+  padding: 6px 10px;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 750;
+  text-align: center;
+  text-decoration: none;
+}
+
+.annotation-weather-card-open:hover,
+.annotation-weather-card-open:focus {
+  background: #e0f2fe;
+  outline: none;
+}
+
+@media (max-width: 640px) {
+  .annotation-weather-card-frame {
+    height: 320px;
+  }
+}
+
+/* The collapsed weather annotation is always a dot plus a single plain-text
+   line — highs/lows, humidity, rain in mm. One click expands it into the full
+   dashboard card. */
+.annotation-weather-label,
+.annotation-weather-label * {
+  box-sizing: border-box;
+}
+
+.annotation-weather-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px 1px 4px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.88);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
+  color: #0f172a;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.annotation-weather-label:hover,
+.annotation-weather-label:focus-visible {
+  outline: 2px solid rgba(14, 165, 233, 0.35);
+  outline-offset: 1px;
+}
+
+.annotation-weather-label-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--annotation-weather-color, #0ea5e9);
+  box-shadow: 0 0 0 1.5px #fff;
+}
+
+.annotation-weather-label-icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.annotation-weather-label-glyph {
+  width: 12px;
+  height: 12px;
+}
+
+.annotation-weather-label-text {
+  color: #334155;
+}
+
+.annotation-weather-label[data-state='loading'] .annotation-weather-label-text,
+.annotation-weather-label[data-state='empty'] .annotation-weather-label-text {
+  color: #64748b;
+}
+
 .annotation-polygon-vertex,
 .annotation-polygon-vertex * {
   box-sizing: border-box;
@@ -1977,6 +2295,16 @@ body,
 
 .annotation-polygon-vertex:active {
   cursor: grabbing;
+}
+
+/* A weather card element *is* the MapLibre marker element (`new Marker({ element })`),
+   and the expanded state gives it `z-index: 5` so it floats above other markers.
+   MapLibre popups ship with `z-index: auto`, which loses against any explicit
+   z-index, so the annotation editor and detail popups rendered *under* the card.
+   Keeping popups at 10 puts them on top of every in-map overlay while app panels
+   still win, because those outrank `#map` in the outer stacking context. */
+#map .maplibregl-popup {
+  z-index: 10;
 }
 
 .annotation-edit-popup .maplibregl-popup-content {

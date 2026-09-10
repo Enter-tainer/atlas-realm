@@ -1,4 +1,7 @@
 import maplibregl from 'maplibre-gl';
+import createIconElement from 'lucide/dist/esm/createElement.mjs';
+import ChevronDownIcon from 'lucide/dist/esm/icons/chevron-down.mjs';
+import CloudSunIcon from 'lucide/dist/esm/icons/cloud-sun.mjs';
 import {
   ANNOTATION_DEFAULT_LAYER_ID,
   ANNOTATION_SOURCE_ID,
@@ -10,9 +13,22 @@ import {
   sanitizeAnnotationTextWidth,
   sanitizeLngLat,
 } from './annotation-model.js';
+import {
+  weatherAnnotationDashboardUrl,
+  weatherAnnotationDayCount,
+  weatherAnnotationDisplayName,
+  weatherAnnotationSummaryLabel,
+} from './annotation-weather.js';
 import { renderMarkdown } from './markdown.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
-import type { AnnotationFeaturePayload, AnnotationPolygonPayload, AnnotationTextPayload } from './annotation-model.js';
+import { fetchWeatherDailySummary, weatherSummaryKey, type WeatherDaySummary } from './weather-summary.js';
+import { weatherCondition, type WeatherCondition } from './weather-icons.js';
+import type {
+  AnnotationFeaturePayload,
+  AnnotationPolygonPayload,
+  AnnotationTextPayload,
+  AnnotationWeatherPayload,
+} from './annotation-model.js';
 import type { AnnotationLayer } from './layer-model.js';
 import type { LayerStore } from './layer-store.js';
 
@@ -24,6 +40,7 @@ export const ANNOTATION_RENDER_LAYER_IDS = {
   lineLabels: 'annotation-line-labels',
   polygonLabels: 'annotation-polygon-labels',
   points: 'annotation-points',
+  weatherPoints: 'annotation-weather-points',
   text: 'annotation-text',
   textLabels: 'annotation-text-labels',
   labels: 'annotation-labels',
@@ -36,6 +53,7 @@ const ANNOTATION_ARROW_ICON = 'annotation-direction-arrow-v1';
 const TEXT_NOTE_COMPACT_LABEL_MIN_ZOOM = 7;
 const TEXT_NOTE_FULL_MIN_ZOOM = 11;
 const ANNOTATION_ACTIVE_FEATURE_EVENT = 'annotation:activefeaturechange';
+export const ANNOTATION_WEATHER_LABEL_MIN_ZOOM = TEXT_NOTE_COMPACT_LABEL_MIN_ZOOM;
 
 type AnnotationSource = {
   setData(data: object): void;
@@ -72,6 +90,33 @@ type AnnotationTextMarker = {
   marker: maplibregl.Marker;
   element: HTMLElement;
 };
+type WeatherSummaryCache = {
+  summaryKey: string;
+  summaryAbort: AbortController | null;
+};
+type AnnotationWeatherCardMarker = WeatherSummaryCache & {
+  kind: 'card';
+  marker: maplibregl.Marker;
+  element: HTMLElement;
+  header: HTMLButtonElement;
+  strip: HTMLElement;
+  detail: HTMLElement;
+  body: HTMLElement;
+  frame: HTMLIFrameElement;
+  title: HTMLElement;
+  meta: HTMLElement;
+  openLink: HTMLAnchorElement;
+};
+/** Zoomed-out form of a weather annotation: a dot plus one plain-text line. */
+type AnnotationWeatherLabelMarker = WeatherSummaryCache & {
+  kind: 'label';
+  marker: maplibregl.Marker;
+  element: HTMLElement;
+  icon: HTMLElement;
+  text: HTMLElement;
+};
+type AnnotationWeatherMarker = AnnotationWeatherCardMarker | AnnotationWeatherLabelMarker;
+type AnnotationWeatherMode = 'card' | 'label';
 type AnnotationVertexMarker = {
   marker: maplibregl.Marker;
   element: HTMLElement;
@@ -266,6 +311,23 @@ function ensureAnnotationLayers(map: AnnotationMap, store: LayerStore, layer: An
         'circle-stroke-color': '#ffffff',
         'circle-stroke-width': 2,
         'circle-opacity': 0.95,
+      },
+    });
+  }
+
+  if (!map.getLayer(layerIds.weatherPoints)) {
+    map.addLayer({
+      id: layerIds.weatherPoints,
+      type: 'circle',
+      source: sourceId,
+      maxzoom: ANNOTATION_WEATHER_LABEL_MIN_ZOOM,
+      filter: ['==', ['get', 'kind'], 'annotation_weather'],
+      paint: {
+        'circle-radius': ['interpolate', ['linear'], ['zoom'], 0, 3.5, 7, 5],
+        'circle-color': ['coalesce', ['get', 'color'], '#0ea5e9'],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2,
+        'circle-opacity': 0.92,
       },
     });
   }
@@ -812,6 +874,466 @@ function syncTextMarkers(
   }
 }
 
+function stopWeatherCardPropagation(node: Element) {
+  // Keep card interactions local, but let drag-start events reach MapLibre so
+  // the card can still be dragged to a new query location.
+  node.addEventListener('contextmenu', (event) => event.stopPropagation());
+  node.addEventListener('click', (event) => event.stopPropagation());
+  node.addEventListener('dblclick', (event) => event.stopPropagation());
+  node.addEventListener('wheel', (event) => event.stopPropagation(), { passive: true });
+}
+
+/**
+ * A weather annotation only has two shapes: the dot-plus-one-line label, and the
+ * full card once expanded. Zoom decides whether every annotation shows at all —
+ * below `ANNOTATION_WEATHER_LABEL_MIN_ZOOM` only the selected one survives.
+ */
+function visibleWeatherFeatures(
+  store: LayerStore,
+  { zoom, activeFeatureId }: { zoom: number; activeFeatureId: string },
+) {
+  const showAll = zoom >= ANNOTATION_WEATHER_LABEL_MIN_ZOOM;
+  return store
+    .getAnnotationFeatures()
+    .map((feature) => feature.payload)
+    .filter((feature): feature is AnnotationWeatherPayload => {
+      return Boolean(
+        feature?.type === 'weather' &&
+        store.getAnnotationLayer(feature.layerId)?.visible !== false &&
+        (showAll || feature.id === activeFeatureId),
+      );
+    });
+}
+
+// The embed keeps the dashboard's compact timeline and only hides its chrome.
+function weatherCardDashboardUrl(feature: AnnotationWeatherPayload) {
+  return weatherAnnotationDashboardUrl(feature, { compact: true, immersive: true });
+}
+
+/** The external link opens the real dashboard, with its own controls restored. */
+function weatherCardExternalUrl(feature: AnnotationWeatherPayload) {
+  return weatherAnnotationDashboardUrl(feature, { compact: false, immersive: false });
+}
+
+function updateWeatherFeatureCoordinate(store: LayerStore, featureId: string, marker: maplibregl.Marker) {
+  const feature = store.getAnnotationFeaturePayload(featureId);
+  if (feature?.type !== 'weather') return;
+  const lngLat = marker.getLngLat();
+  const coordinate = sanitizeLngLat([lngLat.lng, lngLat.lat]);
+  if (!coordinate) return;
+  const [lng, lat] = coordinate;
+  if (feature.coordinate[0] === lng && feature.coordinate[1] === lat) return;
+  store.updateFeature({ ...feature, coordinate, updatedAt: Date.now() });
+}
+
+function createWeatherCardElement(
+  map: AnnotationMap,
+  feature: AnnotationWeatherPayload,
+  onToggle: (featureId: string) => void,
+): Omit<AnnotationWeatherCardMarker, 'marker'> {
+  const element = document.createElement('article');
+  element.className = 'annotation-weather-card';
+  element.dataset.annotationId = feature.id;
+  stopWeatherCardPropagation(element);
+
+  const header = document.createElement('button');
+  header.type = 'button';
+  header.className = 'annotation-weather-card-header';
+  element.appendChild(header);
+
+  const icon = document.createElement('span');
+  icon.className = 'annotation-weather-card-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  icon.appendChild(
+    createIconElement(CloudSunIcon, { class: 'annotation-weather-icon', 'aria-hidden': 'true', focusable: 'false' }),
+  );
+  header.appendChild(icon);
+
+  const text = document.createElement('span');
+  text.className = 'annotation-weather-card-text';
+  header.appendChild(text);
+  const title = document.createElement('span');
+  title.className = 'annotation-weather-card-title';
+  text.appendChild(title);
+  const detail = document.createElement('span');
+  detail.className = 'annotation-weather-card-detail';
+  text.appendChild(detail);
+  const meta = document.createElement('span');
+  meta.className = 'annotation-weather-card-meta';
+  detail.appendChild(meta);
+
+  const chevron = document.createElement('span');
+  chevron.className = 'annotation-weather-card-chevron';
+  chevron.setAttribute('aria-hidden', 'true');
+  chevron.appendChild(
+    createIconElement(ChevronDownIcon, { class: 'annotation-weather-icon', 'aria-hidden': 'true', focusable: 'false' }),
+  );
+  header.appendChild(chevron);
+
+  const strip = document.createElement('div');
+  strip.className = 'annotation-weather-card-strip';
+  strip.setAttribute('aria-label', 'Daily forecast');
+  element.appendChild(strip);
+
+  const body = document.createElement('div');
+  body.className = 'annotation-weather-card-body';
+  element.appendChild(body);
+
+  const frame = document.createElement('iframe');
+  frame.className = 'annotation-weather-card-frame';
+  frame.title = 'Weather forecast';
+  frame.loading = 'lazy';
+  frame.referrerPolicy = 'no-referrer-when-downgrade';
+  body.appendChild(frame);
+
+  const actions = document.createElement('div');
+  actions.className = 'annotation-weather-card-actions';
+  body.appendChild(actions);
+
+  // A visible rename/edit entry point: without it the only way in was an
+  // undiscoverable double-click on the header.
+  const editButton = document.createElement('button');
+  editButton.type = 'button';
+  editButton.className = 'annotation-weather-card-edit';
+  editButton.textContent = 'Edit card';
+  editButton.title = 'Rename and edit this weather card';
+  editButton.addEventListener('click', () => {
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featuredblclick', feature));
+  });
+  actions.appendChild(editButton);
+
+  const openLink = document.createElement('a');
+  openLink.className = 'annotation-weather-card-open';
+  openLink.target = '_blank';
+  openLink.rel = 'noopener noreferrer';
+  openLink.textContent = 'Open weather.mgt.moe';
+  actions.appendChild(openLink);
+
+  header.addEventListener('click', () => {
+    onToggle(feature.id);
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featureclick', feature));
+  });
+  header.addEventListener('dblclick', () => {
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featuredblclick', feature));
+  });
+
+  return {
+    kind: 'card',
+    element,
+    header,
+    strip,
+    detail,
+    body,
+    frame,
+    title,
+    meta,
+    openLink,
+    summaryKey: '',
+    summaryAbort: null,
+  };
+}
+
+function createWeatherLabelElement(
+  map: AnnotationMap,
+  feature: AnnotationWeatherPayload,
+  onToggle: (featureId: string) => void,
+): Omit<AnnotationWeatherLabelMarker, 'marker'> {
+  const element = document.createElement('button');
+  element.type = 'button';
+  element.className = 'annotation-weather-label';
+  element.dataset.annotationId = feature.id;
+  stopWeatherCardPropagation(element);
+
+  const dot = document.createElement('span');
+  dot.className = 'annotation-weather-label-dot';
+  dot.setAttribute('aria-hidden', 'true');
+  element.appendChild(dot);
+
+  const icon = document.createElement('span');
+  icon.className = 'annotation-weather-label-icon';
+  icon.setAttribute('aria-hidden', 'true');
+  element.appendChild(icon);
+
+  const text = document.createElement('span');
+  text.className = 'annotation-weather-label-text';
+  element.appendChild(text);
+
+  element.addEventListener('click', () => {
+    // One click goes straight to the full card; the label is the collapsed state.
+    onToggle(feature.id);
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featureclick', feature));
+  });
+  element.addEventListener('dblclick', () => {
+    map.getContainer().dispatchEvent(markerFeatureEvent('annotation:featuredblclick', feature));
+  });
+
+  return { kind: 'label', element, icon, text, summaryKey: '', summaryAbort: null };
+}
+
+function formatWeatherDayLabel(date: string) {
+  const match = /^\d{4}-(\d{2})-(\d{2})$/.exec(date);
+  if (!match) return date;
+  return `${Number(match[1])}/${Number(match[2])}`;
+}
+
+function formatWeatherTemp(value: number | null) {
+  return value == null ? '–' : `${Math.round(value)}°`;
+}
+
+function createWeatherConditionIcon(condition: WeatherCondition) {
+  const icon = document.createElement('span');
+  icon.className = 'annotation-weather-card-day-icon';
+  icon.title = condition.label;
+  icon.appendChild(
+    createIconElement(condition.icon, {
+      class: 'annotation-weather-card-day-glyph',
+      color: condition.color,
+      'aria-hidden': 'true',
+      focusable: 'false',
+    }),
+  );
+  return icon;
+}
+
+function formatWeatherHumidity(value: number | null) {
+  return value == null ? '–' : `${Math.round(value)}%`;
+}
+
+/** Precipitation totals read better at millimetre precision. */
+function formatWeatherPrecipitation(value: number | null) {
+  return value == null ? '–' : `${Number(value.toFixed(1))}mm`;
+}
+
+function weatherDayDetail(day: WeatherDaySummary) {
+  return `${formatWeatherTemp(day.tempMax)}/${formatWeatherTemp(day.tempMin)} · ${formatWeatherHumidity(day.humidity)} · ${formatWeatherPrecipitation(day.precipitation)}`;
+}
+
+function renderWeatherStrip(strip: HTMLElement, summary: WeatherDaySummary[] | null, state: string) {
+  strip.dataset.state = state;
+  strip.replaceChildren();
+  if (state !== 'ready' || !summary || summary.length === 0) {
+    const note = document.createElement('span');
+    note.className = 'annotation-weather-card-strip-note';
+    note.textContent = state === 'loading' ? 'Loading forecast…' : 'Forecast unavailable';
+    strip.appendChild(note);
+    return;
+  }
+  // A single day is the common case: keep it to one compact line.
+  if (summary.length === 1) {
+    const [day] = summary;
+    const condition = weatherCondition(day.weatherCode);
+    strip.appendChild(createWeatherConditionIcon(condition));
+    const temps = document.createElement('span');
+    temps.className = 'annotation-weather-card-day-temps';
+    temps.textContent = `${formatWeatherTemp(day.tempMax)}/${formatWeatherTemp(day.tempMin)}`;
+    strip.appendChild(temps);
+    const detail = document.createElement('span');
+    detail.className = 'annotation-weather-card-day-detail';
+    detail.textContent = `${formatWeatherHumidity(day.humidity)} · ${formatWeatherPrecipitation(day.precipitation)}`;
+    strip.appendChild(detail);
+    strip.title = `${formatWeatherDayLabel(day.date)}: ${condition.label}, ${weatherDayDetail(day)}`;
+    return;
+  }
+  for (const day of summary) {
+    const cell = document.createElement('span');
+    cell.className = 'annotation-weather-card-day';
+    const date = document.createElement('span');
+    date.className = 'annotation-weather-card-day-date';
+    date.textContent = formatWeatherDayLabel(day.date);
+    const condition = weatherCondition(day.weatherCode);
+    const temps = document.createElement('span');
+    temps.className = 'annotation-weather-card-day-temps';
+    temps.textContent = `${formatWeatherTemp(day.tempMax)} ${formatWeatherTemp(day.tempMin)}`;
+    cell.appendChild(date);
+    cell.appendChild(createWeatherConditionIcon(condition));
+    cell.appendChild(temps);
+    cell.title = `${date.textContent}: ${condition.label} · ${formatWeatherHumidity(day.humidity)} · ${formatWeatherPrecipitation(day.precipitation)}`;
+    strip.appendChild(cell);
+  }
+}
+
+/** Fetch (and cache per coordinate/date range) the daily forecast for a marker. */
+function syncWeatherSummary(
+  entry: WeatherSummaryCache,
+  feature: AnnotationWeatherPayload,
+  render: (summary: WeatherDaySummary[] | null, state: string) => void,
+) {
+  const [lng, lat] = feature.coordinate;
+  const query = { coordinate: { lng, lat }, startDate: feature.date, days: feature.days };
+  const key = weatherSummaryKey(query);
+  if (entry.summaryKey === key) return;
+  entry.summaryKey = key;
+  entry.summaryAbort?.abort();
+  const controller = new AbortController();
+  entry.summaryAbort = controller;
+  render(null, 'loading');
+  fetchWeatherDailySummary(query, controller.signal)
+    .then((summary) => {
+      if (controller.signal.aborted) return;
+      render(summary, summary ? 'ready' : 'empty');
+    })
+    .catch(() => {
+      if (controller.signal.aborted) return;
+      render(null, 'empty');
+    });
+}
+
+function disposeWeatherSummary(entry: WeatherSummaryCache) {
+  entry.summaryAbort?.abort();
+  entry.summaryAbort = null;
+}
+
+/** Zoomed-out weather line: condition icon plus highs, lows, humidity and rain. */
+function renderWeatherLabel(
+  entry: Omit<AnnotationWeatherLabelMarker, 'marker'>,
+  summary: WeatherDaySummary[] | null,
+  state: string,
+) {
+  entry.element.dataset.state = state;
+  entry.icon.replaceChildren();
+  if (state !== 'ready' || !summary || summary.length === 0) {
+    entry.text.textContent = state === 'loading' ? '…' : '–';
+    entry.icon.title = state === 'loading' ? 'Loading forecast' : 'Forecast unavailable';
+    entry.icon.appendChild(
+      createIconElement(CloudSunIcon, {
+        class: 'annotation-weather-label-glyph',
+        'aria-hidden': 'true',
+        focusable: 'false',
+      }),
+    );
+    return;
+  }
+  // A range collapses to its first day here; zoom in for the full strip.
+  const [day] = summary;
+  const condition = weatherCondition(day.weatherCode);
+  entry.icon.title = condition.label;
+  entry.icon.appendChild(
+    createIconElement(condition.icon, {
+      class: 'annotation-weather-label-glyph',
+      color: condition.color,
+      'aria-hidden': 'true',
+      focusable: 'false',
+    }),
+  );
+  entry.text.textContent = weatherDayDetail(day);
+}
+
+function updateWeatherLabelElement(
+  entry: Omit<AnnotationWeatherLabelMarker, 'marker'>,
+  feature: AnnotationWeatherPayload,
+) {
+  const name = weatherAnnotationDisplayName(feature);
+  const note = typeof feature.note === 'string' ? feature.note.trim() : '';
+  entry.element.dataset.annotationId = feature.id;
+  entry.element.style.setProperty('--annotation-weather-color', feature.color || '#0ea5e9');
+  entry.element.setAttribute('aria-label', `${name} weather`);
+  const heading = note ? `${name}\n${note}` : `${name} — ${weatherAnnotationSummaryLabel(feature)}`;
+  // The click-to-expand behaviour is invisible, so the hover tooltip spells it out.
+  entry.element.title = `${heading}\nClick for the full forecast`;
+  syncWeatherSummary(entry, feature, (summary, state) => renderWeatherLabel(entry, summary, state));
+}
+
+function updateWeatherMarker(entry: AnnotationWeatherMarker, feature: AnnotationWeatherPayload) {
+  if (entry.kind === 'card') updateWeatherCardElement(entry, feature);
+  else updateWeatherLabelElement(entry, feature);
+}
+
+/** The card markup only ever exists in the expanded state. */
+function updateWeatherCardElement(
+  entry: Omit<AnnotationWeatherCardMarker, 'marker'>,
+  feature: AnnotationWeatherPayload,
+) {
+  const name = weatherAnnotationDisplayName(feature);
+  const summary = weatherAnnotationSummaryLabel(feature);
+  const note = typeof feature.note === 'string' ? feature.note.trim() : '';
+  entry.element.dataset.annotationId = feature.id;
+  const singleDay = weatherAnnotationDayCount(feature) <= 1;
+  entry.element.dataset.days = singleDay ? '1' : 'multi';
+  // A one-day card folds the forecast into the title row so it stays a compact
+  // chip; longer ranges keep the scrollable strip below the header.
+  if (singleDay && entry.strip.parentElement !== entry.detail) {
+    entry.detail.appendChild(entry.strip);
+  } else if (!singleDay && entry.strip.parentElement !== entry.element) {
+    entry.element.insertBefore(entry.strip, entry.body);
+  }
+  entry.element.style.setProperty('--annotation-weather-color', feature.color || '#0ea5e9');
+  entry.element.classList.add('annotation-weather-card-expanded');
+  entry.header.setAttribute('aria-expanded', 'true');
+  entry.header.title = note ? `${name}\n${note}` : `${name} — ${summary}`;
+  entry.title.textContent = name;
+  entry.meta.textContent = summary;
+  syncWeatherSummary(entry, feature, (days, state) => renderWeatherStrip(entry.strip, days, state));
+
+  const url = weatherCardDashboardUrl(feature);
+  if (entry.frame.dataset.weatherUrl !== url) {
+    entry.frame.dataset.weatherUrl = url;
+    entry.frame.src = url;
+  }
+  entry.openLink.href = weatherCardExternalUrl(feature);
+  entry.body.hidden = false;
+}
+
+function syncWeatherCards(
+  map: AnnotationMap,
+  store: LayerStore,
+  markers: Map<string, AnnotationWeatherMarker>,
+  viewState: { zoom: number; activeFeatureId: string },
+  expandedIds: Set<string>,
+  onToggle: (featureId: string) => void,
+) {
+  const features = visibleWeatherFeatures(store, viewState);
+  // Expansion picks the shape: the label collapses, the card is the expanded form.
+  const modes = new Map<string, AnnotationWeatherMode>(
+    features.map((feature) => [feature.id, expandedIds.has(feature.id) ? 'card' : 'label']),
+  );
+  // Toggling or a zoom change can swap the forms, so an entry whose kind no
+  // longer matches is dropped and rebuilt in the other one.
+  for (const [id, entry] of markers) {
+    if (modes.get(id) !== entry.kind) {
+      disposeWeatherSummary(entry);
+      entry.marker.remove();
+      markers.delete(id);
+    }
+  }
+  for (const feature of features) {
+    const existing = markers.get(feature.id);
+    if (existing) {
+      updateWeatherMarker(existing, feature);
+      existing.marker.setLngLat(feature.coordinate);
+      continue;
+    }
+    if (modes.get(feature.id) === 'card') {
+      const card = createWeatherCardElement(map, feature, onToggle);
+      const marker = createWeatherMarker(map, card.element, 'bottom', feature.coordinate);
+      marker.on('dragend', () => updateWeatherFeatureCoordinate(store, feature.id, marker));
+      const entry: AnnotationWeatherCardMarker = { ...card, marker };
+      updateWeatherCardElement(entry, feature);
+      markers.set(feature.id, entry);
+    } else {
+      const label = createWeatherLabelElement(map, feature, onToggle);
+      const marker = createWeatherMarker(map, label.element, 'left', feature.coordinate);
+      marker.on('dragend', () => updateWeatherFeatureCoordinate(store, feature.id, marker));
+      const entry: AnnotationWeatherLabelMarker = { ...label, marker };
+      updateWeatherLabelElement(entry, feature);
+      markers.set(feature.id, entry);
+    }
+  }
+}
+
+function createWeatherMarker(
+  map: AnnotationMap,
+  element: HTMLElement,
+  anchor: 'bottom' | 'left',
+  coordinate: [number, number],
+): maplibregl.Marker {
+  // `setLngLat` has to come first: `addTo` projects the position right away, so
+  // attaching a marker with no coordinate throws inside MapLibre and leaves an
+  // untracked element behind on every render.
+  return new maplibregl.Marker({ element, anchor, draggable: true })
+    .setLngLat(coordinate)
+    .addTo(map as unknown as maplibregl.Map);
+}
+
 function syncPolygonVertexMarkers(
   map: AnnotationMap,
   store: LayerStore,
@@ -852,11 +1374,26 @@ export function installAnnotationRenderer(map: AnnotationMap, store: LayerStore)
   let activeFeatureId = '';
   const renderSets = new Map<string, AnnotationRenderLayerSet>();
   const textMarkers = new Map<string, AnnotationTextMarker>();
+  const weatherMarkers = new Map<string, AnnotationWeatherMarker>();
+  const expandedWeatherCards = new Set<string>();
   const vertexMarkers = new Map<string, AnnotationVertexMarker>();
+  const toggleWeatherCard = (featureId: string) => {
+    if (expandedWeatherCards.has(featureId)) expandedWeatherCards.delete(featureId);
+    else expandedWeatherCards.add(featureId);
+    syncTextMarkerView();
+  };
   const syncTextMarkerView = () => {
     if (disposed) return;
     currentZoom = map.getZoom();
     syncTextMarkers(map, store, textMarkers, { zoom: currentZoom, activeFeatureId });
+    syncWeatherCards(
+      map,
+      store,
+      weatherMarkers,
+      { zoom: currentZoom, activeFeatureId },
+      expandedWeatherCards,
+      toggleWeatherCard,
+    );
     syncPolygonVertexMarkers(map, store, vertexMarkers, activeFeatureId);
   };
   const render = () => {
@@ -912,6 +1449,12 @@ export function installAnnotationRenderer(map: AnnotationMap, store: LayerStore)
       renderSets.clear();
       for (const entry of textMarkers.values()) entry.marker.remove();
       textMarkers.clear();
+      for (const entry of weatherMarkers.values()) {
+        disposeWeatherSummary(entry);
+        entry.marker.remove();
+      }
+      weatherMarkers.clear();
+      expandedWeatherCards.clear();
       for (const entry of vertexMarkers.values()) {
         entry.cleanup();
         entry.marker.remove();

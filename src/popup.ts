@@ -10,6 +10,7 @@
  */
 
 import { renderMarkdown } from './markdown.js';
+import { buildWeatherDashboardUrl, buildWeatherRouteSummary } from './weather-dashboard.js';
 
 // ---------------------------------------------------------------------------
 // OSM element type icons (base64 SVGs from ORM upstream)
@@ -1335,6 +1336,29 @@ function annotationPopupContent(feature: RenderedFeatureLike) {
   addPopupBadge(badges, 'Profile', properties.profile);
   addPopupBadge(badges, 'Distance', properties.distance_text);
   addPopupBadge(badges, 'Duration', properties.duration_text);
+
+  if (properties.kind === 'annotation_weather') {
+    const weatherDays = Number(properties.weather_days) || 1;
+    const weatherDate = typeof properties.weather_date === 'string' ? properties.weather_date : '';
+    addPopupBadge(badges, 'Forecast', buildWeatherRouteSummary({ startDate: weatherDate, days: weatherDays }));
+    const coordinates = Array.isArray(feature.geometry.coordinates) ? feature.geometry.coordinates : null;
+    const lng = Number(coordinates?.[0]);
+    const lat = Number(coordinates?.[1]);
+    if (Number.isFinite(lng) && Number.isFinite(lat)) {
+      const paragraphs = el('div', 'orm-popup-paragraphs', container);
+      const link = el('a', undefined, paragraphs);
+      link.href = buildWeatherDashboardUrl({
+        coordinate: { lng, lat },
+        displayName: stringValue(properties.name || properties.label),
+        startDate: weatherDate,
+        days: weatherDays,
+        compact: false,
+      });
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.innerText = 'Open forecast on weather.mgt.moe';
+    }
+  }
 
   if (properties.description) {
     const paragraphs = el('div', 'orm-popup-paragraphs', container);

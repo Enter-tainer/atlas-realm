@@ -1,5 +1,6 @@
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import CheckIcon from 'lucide/dist/esm/icons/check.mjs';
+import CloudSunIcon from 'lucide/dist/esm/icons/cloud-sun.mjs';
 import MapPinIcon from 'lucide/dist/esm/icons/map-pin.mjs';
 import MousePointerIcon from 'lucide/dist/esm/icons/mouse-pointer-2.mjs';
 import PenLineIcon from 'lucide/dist/esm/icons/pen-line.mjs';
@@ -18,13 +19,19 @@ import {
   ANNOTATION_SOURCE_ID,
   ANNOTATION_TEXT_DEFAULT_HEIGHT,
   ANNOTATION_TEXT_DEFAULT_WIDTH,
+  ANNOTATION_WEATHER_DEFAULT_DAYS,
+  ANNOTATION_WEATHER_MAX_DAYS,
+  ANNOTATION_WEATHER_MIN_DAYS,
   sanitizeAnnotationFillOpacity,
   sanitizeAnnotationLineStyle,
   sanitizeAnnotationOpacity,
-  createAnnotationId,
   sanitizeAnnotationText,
+  sanitizeAnnotationWeatherDate,
+  sanitizeAnnotationWeatherDays,
+  createAnnotationId,
 } from './annotation-model.js';
 import { buildRouteUrl, formatDistance, formatDuration, normalizeEndpoint } from './routing.js';
+import { formatDateLocal, reverseGeocode } from './weather-dashboard.js';
 import { runWhenStyleInfrastructureReady } from './style-ready.js';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
 import {
@@ -53,7 +60,7 @@ const DEFAULT_FILL_OPACITY = 0.22;
 const COLOR_SWATCHES = ['#2563eb', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0891b2', '#7c3aed', '#db2777'];
 
 type LngLatLike = { lng: number; lat: number };
-type AnnotationMode = 'select' | 'point' | 'text' | 'path' | 'polygon' | 'route';
+type AnnotationMode = 'select' | 'point' | 'text' | 'weather' | 'path' | 'polygon' | 'route';
 type AnnotationMapClickEvent = {
   lngLat: LngLatLike;
   point: unknown;
@@ -268,7 +275,7 @@ function averageCoordinate(points: LngLatTuple[]): LngLatTuple {
 }
 
 function featureAnchor(feature: AnnotationFeaturePayload): LngLatTuple {
-  if (feature.type === 'point' || feature.type === 'text') return feature.coordinate;
+  if (feature.type === 'point' || feature.type === 'text' || feature.type === 'weather') return feature.coordinate;
   if (feature.type === 'polygon') return averageCoordinate(feature.points);
   return coordinateAt(feature.type === 'route' ? feature.geometry : feature.points, 0.5);
 }
@@ -276,6 +283,7 @@ function featureAnchor(feature: AnnotationFeaturePayload): LngLatTuple {
 function annotationTypeLabel(feature: AnnotationFeaturePayload) {
   if (feature.type === 'point') return 'Marker';
   if (feature.type === 'text') return 'Text';
+  if (feature.type === 'weather') return 'Weather';
   if (feature.type === 'path') return 'Line';
   if (feature.type === 'polygon') return 'Area';
   return 'Route';
@@ -320,6 +328,8 @@ class AnnotationToolsControl {
   _editorOpacityInput: HTMLInputElement | null = null;
   _editorFillOpacityInput: HTMLInputElement | null = null;
   _editorSwatches: HTMLElement | null = null;
+  _editorWeatherDateInput: HTMLInputElement | null = null;
+  _editorWeatherDaysInput: HTMLInputElement | null = null;
   _expanded = false;
   _mode: AnnotationMode = 'select';
   _activeLayerId = ANNOTATION_DEFAULT_LAYER_ID;
@@ -334,6 +344,7 @@ class AnnotationToolsControl {
   _opacity = DEFAULT_LINE_OPACITY;
   _fillOpacity = DEFAULT_FILL_OPACITY;
   _abortController: AbortController | null = null;
+  _weatherGeocodeAbort: AbortController | null = null;
   _canEdit = true;
   _boundMapClick: (event: AnnotationMapClickEvent) => void;
   _boundMapDblClick: (event: AnnotationMapDblClickEvent) => void;
@@ -411,6 +422,7 @@ class AnnotationToolsControl {
     this._appendModeButton(modes, 'select', MousePointerIcon, 'Select');
     this._appendModeButton(modes, 'point', MapPinIcon, 'Marker');
     this._appendModeButton(modes, 'text', TypeIcon, 'Text');
+    this._appendModeButton(modes, 'weather', CloudSunIcon, 'Weather');
     this._appendModeButton(modes, 'path', PenLineIcon, 'Line');
     this._appendModeButton(modes, 'polygon', PentagonIcon, 'Area');
     this._appendModeButton(modes, 'route', RouteIcon, 'Route');
@@ -591,6 +603,7 @@ class AnnotationToolsControl {
 
   onRemove() {
     this._abortController?.abort();
+    this._weatherGeocodeAbort?.abort();
     this._unsubscribeStore?.();
     this._map.off('click', this._boundMapClick);
     this._map.off('dblclick', this._boundMapDblClick);
@@ -769,6 +782,10 @@ class AnnotationToolsControl {
       this._addText(coordinate);
       return;
     }
+    if (this._mode === 'weather') {
+      this._addWeather(coordinate);
+      return;
+    }
     this._draftPoints.push(coordinate);
     this._syncDraftSource();
     this._sync();
@@ -881,6 +898,46 @@ class AnnotationToolsControl {
     this._setStatus('Text added');
     this._syncFormFromSelected();
     this._sync();
+  }
+
+  _addWeather(coordinate: LngLatTuple) {
+    if (!this._canEdit) return;
+    const feature = {
+      ...this._featureBase('weather'),
+      type: 'weather' as const,
+      coordinate,
+      date: '',
+      days: ANNOTATION_WEATHER_DEFAULT_DAYS,
+    };
+    this._store.upsertFeature(feature);
+    this._selectedId = feature.id;
+    this._editingId = feature.id;
+    this._setStatus('Weather card added');
+    this._syncFormFromSelected();
+    this._sync();
+    this._resolveWeatherLabel(feature.id, coordinate);
+  }
+
+  /** Fill in a reverse-geocoded place name once, so collapsed cards read as a place. */
+  _resolveWeatherLabel(featureId: string, coordinate: LngLatTuple) {
+    this._weatherGeocodeAbort?.abort();
+    const controller = new AbortController();
+    this._weatherGeocodeAbort = controller;
+    reverseGeocode({ lng: coordinate[0], lat: coordinate[1] }, controller.signal)
+      .then((name) => {
+        if (!name || controller.signal.aborted) return;
+        const feature = this._store.getAnnotationFeaturePayload(featureId);
+        if (!feature || feature.type !== 'weather' || feature.label) return;
+        this._store.updateFeature({ ...feature, label: name, updatedAt: Date.now() });
+        // The editor stays open across the async lookup; mirror the resolved
+        // name into it so a later edit (days/date) does not write an empty label.
+        if (this._editorFeatureId === featureId && this._editorLabelInput && !this._editorLabelInput.value) {
+          this._editorLabelInput.value = name;
+        }
+      })
+      .catch(() => {
+        /* keep the default label when reverse geocoding fails */
+      });
   }
 
   async _finishDraftLine() {
@@ -1107,6 +1164,11 @@ class AnnotationToolsControl {
         next.fillOpacity,
       );
     }
+    if (next.type === 'weather') {
+      next.date = sanitizeAnnotationWeatherDate(this._editorWeatherDateInput?.value);
+      const dayInput = this._editorWeatherDaysInput?.value;
+      if (dayInput) next.days = sanitizeAnnotationWeatherDays(Number(dayInput), next.days);
+    }
     this._store.updateFeature(next);
     this._syncEditorSwatches(next.color);
   }
@@ -1131,6 +1193,8 @@ class AnnotationToolsControl {
     this._editorOpacityInput = null;
     this._editorFillOpacityInput = null;
     this._editorSwatches = null;
+    this._editorWeatherDateInput = null;
+    this._editorWeatherDaysInput = null;
     if (this._canEdit && cleanupBlankText && id) {
       const feature = this._store.getAnnotationFeaturePayload(id);
       if (feature?.type === 'text' && !feature.label && !feature.note) {
@@ -1188,7 +1252,8 @@ class AnnotationToolsControl {
     this._editorLabelInput.type = 'text';
     this._editorLabelInput.maxLength = 120;
     this._editorLabelInput.value = feature.label || '';
-    this._editorLabelInput.placeholder = feature.type === 'text' ? 'Text on map' : 'Label';
+    this._editorLabelInput.placeholder =
+      feature.type === 'text' ? 'Text on map' : feature.type === 'weather' ? 'Place name' : 'Label';
     this._editorLabelInput.addEventListener('input', () => this._updateEditingFromEditor());
 
     const noteField = el('label', 'annotation-editor-field', editor);
@@ -1218,6 +1283,27 @@ class AnnotationToolsControl {
     this._editorColorInput.addEventListener('input', () =>
       this._setEditorColor(this._editorColorInput?.value || DEFAULT_COLOR),
     );
+
+    if (feature.type === 'weather') {
+      const dateField = el('label', 'annotation-editor-field', editor);
+      const dateText = el('span', 'annotation-field-label', dateField);
+      dateText.textContent = 'Forecast start';
+      this._editorWeatherDateInput = el('input', 'annotation-input', dateField);
+      this._editorWeatherDateInput.type = 'date';
+      this._editorWeatherDateInput.value = sanitizeAnnotationWeatherDate(feature.date) || formatDateLocal(new Date());
+      this._editorWeatherDateInput.addEventListener('change', () => this._updateEditingFromEditor());
+
+      const daysField = el('label', 'annotation-editor-field', editor);
+      const daysText = el('span', 'annotation-field-label', daysField);
+      daysText.textContent = 'Days';
+      this._editorWeatherDaysInput = el('input', 'annotation-input', daysField);
+      this._editorWeatherDaysInput.type = 'number';
+      this._editorWeatherDaysInput.min = String(ANNOTATION_WEATHER_MIN_DAYS);
+      this._editorWeatherDaysInput.max = String(ANNOTATION_WEATHER_MAX_DAYS);
+      this._editorWeatherDaysInput.step = '1';
+      this._editorWeatherDaysInput.value = String(sanitizeAnnotationWeatherDays(feature.days));
+      this._editorWeatherDaysInput.addEventListener('input', () => this._updateEditingFromEditor());
+    }
 
     if (feature.type === 'path' || feature.type === 'route' || feature.type === 'polygon') {
       const lineStyleField = el('label', 'annotation-editor-field', editor);

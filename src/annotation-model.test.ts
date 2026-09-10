@@ -69,6 +69,23 @@ function polygonFeature(id = 'polygon-a', layerId = ANNOTATION_DEFAULT_LAYER_ID)
   };
 }
 
+function weatherFeature(id = 'weather-a', layerId = ANNOTATION_DEFAULT_LAYER_ID): AnnotationFeaturePayload {
+  return {
+    id,
+    layerId,
+    type: 'weather',
+    coordinate: [121.5, 31.2],
+    date: '2026-06-01',
+    days: 7,
+    label: 'Shanghai',
+    note: '',
+    color: '#0ea5e9',
+    createdAt: NOW,
+    updatedAt: NOW,
+    updatedBy: '',
+  };
+}
+
 describe('annotation model', () => {
   it('sanitizes annotation payloads without a document wrapper', () => {
     expect(
@@ -203,5 +220,39 @@ describe('annotation model', () => {
     const geojson = annotationFeaturePayloadsToGeoJson([pointFeature('empty', ANNOTATION_DEFAULT_LAYER_ID)]);
     expect(geojson.features[0].properties?.description).toBeUndefined();
     expect(geojson.features[0].properties?.description_plain).toBeUndefined();
+  });
+
+  it('sanitizes weather cards and projects their forecast window', () => {
+    expect(
+      sanitizeAnnotationFeaturePayload({
+        ...weatherFeature(),
+        date: '2026-13-40',
+        days: 99,
+      }),
+    ).toMatchObject({ type: 'weather', date: '', days: 30 });
+
+    expect(
+      sanitizeAnnotationFeaturePayload({
+        ...weatherFeature(),
+        date: ' 2026-06-01 ',
+        days: 0,
+      }),
+    ).toMatchObject({ type: 'weather', date: '2026-06-01', days: 1 });
+
+    expect(sanitizeAnnotationFeaturePayload({ ...weatherFeature(), coordinate: null })).toBeNull();
+
+    const geojson = annotationFeaturePayloadsToGeoJson([weatherFeature()]);
+    expect(geojson.features).toHaveLength(1);
+    expect(geojson.features[0].properties).toMatchObject({
+      kind: 'annotation_weather',
+      feature_type: 'weather',
+      name: 'Shanghai',
+      weather_date: '2026-06-01',
+      weather_days: 7,
+    });
+    expect(annotationFeaturePayloadsBounds([weatherFeature()])).toEqual([
+      [121.5, 31.2],
+      [121.5, 31.2],
+    ]);
   });
 });

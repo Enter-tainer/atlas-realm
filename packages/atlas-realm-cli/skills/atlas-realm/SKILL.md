@@ -169,7 +169,7 @@ Layer style options:
 
 ## Annotations
 
-Annotations are editable planning objects in the shared annotation model: point, text, path, polygon, route. Every `annotations add` returns the object with its server-assigned id — that return value, not the `--id` you typed, is what later commands address.
+Annotations are editable planning objects in the shared annotation model: point, text, path, polygon, route, weather. Every `annotations add` returns the object with its server-assigned id — that return value, not the `--id` you typed, is what later commands address.
 
 ### Points
 
@@ -243,6 +243,32 @@ Line, route, and polygon outline style options:
 - `--line-style solid|dashed|dotted`
 - `--opacity 0.05-1`
 - `--fill-opacity 0.05-1` for polygon fill
+
+### Weather cards
+
+A weather annotation pins a forecast card at a coordinate. The coordinate is the place being forecast, and `--date`/`--days` pick which days:
+
+```bash
+# Today's forecast for a place
+atlas-realm --host <host> --room <room> --client-id <id> annotations add weather --coordinate "121.5,31.2" --label "Shanghai" --json
+
+# A three-day window starting 2026-06-01
+atlas-realm --host <host> --room <room> --client-id <id> annotations add weather --coordinate "121.5,31.2" --label "Shanghai" --date 2026-06-01 --days 3 --json
+
+# An explicit single day
+atlas-realm --host <host> --room <room> --client-id <id> annotations add weather --lng 121.5 --lat 31.2 --date 2026-06-01 --json
+```
+
+Weather options:
+
+- `--coordinate "lng,lat"` or `--lng/--lat` — the place to forecast (required)
+- `--date YYYY-MM-DD` — first forecast day (default: today)
+- `--days <1-30>` — number of consecutive days (default: 1)
+- `--label "..."` — place name shown on the card and in the forecast
+- `--note "..."` — Markdown note shown in the card tooltip / editor
+- `--color <hex>` — card accent color
+
+On the map a weather annotation is collapsed by default: a dot plus one line of text (condition icon, high/low, humidity, precipitation in mm — a range shows its first day only). One click expands it straight into the full card: place and date range in the header, one row for a single day or one cell per day for a range (each day's humidity and rain total in its tooltip), and the embedded weather.mgt.moe dashboard. Below zoom 7 only a bare dot is drawn. Create one weather card per place; a multi-city trip is several cards.
 
 #### Coordinate system: send WGS-84
 

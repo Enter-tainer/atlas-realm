@@ -917,6 +917,44 @@ describe('atlas-realm CLI package', () => {
     });
   });
 
+  it('builds weather annotation payloads with an explicit forecast window', () => {
+    const feature = buildFeatureFromParts({
+      options: {
+        id: 'shanghai-weather',
+        coordinate: '121.5,31.2',
+        label: 'Shanghai',
+        date: '2026-06-01',
+        days: 5,
+      },
+      config: { agentName: 'Planner' },
+      typeHint: 'weather',
+      now: NOW,
+    });
+
+    expect(feature).toMatchObject({
+      id: 'shanghai-weather',
+      type: 'weather',
+      label: 'Shanghai',
+      coordinate: [121.5, 31.2],
+      date: '2026-06-01',
+      days: 5,
+    });
+  });
+
+  it('defaults weather annotations to today and a single day, and clamps bad input', () => {
+    expect(
+      buildFeatureFromParts({ options: { coordinate: '121.5,31.2' }, typeHint: 'weather', now: NOW }),
+    ).toMatchObject({ type: 'weather', date: '', days: 1 });
+
+    expect(
+      buildFeatureFromParts({
+        options: { coordinate: '121.5,31.2', date: '2026-13-40', days: 999 },
+        typeHint: 'weather',
+        now: NOW,
+      }),
+    ).toMatchObject({ type: 'weather', date: '', days: 30 });
+  });
+
   it('builds styled line annotation payloads from command options', () => {
     const feature = buildFeatureFromParts({
       options: {

@@ -38,6 +38,7 @@ export function defaultAnnotationFeatureLabel(
   if (type === 'text') return `Note ${number}`;
   if (type === 'path') return `Line ${number}`;
   if (type === 'polygon') return `Area ${number}`;
+  if (type === 'weather') return `Weather ${number}`;
 
   const fromName = normalizeLabelPart(options.fromName);
   const toName = normalizeLabelPart(options.toName);

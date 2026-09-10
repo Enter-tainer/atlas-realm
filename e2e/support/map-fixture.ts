@@ -188,6 +188,31 @@ const nominatimFixture = {
   },
 };
 
+function openMeteoFixtureResponse(url: URL) {
+  const start = url.searchParams.get('start_date') || '';
+  const end = url.searchParams.get('end_date') || '';
+  const time: string[] = [];
+  if (start && end) {
+    const cursor = new Date(`${start}T00:00:00Z`);
+    const last = new Date(`${end}T00:00:00Z`);
+    while (cursor <= last && time.length < 40) {
+      time.push(cursor.toISOString().slice(0, 10));
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+  }
+  const weatherCodes = [0, 2, 61, 3, 80, 95, 1];
+  return {
+    daily: {
+      time,
+      weather_code: time.map((_, index) => weatherCodes[index % weatherCodes.length]),
+      temperature_2m_max: time.map((_, index) => 28 - index),
+      temperature_2m_min: time.map((_, index) => 20 - index),
+      relative_humidity_2m_mean: time.map((_, index) => 60 + ((index * 7) % 30)),
+      precipitation_sum: time.map((_, index) => Number((index * 1.25).toFixed(1))),
+    },
+  };
+}
+
 function osrmFixtureResponse(url: URL) {
   const coordinateText = url.pathname.split('/').pop() || '';
   const points = coordinateText
@@ -320,6 +345,9 @@ async function routeExternalMapResources(page: Page, options: ExternalRouteOptio
     options.nominatim === 'success' ? fulfillJson(route, nominatimFixture) : fulfillText(route, 503),
   );
   await page.route(/https:\/\/weather\.mgt\.moe\/.*/, fulfillHtml);
+  await page.route(/https:\/\/api\.open-meteo\.com\/v1\/forecast.*/, (route) =>
+    fulfillJson(route, openMeteoFixtureResponse(new URL(route.request().url()))),
+  );
   await page.route(/https:\/\/photon\.komoot\.io\/api\/.*/, (route) => fulfillJson(route, photonFixture));
   await page.route(/https:\/\/router\.project-osrm\.org\/route\/v1\/.*/, (route) =>
     fulfillJson(route, osrmFixtureResponse(new URL(route.request().url()))),

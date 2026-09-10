@@ -4,6 +4,25 @@ import { coerceBoolean, coerceNumber, normalizeColor, normalizeId, parseJson, ra
 import type { AgentRoomConfig, AnnotationFeaturePayload, JsonRecord } from './types.js';
 
 const LINE_STYLES = new Set(['solid', 'dashed', 'dotted']);
+const WEATHER_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const WEATHER_DEFAULT_DAYS = 1;
+const WEATHER_MAX_DAYS = 30;
+
+function normalizeWeatherDate(value: unknown) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!WEATHER_DATE_RE.test(trimmed)) return '';
+  const [year, month, day] = trimmed.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return '';
+  return trimmed;
+}
+
+function normalizeWeatherDays(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return WEATHER_DEFAULT_DAYS;
+  return Math.min(WEATHER_MAX_DAYS, Math.max(1, Math.round(number)));
+}
 
 function normalizeLineStyle(value: unknown, fallback = 'solid') {
   if (typeof value !== 'string') return fallback;
@@ -75,12 +94,16 @@ export function buildFeatureFromParts({
     updatedBy: options.updatedBy || config.agentName || 'Agent',
   };
 
-  if (type === 'point' || type === 'text') {
+  if (type === 'point' || type === 'text' || type === 'weather') {
     feature.coordinate = coordinateFromOptions(options, seed.coordinate);
     if (!feature.coordinate) throw new Error(`${type} annotations require --lng/--lat or --coordinate`);
     if (type === 'text') {
       feature.width = coerceNumber(options.width, seed.width || 154);
       feature.height = coerceNumber(options.height, seed.height || 64);
+    }
+    if (type === 'weather') {
+      feature.date = normalizeWeatherDate(options.date !== undefined ? options.date : seed.date);
+      feature.days = normalizeWeatherDays(options.days !== undefined ? options.days : seed.days);
     }
   } else if (type === 'path') {
     feature.points = listFromOptions(options, 'points', seed.points);

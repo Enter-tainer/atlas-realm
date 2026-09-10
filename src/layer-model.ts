@@ -232,7 +232,8 @@ export function sanitizeAnnotationFeature(value: unknown, now = Date.now()): Ann
     featureType !== 'text' &&
     featureType !== 'path' &&
     featureType !== 'route' &&
-    featureType !== 'polygon'
+    featureType !== 'polygon' &&
+    featureType !== 'weather'
   ) {
     return null;
   }

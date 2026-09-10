@@ -28,6 +28,7 @@ describe('annotation labels', () => {
     expect(defaultAnnotationFeatureLabel(features, 'text')).toBe('Note 1');
     expect(defaultAnnotationFeatureLabel(features, 'path')).toBe('Line 1');
     expect(defaultAnnotationFeatureLabel(features, 'polygon')).toBe('Area 1');
+    expect(defaultAnnotationFeatureLabel(features, 'weather')).toBe('Weather 1');
   });
 
   it('uses route profile, distance, duration, and endpoint names when available', () => {

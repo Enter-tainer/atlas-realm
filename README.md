@@ -79,7 +79,7 @@ Focused workflow captures:
 - Browse a live map backed by OpenRailwayMap/OpenStreetMap-style vector data.
 - Import GPX and GeoJSON files or URLs into room layers.
 - Manage layer order, visibility, names, styles, zoom-to-layer, and exports.
-- Draw shared markers, text notes, lines, areas, and route annotations.
+- Draw shared markers, text notes, lines, areas, route annotations, and weather cards.
 - Open a room where browsers and agents synchronize layers, annotations, cursors, viewports, and presence.
 - Use GitHub login to claim persistent rooms and manage link access or per-user grants.
 - Let agents enter a room, inspect the current spatial document, and add or update annotations.
@@ -120,6 +120,7 @@ Open the Annotations panel to create:
 
 - Marker annotations for places.
 - Text annotations for map labels and notes.
+- Weather cards pinned at the place to forecast, with a chosen start date and day count (default: one day). Collapsed, a card is a dot plus one text line — condition icon, high/low, humidity, rain in mm, and for a range only its first day. A single click expands it straight into the full card: place and date range in the header (one row for a single day, one cell per day for a range, with each day's humidity and rain in its tooltip) above the embedded weather.mgt.moe forecast. Below zoom 7 only a bare dot is drawn.
 - Line annotations for freeform paths.
 - Area annotations for polygons.
 - Route annotations with path metadata.

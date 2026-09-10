@@ -10,9 +10,12 @@ export const ANNOTATION_TEXT_MIN_WIDTH = 96;
 export const ANNOTATION_TEXT_MIN_HEIGHT = 48;
 export const ANNOTATION_TEXT_MAX_WIDTH = 420;
 export const ANNOTATION_TEXT_MAX_HEIGHT = 260;
+export const ANNOTATION_WEATHER_DEFAULT_DAYS = 1;
+export const ANNOTATION_WEATHER_MIN_DAYS = 1;
+export const ANNOTATION_WEATHER_MAX_DAYS = 30;
 
 export type LngLatTuple = [number, number];
-export type AnnotationFeatureType = 'point' | 'text' | 'path' | 'route' | 'polygon';
+export type AnnotationFeatureType = 'point' | 'text' | 'path' | 'route' | 'polygon' | 'weather';
 export type AnnotationRouteProfile = 'driving' | 'walking' | 'cycling';
 export const ANNOTATION_LINE_STYLES = ['solid', 'dashed', 'dotted'] as const;
 export type AnnotationLineStyle = (typeof ANNOTATION_LINE_STYLES)[number];
@@ -39,6 +42,15 @@ export type AnnotationTextPayload = AnnotationFeaturePayloadBase & {
   coordinate: LngLatTuple;
   width: number;
   height: number;
+};
+
+export type AnnotationWeatherPayload = AnnotationFeaturePayloadBase & {
+  type: 'weather';
+  coordinate: LngLatTuple;
+  /** First forecast day as `YYYY-MM-DD` (empty string = today). */
+  date: string;
+  /** Number of consecutive forecast days (1..30). */
+  days: number;
 };
 
 export type AnnotationPathPayload = AnnotationFeaturePayloadBase & {
@@ -77,6 +89,7 @@ export type AnnotationRoutePayload = AnnotationFeaturePayloadBase & {
 export type AnnotationFeaturePayload =
   | AnnotationPointPayload
   | AnnotationTextPayload
+  | AnnotationWeatherPayload
   | AnnotationPathPayload
   | AnnotationPolygonPayload
   | AnnotationRoutePayload;
@@ -106,6 +119,8 @@ export type AnnotationGeoJsonProperties = {
   'line-width'?: number;
   text_width?: number;
   text_height?: number;
+  weather_date?: string;
+  weather_days?: number;
 };
 
 type JsonRecord = Record<string, unknown>;
@@ -122,6 +137,7 @@ const DEFAULT_ANNOTATION_LINE_OPACITY = 0.95;
 const DEFAULT_ANNOTATION_FILL_OPACITY = 0.22;
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 const ID_RE = /^[0-9a-zA-Z_-]{1,96}$/;
+const WEATHER_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_ANNOTATION_POINTS = 512;
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -208,6 +224,22 @@ export function sanitizeAnnotationFillOpacity(value: unknown, fallback = DEFAULT
   return sanitizeNumber(value, 0.05, 1, fallback);
 }
 
+/** Sanitize a `YYYY-MM-DD` forecast start date; empty string means "today". */
+export function sanitizeAnnotationWeatherDate(value: unknown) {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!WEATHER_DATE_RE.test(trimmed)) return '';
+  const [year, month, day] = trimmed.split('-').map(Number);
+  const date = new Date(year, month - 1, day);
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) return '';
+  return trimmed;
+}
+
+/** Sanitize the number of consecutive forecast days (1..30). */
+export function sanitizeAnnotationWeatherDays(value: unknown, fallback = ANNOTATION_WEATHER_DEFAULT_DAYS) {
+  return Math.round(sanitizeNumber(value, ANNOTATION_WEATHER_MIN_DAYS, ANNOTATION_WEATHER_MAX_DAYS, fallback));
+}
+
 export function sanitizeLngLat(value: unknown): LngLatTuple | null {
   if (!Array.isArray(value) || value.length < 2) return null;
   const lng = Number(value[0]);
@@ -284,11 +316,19 @@ function styleFillOpacity(value: JsonRecord) {
 export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now()): AnnotationFeaturePayload | null {
   if (!isRecord(value)) return null;
   const type = value.type;
-  if (type !== 'point' && type !== 'text' && type !== 'path' && type !== 'route' && type !== 'polygon') return null;
+  if (
+    type !== 'point' &&
+    type !== 'text' &&
+    type !== 'path' &&
+    type !== 'route' &&
+    type !== 'polygon' &&
+    type !== 'weather'
+  )
+    return null;
   const base = baseFeature(value, type, now);
   if (!base) return null;
 
-  if (type === 'point' || type === 'text') {
+  if (type === 'point' || type === 'text' || type === 'weather') {
     const coordinate = sanitizeLngLat(value.coordinate);
     if (!coordinate) return null;
     if (type === 'text') {
@@ -298,6 +338,15 @@ export function sanitizeAnnotationFeaturePayload(value: unknown, now = Date.now(
         coordinate,
         width: sanitizeAnnotationTextWidth(value.width ?? value.text_width),
         height: sanitizeAnnotationTextHeight(value.height ?? value.text_height),
+      };
+    }
+    if (type === 'weather') {
+      return {
+        ...base,
+        type,
+        coordinate,
+        date: sanitizeAnnotationWeatherDate(value.date),
+        days: sanitizeAnnotationWeatherDays(value.days),
       };
     }
     return { ...base, type, coordinate };
@@ -476,13 +525,22 @@ function lineFeature(
 }
 
 export function annotationFeaturePayloadToGeoJsonFeatures(feature: AnnotationFeaturePayload): Feature[] {
-  if (feature.type === 'point' || feature.type === 'text') {
+  if (feature.type === 'point' || feature.type === 'text' || feature.type === 'weather') {
+    const kind =
+      feature.type === 'text'
+        ? 'annotation_text'
+        : feature.type === 'weather'
+          ? 'annotation_weather'
+          : 'annotation_point';
     return [
       {
         type: 'Feature',
         properties: {
-          ...featureBaseProperties(feature, feature.type === 'text' ? 'annotation_text' : 'annotation_point'),
+          ...featureBaseProperties(feature, kind),
           ...(feature.type === 'text' ? { text_width: feature.width, text_height: feature.height } : {}),
+          ...(feature.type === 'weather'
+            ? { weather_date: feature.date || undefined, weather_days: feature.days }
+            : {}),
         },
         geometry: {
           type: 'Point',
@@ -534,7 +592,7 @@ export function annotationFeaturePayloadsBounds(
   let bounds: [number, number, number, number] | null = null;
   for (const feature of payloads) {
     if (!feature || (options.layerId && feature.layerId !== options.layerId)) continue;
-    if (feature.type === 'point' || feature.type === 'text') {
+    if (feature.type === 'point' || feature.type === 'text' || feature.type === 'weather') {
       bounds = extendBounds(bounds, feature.coordinate);
     } else {
       const coordinates = feature.type === 'route' ? feature.geometry : feature.points;

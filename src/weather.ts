@@ -1,20 +1,18 @@
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import CloudSunIcon from 'lucide/dist/esm/icons/cloud-sun.mjs';
 import { emitUiPanelOpen, isOtherUiPanelOpen, UI_PANEL_OPEN_EVENT } from './ui-panels.js';
+import {
+  buildWeatherDashboardUrl,
+  formatDisplayCoord,
+  WEATHER_FORECAST_DEFAULT_DAYS,
+  reverseGeocode,
+  type LngLatLike,
+} from './weather-dashboard.js';
 
-const WEATHER_DASHBOARD_URL = import.meta.env.VITE_WEATHER_DASHBOARD_URL || 'https://weather.mgt.moe/';
-const NOMINATIM_REVERSE_URL = 'https://nominatim.openstreetmap.org/reverse';
 const PICKER_ACTIVE_DATASET_KEY = 'weatherPickerActive';
-const WEATHER_ROUTE_DAYS = 7;
+const WEATHER_ROUTE_DAYS = WEATHER_FORECAST_DEFAULT_DAYS;
 const WEATHER_COMPACT = true;
 
-type LngLatLike = { lng: number; lat: number };
-type NominatimAddress = Record<string, string | undefined>;
-type NominatimReverseResponse = {
-  name?: string;
-  display_name?: string;
-  address?: NominatimAddress;
-};
 type WeatherMapClickEvent = {
   lngLat: LngLatLike;
   originalEvent?: Event & { weatherPickerHandled?: boolean };
@@ -65,78 +63,6 @@ function appendIcon(parent: Element, icon: LucideIcon, className = 'weather-icon
   });
   parent.appendChild(svg);
   return svg;
-}
-
-function formatDateLocal(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function formatCoord(value: number) {
-  return value.toFixed(5);
-}
-
-function formatDisplayCoord(lngLat: LngLatLike) {
-  return `${lngLat.lat.toFixed(4)}, ${lngLat.lng.toFixed(4)}`;
-}
-
-function formatNominatimAddress(data: NominatimReverseResponse = {}) {
-  const address = data.address || {};
-  const street = [address.road, address.house_number].filter(Boolean).join(' ');
-  const locality = address.city || address.town || address.village || address.county || address.state;
-  const parts = [
-    data.name,
-    street,
-    address.neighbourhood || address.suburb || address.city_district || address.district,
-    locality,
-    address.country,
-  ].filter((part, index, arr) => part && arr.indexOf(part) === index);
-  return parts.join(', ') || data.display_name || '';
-}
-
-function sanitizeDisplayName(displayName: string) {
-  return displayName.replace(/[~:;]/g, ' ').replace(/\s+/g, ' ').trim();
-}
-
-async function reverseGeocode(lngLat: LngLatLike, signal: AbortSignal) {
-  const url = new URL(NOMINATIM_REVERSE_URL);
-  url.searchParams.set('lat', lngLat.lat.toFixed(6));
-  url.searchParams.set('lon', lngLat.lng.toFixed(6));
-  url.searchParams.set('format', 'jsonv2');
-  url.searchParams.set('addressdetails', '1');
-  url.searchParams.set('zoom', '16');
-  url.searchParams.set('accept-language', navigator.language || 'zh-CN');
-
-  const response = await fetch(url, {
-    signal,
-    headers: { Accept: 'application/json' },
-  });
-  if (!response.ok) throw new Error(`Nominatim reverse geocoding failed: ${response.status}`);
-
-  const data = (await response.json()) as NominatimReverseResponse;
-  return formatNominatimAddress(data) || formatDisplayCoord(lngLat);
-}
-
-function buildWeatherUrl(lngLat: LngLatLike, displayName = formatDisplayCoord(lngLat)) {
-  const url = new URL(WEATHER_DASHBOARD_URL, window.location.href);
-  const safeDisplayName = sanitizeDisplayName(displayName) || formatDisplayCoord(lngLat);
-  const routeEntries = [];
-  const today = new Date();
-
-  for (let i = 0; i < WEATHER_ROUTE_DAYS; i += 1) {
-    const date = new Date(today);
-    date.setDate(today.getDate() + i);
-    routeEntries.push(
-      `${formatCoord(lngLat.lat)},${formatCoord(lngLat.lng)}~${safeDisplayName}:${formatDateLocal(date)}`,
-    );
-  }
-
-  url.searchParams.set('route', routeEntries.join(';'));
-  if (WEATHER_COMPACT) url.searchParams.set('compact', '1');
-  else url.searchParams.delete('compact');
-  return url.toString();
 }
 
 function stopMapControlPropagation(node: Element) {
@@ -302,7 +228,12 @@ class WeatherPointPicker {
       .then((displayName) => {
         if (!this._selectedLngLat) return;
         this._isResolving = false;
-        const nextUrl = buildWeatherUrl(this._selectedLngLat, displayName);
+        const nextUrl = buildWeatherDashboardUrl({
+          coordinate: this._selectedLngLat,
+          displayName,
+          days: WEATHER_ROUTE_DAYS,
+          compact: WEATHER_COMPACT,
+        });
         this._weatherUrl = nextUrl;
         this._openLink.href = nextUrl;
         this._iframe.src = nextUrl;

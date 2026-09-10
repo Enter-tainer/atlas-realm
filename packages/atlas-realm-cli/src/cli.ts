@@ -388,6 +388,8 @@ function annotationBuilder(y: any): any {
     .option('duration', { type: 'number', describe: 'Route duration in seconds' })
     .option('distance-text', { type: 'string', describe: 'Route distance label' })
     .option('duration-text', { type: 'string', describe: 'Route duration label' })
+    .option('date', { type: 'string', describe: 'Weather card forecast start date (YYYY-MM-DD, empty = today)' })
+    .option('days', { type: 'number', describe: 'Weather card forecast days, 1-30' })
     .option('updated-by', { type: 'string', describe: 'Annotation editor id/name' })
     .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
