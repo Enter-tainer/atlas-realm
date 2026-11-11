@@ -127,6 +127,30 @@ const {
   capLayersForDataMaxZoom,
   makeStyle,
 } = shared
+
+// Zoomed out, stations give way to each other instead of piling up, so dense
+// networks thin out to their main stations while rural lines keep every stop.
+// Stations served by the most routes (`station_routes`, joined by \x1D) are
+// placed first, then the one farthest from a more important station
+// (discr_iso). discr_iso alone would sink hubs like Tokyo, whose train station
+// counts as less important than its subway station a few hundred metres away,
+// and subway stations are not drawn this far out. The icons also start smaller.
+const stationRouteCount = [
+  'case',
+  ['has', 'station_routes'],
+  ['length', ['split', ['to-string', ['get', 'station_routes']], '\u001d']],
+  0,
+]
+const thinnedStationLayout = {
+  'icon-overlap': 'never',
+  'symbol-sort-key': [
+    '-',
+    0,
+    ['+', ['*', stationRouteCount, 1000000], ['min', ['to-number', ['get', 'discr_iso'], 0], 999999]],
+  ],
+  'icon-size': ['interpolate', ['linear'], ['zoom'], 7, 0.55, 10, 0.75, 12, 1],
+}
+
 export const standardStationAreaLayers = [
   {
     id: 'railway_grouped_station_areas',
@@ -317,7 +341,7 @@ export const standardStationTextLowLayers = [
       ],
     ],
     paint: {
-      'text-color': colors.styles.standard.stationsText,
+      'text-color': colors.styles.standard.stationsLabel,
       'text-halo-color': ['case', ['boolean', ['feature-state', 'hover'], false], colors.hover.textHalo, colors.halo],
       'text-halo-width': 1.5,
       'icon-color': colors.styles.standard.stationsText,
@@ -372,7 +396,7 @@ export const standardStationTextLowLayers = [
       ],
     ],
     paint: {
-      'text-color': colors.styles.standard.stationsText,
+      'text-color': colors.styles.standard.stationsLabel,
       'text-halo-color': ['case', ['boolean', ['feature-state', 'hover'], false], colors.hover.textHalo, colors.halo],
       'text-halo-width': 2,
       'icon-color': colors.styles.standard.stationsText,
@@ -383,7 +407,7 @@ export const standardStationTextLowLayers = [
       visibility: ['case', ['<', ['global-state', 'date'], defaultDate], 'none', 'visible'],
       'symbol-z-order': 'source',
       'icon-image': ['image', ['concat', 'sdf:general/station-', ['get', 'station_size']]],
-      'icon-overlap': 'always',
+      ...thinnedStationLayout,
       'text-field': [
         'match',
         ['get', 'station_size'],
@@ -520,7 +544,7 @@ export const standardStationTextHighLayers = [
           colors.styles.standard.miniatureText,
           ['==', ['get', 'station'], 'funicular'],
           colors.styles.standard.funicularText,
-          colors.styles.standard.stationsText,
+          colors.styles.standard.stationsLabel,
         ],
         colors.styles.standard.defaultText,
       ],
@@ -573,7 +597,7 @@ export const standardStationTextHighLayers = [
           ],
         ],
       ],
-      'icon-overlap': 'always',
+      ...thinnedStationLayout,
       'text-field': [
         'step',
         ['zoom'],
@@ -658,7 +682,7 @@ export const standardStationTextHighLayers = [
           colors.styles.standard.funicularText,
           ['==', ['get', 'station'], 'tram'],
           colors.styles.standard.tramStopText,
-          colors.styles.standard.stationsText,
+          colors.styles.standard.stationsLabel,
         ],
         colors.styles.standard.defaultText,
       ],

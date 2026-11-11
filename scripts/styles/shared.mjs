@@ -66,6 +66,7 @@ export const colors = {
         casing: themeSwitch('#808080', '#808080'),
       },
       stationsText: themeSwitch('blue', '#bdcfff'),
+      stationsLabel: themeSwitch('#000000', '#ffffff'),
       yardText: themeSwitch('#87491D', '#ffa35f'),
       tramStopText: themeSwitch('#D877B8', '#f8c7e8'),
       lightRailText: themeSwitch('#0e5414', '#83ea8f'),
