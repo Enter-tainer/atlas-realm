@@ -26,6 +26,8 @@ const TILE_VERSION = '20261111b';
 // (e.g. openrailwaymap-test-<run_id>), defaulting to the production archive.
 const TILE_ARCHIVE = new URLSearchParams(window.location.search).get('tileset') ?? 'openrailwaymap';
 const TILE_URL = `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
+// The single vector source every railway layer draws from.
+const ORM_SOURCE = 'openrailwaymap';
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
 const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
@@ -199,28 +201,29 @@ function rewriteOrmStyle(style: StyleLike): StyleLike {
     url: rewriteOrmSpriteUrl(sprite.url),
   }));
 
-  const rewrittenSources: string[] = [];
-  style.sources = Object.fromEntries(
-    Object.entries(style.sources || {}).map(([name, source]) => {
-      if (source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/')) {
-        rewrittenSources.push(name);
-        return [
-          name,
-          {
-            type: 'vector',
-            tiles: [TILE_URL],
-            attribution: source.attribution,
-            promoteId: source.promoteId,
-            bounds: source.bounds,
-            scheme: source.scheme,
-            metadata: source.metadata,
-            maxzoom: 15,
-          },
-        ];
-      }
-      return [name, source];
-    }),
+  // Every railway layer draws from one archive, so all the local vector sources
+  // become a single source: MapLibre loads tiles per source, and several sources
+  // on the same tile URL fetch and decode the same tiles once per source.
+  const localVectorSources = Object.entries(style.sources || {}).filter(
+    ([, source]) => source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/'),
   );
+  const rewrittenSources = localVectorSources.map(([name]) => name);
+  if (localVectorSources.length > 0) {
+    const [, firstSource] = localVectorSources[0];
+    const sources = { ...(style.sources || {}) };
+    for (const [name] of localVectorSources) delete sources[name];
+    sources[ORM_SOURCE] = {
+      type: 'vector',
+      tiles: [TILE_URL],
+      attribution: firstSource.attribution,
+      bounds: firstSource.bounds,
+      maxzoom: 15,
+    };
+    style.sources = sources;
+    style.layers = style.layers?.map((layer) =>
+      layer.source && rewrittenSources.includes(String(layer.source)) ? { ...layer, source: ORM_SOURCE } : layer,
+    );
+  }
 
   style.metadata = {
     ...(style.metadata || {}),
@@ -532,29 +535,45 @@ async function loadSpriteAtlases(): Promise<SpriteAtlas[]> {
   return atlases;
 }
 
-function installSpriteFallback(map: maplibregl.Map, atlases: SpriteAtlas[]) {
+const SPRITE_ATLAS_PREFIXES = ['orm:', 'sdf:'];
+
+function addSpriteImage(map: maplibregl.Map, id: string, atlases: SpriteAtlas[]): void {
+  for (const atlas of atlases) {
+    const key = id.startsWith(atlas.prefix) ? id.slice(atlas.prefix.length) : null;
+    if (key && atlas.index[key]) {
+      const meta = atlas.index[key];
+      const canvas = document.createElement('canvas');
+      canvas.width = meta.width;
+      canvas.height = meta.height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(atlas.image, meta.x, meta.y, meta.width, meta.height, 0, 0, meta.width, meta.height);
+      const data = ctx.getImageData(0, 0, meta.width, meta.height).data;
+      if (!map.hasImage(id)) {
+        map.addImage(
+          id,
+          { width: meta.width, height: meta.height, data },
+          { pixelRatio: meta.pixelRatio || 1, sdf: atlas.sdf },
+        );
+      }
+      return;
+    }
+  }
+}
+
+// Fills ORM icons MapLibre reports missing from the style's sprites, which hold
+// only the icons the standard style is known to use
+// (scripts/styles/sprite-subset.mjs). The full atlases load on the first such
+// miss instead of up front, so they never delay the map. Icons the base map
+// lacks are not ours to fill and must not trigger the download.
+function installSpriteFallback(map: maplibregl.Map): void {
+  let atlases: Promise<SpriteAtlas[]> | null = null;
   map.on('styleimagemissing', (e) => {
     const id = e.id;
-    for (const atlas of atlases) {
-      const key = id.startsWith(atlas.prefix) ? id.slice(atlas.prefix.length) : null;
-      if (key && atlas.index[key]) {
-        const meta = atlas.index[key];
-        const canvas = document.createElement('canvas');
-        canvas.width = meta.width;
-        canvas.height = meta.height;
-        const ctx = canvas.getContext('2d');
-        ctx.drawImage(atlas.image, meta.x, meta.y, meta.width, meta.height, 0, 0, meta.width, meta.height);
-        const data = ctx.getImageData(0, 0, meta.width, meta.height).data;
-        if (!map.hasImage(id)) {
-          map.addImage(
-            id,
-            { width: meta.width, height: meta.height, data },
-            { pixelRatio: meta.pixelRatio || 1, sdf: atlas.sdf },
-          );
-        }
-        return;
-      }
-    }
+    if (!SPRITE_ATLAS_PREFIXES.some((prefix) => id.startsWith(prefix))) return;
+    atlases ??= loadSpriteAtlases();
+    atlases
+      .then((loaded) => addSpriteImage(map, id, loaded))
+      .catch((error) => console.warn('Sprite fallback failed:', error));
   });
 }
 
@@ -577,7 +596,7 @@ async function init() {
       worker: true,
     });
     demSource.setupMaplibre(maplibregl);
-    const [style, atlases] = await Promise.all([loadStyle(demSource), loadSpriteAtlases()]);
+    const style = await loadStyle(demSource);
 
     window._mlmap = null;
     const map = new maplibregl.Map({
@@ -641,7 +660,7 @@ async function init() {
       screenshotFixtureModule.installScreenshotFixtureMapLayers(map, screenshotFixtureMode);
     }
 
-    installSpriteFallback(map, atlases);
+    installSpriteFallback(map);
 
     // Register GPX drag-drop immediately (map container exists now)
     // Don't wait for 'load' — user may drag a file before tiles finish loading

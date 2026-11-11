@@ -71,12 +71,34 @@ class R2Source implements Source {
 
 const CACHE = new ResolvedValueCache(25, undefined, nativeDecompress);
 
+// Tiles stay gzip-compressed and go out with Content-Encoding: gzip; low-zoom
+// railway tiles are several MB compressed and 3-5x that raw. The cache above
+// still decompresses directories, which the reader needs.
+async function keepGzipTiles(buf: ArrayBuffer, compression: number): Promise<ArrayBuffer> {
+  return compression === 2 /* Gzip */ ? buf : nativeDecompress(buf, compression);
+}
+
 const CONTENT_TYPES: Partial<Record<TileType, string>> = {
   [TileType.Mvt]: 'application/x-protobuf',
   [TileType.Png]: 'image/png',
   [TileType.Jpeg]: 'image/jpeg',
   [TileType.Webp]: 'image/webp',
 };
+
+// The runtime gzips bodies of responses that carry Content-Encoding unless they
+// are built with encodeBody: 'manual', and neither clone() nor cache.match()
+// keeps that flag. Cached gzip tiles therefore go into the cache as freshly
+// built manual responses and come out rewrapped the same way; otherwise they are
+// stored and sent gzipped twice, and browsers, which undo one layer, cannot
+// parse them.
+function gzipTileResponse(body: BodyInit | null, init: { status?: number; headers: HeadersInit }) {
+  return new Response(body, { ...init, encodeBody: 'manual' });
+}
+
+function passThroughEncoded(cached: Response) {
+  if (!cached.headers.has('Content-Encoding')) return cached;
+  return gzipTileResponse(cached.body, { status: cached.status, headers: cached.headers });
+}
 
 export async function handleTileRequest(
   request: Request,
@@ -89,16 +111,11 @@ export async function handleTileRequest(
 
   const cache = (caches as CacheStorage & { default: Cache }).default;
   const cached = await cache.match(request.url);
-  if (cached) return cached;
+  if (cached) return passThroughEncoded(cached);
 
-  // The archive stores tiles gzip-compressed and this reader decompresses every
-  // payload it hands out. Handing the compressed bytes straight back with a
-  // Content-Encoding header would save one decompression here, but the edge
-  // cache keys responses by URL and ignores Vary: Accept-Encoding, so the
-  // compressed variant then gets served (and re-compressed) for clients that
-  // asked for identity. Keep one canonical body and let the edge compress.
   const source = new R2Source(env, parsed.name);
-  const p = new PMTiles(source, CACHE, nativeDecompress);
+  // TileJSON reads the archive metadata, which must be decompressed.
+  const p = new PMTiles(source, CACHE, parsed.tile ? keepGzipTiles : nativeDecompress);
   const header = await p.getHeader();
 
   if (!parsed.tile) {
@@ -126,14 +143,12 @@ export async function handleTileRequest(
   }
 
   const contentType = CONTENT_TYPES[header.tileType] || 'application/octet-stream';
-  const resp = new Response(tiledata.data, {
-    headers: {
-      'Content-Type': contentType,
-      'Cache-Control': 'public, max-age=86400',
-      'Access-Control-Allow-Origin': '*',
-      Vary: 'Accept-Encoding',
-    },
-  });
-  ctx.waitUntil(cache.put(request.url, resp.clone()));
-  return resp;
+  const headers: Record<string, string> = {
+    'Content-Type': contentType,
+    'Cache-Control': 'public, max-age=86400',
+    'Access-Control-Allow-Origin': '*',
+  };
+  if (header.tileCompression === 2 /* Gzip */) headers['Content-Encoding'] = 'gzip';
+  ctx.waitUntil(cache.put(request.url, gzipTileResponse(tiledata.data, { headers })));
+  return gzipTileResponse(tiledata.data, { headers });
 }

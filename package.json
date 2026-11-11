@@ -10,7 +10,7 @@
     "atlas:realm": "pnpm --filter @atlas-realm/cli build >/dev/null && node packages/atlas-realm-cli/bin/atlas-realm.mjs",
     "screenshots:fixture": "node scripts/update-screenshot-fixture-data.mjs && oxfmt --write src/screenshot-fixture-data.ts",
     "screenshots": "node scripts/generate-screenshots.mjs",
-    "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json",
+    "generate:style": "node scripts/styles/styles.mjs && cp standard.json public/orm/style/standard.json && node scripts/styles/sprite-subset.mjs",
     "verify:style-bitexact": "cp scripts/styles/styles.mjs /tmp/orm-styles.split.mjs && cp /tmp/style-refactor-backup/styles.mjs.orig scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cp standard.json /tmp/orm-standard.before.json && cp /tmp/orm-styles.split.mjs scripts/styles/styles.mjs && node scripts/styles/styles.mjs >/dev/null && cmp -s standard.json /tmp/orm-standard.before.json",
     "deploy": "pnpm build && wrangler deploy",
     "typecheck": "tsc --noEmit",

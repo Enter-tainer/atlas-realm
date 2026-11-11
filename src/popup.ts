@@ -748,52 +748,52 @@ export function buildFeatureCatalog() {
     },
   };
 
-  // Map of "${source}-${sourceLayer}" -> catalog entry
-  // These keys must match what maplibregl reports as feature.source + '-' + feature.sourceLayer
+  // Map of source layer -> catalog entry. Every railway layer comes from one
+  // archive (main.ts merges the local vector sources), so the source layer alone
+  // identifies the feature kind.
   return {
     // Railway lines (all map styles share the same line catalog)
-    'high-railway_line_high': railwayLineFeatures,
-    'openrailwaymap_low-railway_line_high': railwayLineFeatures,
-    'standard_railway_line_low-standard_railway_line_low': railwayLineFeatures,
-    'speed_railway_line_low-speed_railway_line_low': railwayLineFeatures,
-    'signals_railway_line_low-signals_railway_line_low': railwayLineFeatures,
-    'electrification_railway_line_low-electrification_railway_line_low': railwayLineFeatures,
-    'track_railway_line_low-track_railway_line_low': railwayLineFeatures,
-    'operator_railway_line_low-operator_railway_line_low': railwayLineFeatures,
+    railway_line_high: railwayLineFeatures,
+    standard_railway_line_low: railwayLineFeatures,
+    speed_railway_line_low: railwayLineFeatures,
+    signals_railway_line_low: railwayLineFeatures,
+    electrification_railway_line_low: railwayLineFeatures,
+    track_railway_line_low: railwayLineFeatures,
+    operator_railway_line_low: railwayLineFeatures,
 
     // Stations
-    'standard_railway_text_stations_low-standard_railway_text_stations_low': stationFeatures,
-    'standard_railway_text_stations_med-standard_railway_text_stations_med': stationFeatures,
-    'openrailwaymap_standard-standard_railway_text_stations': stationFeatures,
-    'openrailwaymap_standard-standard_railway_grouped_stations': stationFeatures,
+    standard_railway_text_stations_low: stationFeatures,
+    standard_railway_text_stations_med: stationFeatures,
+    standard_railway_text_stations: stationFeatures,
+    standard_railway_grouped_stations: stationFeatures,
 
     // Standard layer features
-    'openrailwaymap_standard-standard_railway_turntables': turntableFeatures,
-    'openrailwaymap_standard-standard_railway_platforms': platformFeatures,
-    'openrailwaymap_standard-standard_railway_platform_edges': platformEdgeFeatures,
-    'openrailwaymap_standard-standard_railway_stop_positions': stopPositionFeatures,
-    'openrailwaymap_standard-standard_station_entrances': stationEntranceFeatures,
-    'openrailwaymap_standard-standard_railway_symbols': poiFeatures,
-    'openrailwaymap_standard-standard_railway_switch_ref': switchFeatures,
+    standard_railway_turntables: turntableFeatures,
+    standard_railway_platforms: platformFeatures,
+    standard_railway_platform_edges: platformEdgeFeatures,
+    standard_railway_stop_positions: stopPositionFeatures,
+    standard_station_entrances: stationEntranceFeatures,
+    standard_railway_symbols: poiFeatures,
+    standard_railway_switch_ref: switchFeatures,
 
     // Milestones
-    'high-railway_text_km': milestoneFeatures,
+    railway_text_km: milestoneFeatures,
 
     // Speed signals
-    'openrailwaymap_speed-speed_railway_signals': signalFeatures,
+    speed_railway_signals: signalFeatures,
 
     // Signal layer
-    'openrailwaymap_signals-signals_railway_signals': signalFeatures,
-    'openrailwaymap_signals-signals_signal_boxes': signalBoxFeatures,
+    signals_railway_signals: signalFeatures,
+    signals_signal_boxes: signalBoxFeatures,
 
     // Electrification
-    'openrailwaymap_electrification-electrification_signals': signalFeatures,
-    'openrailwaymap_electrification-electrification_railway_symbols': poiFeatures,
-    'openrailwaymap_electrification-electrification_catenary': catenaryFeatures,
-    'openrailwaymap_electrification-electrification_substation': substationFeatures,
+    electrification_signals: signalFeatures,
+    electrification_railway_symbols: poiFeatures,
+    electrification_catenary: catenaryFeatures,
+    electrification_substation: substationFeatures,
 
     // Operator
-    'openrailwaymap_operator-operator_railway_symbols': poiFeatures,
+    operator_railway_symbols: poiFeatures,
 
     // Lookup-only catalogs (used by format.lookup, not tied to a source-layer)
     station_references: stationReferences,
@@ -928,7 +928,7 @@ function popupContent(
   abortController: AbortController,
 ) {
   const properties = feature.properties || {};
-  const layerSource = `${feature.source}${feature.sourceLayer ? `-${feature.sourceLayer}` : ''}`;
+  const layerSource = feature.sourceLayer ?? feature.source ?? '';
 
   const featureCatalog = featuresCatalog[layerSource];
   if (!featureCatalog) {
