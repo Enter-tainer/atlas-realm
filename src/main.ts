@@ -13,6 +13,7 @@ import { installWeatherPointPicker } from './weather.js';
 import { installLayerManager } from './layer-manager.js';
 import { installOsrmRouting } from './routing.js';
 import { setGlobalStatePropertyWhenReady, runWhenStyleInfrastructureReady } from './style-ready.js';
+import { dropBaseRelief } from './style-base.js';
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
@@ -354,6 +355,10 @@ function addMapterhornTerrain(style: StyleLike, demSource: DemSourceLike): Style
       id: 'trip-hillshade',
       type: 'hillshade',
       source: 'hillshadeSource',
+      // Terrain shading is invisible at world zooms and only costs raster-dem
+      // tile requests before the first frame, so it starts where the contour
+      // lines do.
+      minzoom: 8,
       paint: {
         'hillshade-shadow-color': 'rgba(20, 24, 36, 0.34)',
         'hillshade-highlight-color': 'rgba(255, 255, 255, 0.28)',
@@ -463,8 +468,9 @@ const STATE_DEFAULTS = {
 };
 
 function mergeBaseAndOrm(baseStyle: StyleLike, ormStyle: StyleLike): StyleLike {
-  const merged = structuredClone(baseStyle);
-  const baseLayers = (baseStyle.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
+  const base = dropBaseRelief(baseStyle);
+  const merged = structuredClone(base);
+  const baseLayers = (base.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
   merged.center = ormStyle.center || merged.center;
   merged.zoom = ormStyle.zoom || merged.zoom;
   merged.glyphs = merged.glyphs || ormStyle.glyphs;
