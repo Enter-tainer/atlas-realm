@@ -48,6 +48,9 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20260524.1
         version: 4.20260524.1
+      '@maplibre/maplibre-gl-style-spec':
+        specifier: ^24.8.5
+        version: 24.8.5
       '@playwright/test':
         specifier: ^1.60.0
         version: 1.60.0
@@ -117,6 +120,7 @@ packages:
 
   '@cloudflare/vitest-pool-workers@0.16.9':
     resolution: {integrity: sha512-qdohrJbLhuB3mq3j/Vg4nHQU+Gw0ZhQErlZ7xr9A2VpP1F4QzCewwwJmWZnXlwU2rMbvGVwwOD91Eb39EvfQmQ==}
+    deprecated: '@cloudflare/vitest-pool-workers has been renamed to @cloudflare/vitest-plugin. This package will not receive future updates.'
     peerDependencies:
       '@vitest/runner': ^4.1.0
       '@vitest/snapshot': ^4.1.0

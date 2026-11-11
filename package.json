@@ -39,6 +39,7 @@
     "@cloudflare/vite-plugin": "^1.28.0",
     "@cloudflare/vitest-pool-workers": "^0.16.9",
     "@cloudflare/workers-types": "^4.20260524.1",
+    "@maplibre/maplibre-gl-style-spec": "^24.8.5",
     "@playwright/test": "^1.60.0",
     "@types/dompurify": "^3.2.0",
     "@types/geojson": "^7946.0.16",
