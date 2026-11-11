@@ -21,7 +21,7 @@ import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
-const TILE_VERSION = '20261110a';
+const TILE_VERSION = '20261111a';
 // Optional ?tileset=<archive-name> override to point at a test tileset
 // (e.g. openrailwaymap-test-<run_id>), defaulting to the production archive.
 const TILE_ARCHIVE = new URLSearchParams(window.location.search).get('tileset') ?? 'openrailwaymap';

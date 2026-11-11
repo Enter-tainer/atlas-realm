@@ -37,10 +37,6 @@ export async function nativeDecompress(buf: ArrayBuffer, compression: number): P
 class R2Source implements Source {
   env: Cloudflare.Env;
   archiveName: string;
-  /** Byte range that holds the compressed tile payloads, once the header is read. */
-  tileDataStart: number | null = null;
-  /** Offset of the most recent read, used to tell tile payloads from directories. */
-  private lastReadOffset: number | null = null;
 
   constructor(env: Cloudflare.Env, archiveName: string) {
     this.env = env;
@@ -51,18 +47,8 @@ class R2Source implements Source {
     return this.archiveName;
   }
 
-  setTileDataRange(header: { tileDataOffset: number }): void {
-    this.tileDataStart = header.tileDataOffset;
-  }
-
-  /** True when the bytes just handed to the archive reader are a tile payload. */
-  lastReadWasTileData(): boolean {
-    return this.tileDataStart !== null && this.lastReadOffset !== null && this.lastReadOffset >= this.tileDataStart;
-  }
-
   async getBytes(offset: number, length: number, _signal?: AbortSignal, etag?: string): Promise<RangeResponse> {
     const key = `${this.archiveName}.pmtiles`;
-    this.lastReadOffset = offset;
     const resp = await this.env.ORM_BUCKET.get(key, {
       range: { offset, length },
       onlyIf: etag ? { etagMatches: etag } : undefined,
@@ -92,11 +78,6 @@ const CONTENT_TYPES: Partial<Record<TileType, string>> = {
   [TileType.Webp]: 'image/webp',
 };
 
-/** Whether the client asked for gzip, in which case compressed tiles can be passed through. */
-export function acceptsGzip(acceptEncoding: string | null): boolean {
-  return (acceptEncoding ?? '').toLowerCase().includes('gzip');
-}
-
 export async function handleTileRequest(
   request: Request,
   env: Cloudflare.Env,
@@ -107,29 +88,18 @@ export async function handleTileRequest(
   if (!parsed.ok) return null;
 
   const cache = (caches as CacheStorage & { default: Cache }).default;
-  const wantsGzip = acceptsGzip(request.headers.get('accept-encoding'));
-  // Keep the compressed and re-compressed variants apart: the edge cache is
-  // keyed by URL, and a gzip payload served to a client that cannot decode it
-  // is worse than a cache miss.
-  const cacheKey = `${request.url}#${wantsGzip ? 'gzip' : 'identity'}`;
-  const cached = await cache.match(cacheKey);
+  const cached = await cache.match(request.url);
   if (cached) return cached;
 
+  // The archive stores tiles gzip-compressed and this reader decompresses every
+  // payload it hands out. Handing the compressed bytes straight back with a
+  // Content-Encoding header would save one decompression here, but the edge
+  // cache keys responses by URL and ignores Vary: Accept-Encoding, so the
+  // compressed variant then gets served (and re-compressed) for clients that
+  // asked for identity. Keep one canonical body and let the edge compress.
   const source = new R2Source(env, parsed.name);
-  // The archive stores tiles gzip-compressed, and the reader decompresses every
-  // payload it hands out. Handing the compressed bytes to a client that accepts
-  // gzip skips one decompression here and one re-compression at the edge.
-  let servingCompressedTile = false;
-  const decompressForRequest = async (buf: ArrayBuffer, compression: number): Promise<ArrayBuffer> => {
-    if (compression === 2 && wantsGzip && source.lastReadWasTileData()) {
-      servingCompressedTile = true;
-      return buf;
-    }
-    return nativeDecompress(buf, compression);
-  };
-  const p = new PMTiles(source, CACHE, decompressForRequest);
+  const p = new PMTiles(source, CACHE, nativeDecompress);
   const header = await p.getHeader();
-  source.setTileDataRange(header);
 
   if (!parsed.tile) {
     const t = await p.getTileJson(`https://${url.hostname}/tiles/${parsed.name}`);
@@ -150,23 +120,20 @@ export async function handleTileRequest(
     return new Response(null, { status: 404 });
   }
 
-  servingCompressedTile = false;
   const tiledata = await p.getZxy(z, x, y);
   if (!tiledata) {
     return new Response(null, { status: 204 });
   }
 
   const contentType = CONTENT_TYPES[header.tileType] || 'application/octet-stream';
-  const headers: Record<string, string> = {
-    'Content-Type': contentType,
-    'Cache-Control': 'public, max-age=86400',
-    'Access-Control-Allow-Origin': '*',
-    Vary: 'Accept-Encoding',
-  };
-  if (servingCompressedTile) {
-    headers['Content-Encoding'] = 'gzip';
-  }
-  const resp = new Response(tiledata.data, { headers });
-  ctx.waitUntil(cache.put(cacheKey, resp.clone()));
+  const resp = new Response(tiledata.data, {
+    headers: {
+      'Content-Type': contentType,
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+      Vary: 'Accept-Encoding',
+    },
+  });
+  ctx.waitUntil(cache.put(request.url, resp.clone()));
   return resp;
 }
