@@ -14,7 +14,7 @@ import { installLayerManager } from './layer-manager.js';
 import { installOsrmRouting } from './routing.js';
 import { setGlobalStatePropertyWhenReady, runWhenStyleInfrastructureReady } from './style-ready.js';
 import { dropBaseRelief } from './style-base.js';
-import { withRouteLineColors } from './style-railway-colors.js';
+import { withRouteLineColors, withRouteStationColors } from './style-railway-colors.js';
 import { hideTunnelAndBridgeMarks } from './style-railway-marks.js';
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
@@ -196,7 +196,11 @@ async function fetchWithSwr(url: string, ttlMs = 3600_000) {
 }
 
 function rewriteOrmStyle(style: StyleLike): StyleLike {
-  style.layers = style.layers?.map(normalizeOrmLayerFonts).map(withRouteLineColors).map(hideTunnelAndBridgeMarks);
+  style.layers = style.layers
+    ?.map(normalizeOrmLayerFonts)
+    .map(withRouteLineColors)
+    .map(withRouteStationColors)
+    .map(hideTunnelAndBridgeMarks);
   style.sprite = coerceSpriteList(style.sprite, 'orm').map((sprite) => ({
     ...sprite,
     id: sprite.id === 'default' ? 'orm' : sprite.id,
