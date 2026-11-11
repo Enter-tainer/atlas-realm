@@ -1380,13 +1380,10 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
     popup = null;
   });
 
-  // Build set of ORM source names for fast lookup
-  const ormSources = new Set(
-    Object.keys(featuresCatalog)
-      .filter((k) => k.includes('-'))
-      .map((k) => k.split('-')[0]),
-  );
-  const isOrmFeature = (f: RenderedFeatureLike) => ormSources.has(f.source);
+  // ORM features are the ones whose source layer has a catalog entry; the
+  // catalog is keyed by source layer now that every railway layer draws from
+  // one source.
+  const isOrmFeature = (f: RenderedFeatureLike) => Boolean(f.sourceLayer && featuresCatalog[f.sourceLayer]);
   const isOsrmFeature = (f: RenderedFeatureLike) =>
     String(f?.source || '').startsWith('geojson-layer-') && String(f?.properties?.kind || '').startsWith('osrm_');
   const isAnnotationFeature = (f: RenderedFeatureLike) =>
