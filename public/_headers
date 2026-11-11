@@ -1,0 +1,19 @@
+# Static assets are content-addressed: the JS/CSS bundles carry a hash in the
+# file name, so they can be cached forever instead of revalidated on every load.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Style JSON is versioned through the ?v=<hash> query string that the app
+# appends, so a short TTL is enough here.
+/orm/style/*
+  Cache-Control: public, max-age=300
+
+# Glyphs and sprites change only when the style is rebuilt.
+/orm/font/*
+  Cache-Control: public, max-age=604800
+
+/orm/sprite/*
+  Cache-Control: public, max-age=604800
+
+/orm/sdf_sprite/*
+  Cache-Control: public, max-age=604800
