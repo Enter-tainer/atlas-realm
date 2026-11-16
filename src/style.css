@@ -3870,3 +3870,159 @@ body,
 .collab-sync-notice button {
   margin: 6px 6px 0 0;
 }
+
+/* Bottom sheets on phones (src/bottom-sheet.ts): the info box rests along the
+   bottom of the map instead of hanging off its point. A grabber along its top
+   taps or drags it down to its head; collapsing and dragging move it with
+   `translate`, on top of its transform. Ported from SharzyL/map. */
+.sheet-grabber,
+.orm-sheet-close {
+  display: none;
+}
+
+@keyframes orm-sheet-in {
+  from {
+    translate: 0 100%;
+  }
+}
+
+@media (max-width: 640px) {
+  .sheet-collapsed {
+    translate: 0 calc(100% - var(--sheet-peek, 64px) - env(safe-area-inset-bottom, 0px));
+  }
+
+  .sheet-dragging {
+    translate: 0 var(--sheet-drag, 0px);
+    transition: none;
+  }
+
+  .sheet-grabber {
+    display: block;
+    flex: none;
+    width: 100%;
+    height: 22px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: grab;
+    touch-action: none;
+  }
+
+  .sheet-grabber::before {
+    content: '';
+    display: block;
+    width: 36px;
+    height: 5px;
+    margin: 8px auto 0;
+    border-radius: 3px;
+    background: #cbd5e1;
+  }
+
+  /* The info box: MapLibre keeps placing the popup at its point with an inline
+     transform, which the sheet overrides. */
+  #map .maplibregl-popup.orm-info-popup {
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    max-width: none !important;
+    max-height: var(--sheet-max, 50%);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-radius: 14px 14px 0 0;
+    background: #fff;
+    box-shadow: 0 -4px 24px rgba(15, 23, 42, 0.18);
+    pointer-events: auto;
+    transform: none !important;
+    transition:
+      translate 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+      max-height 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+    animation: orm-sheet-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  #map .maplibregl-popup.orm-info-popup.sheet-dragging {
+    transition: none;
+  }
+
+  /* A sheet under a later one slides away, and out of reach once it has, until
+     the later one closes (bottom-sheet.ts). */
+  .sheet-covered,
+  #map .maplibregl-popup.orm-info-popup.sheet-covered {
+    translate: 0 calc(100% + 24px);
+    visibility: hidden;
+    pointer-events: none;
+    transition:
+      translate 0.25s cubic-bezier(0.2, 0.8, 0.2, 1),
+      visibility 0s 0.25s;
+  }
+
+  .orm-info-popup .maplibregl-popup-tip,
+  .orm-info-popup .maplibregl-popup-close-button {
+    display: none;
+  }
+
+  .orm-info-popup .maplibregl-popup-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding: 2px 16px 12px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .orm-info-popup.sheet-collapsed .maplibregl-popup-content {
+    overflow: hidden;
+  }
+
+  .orm-info-popup .orm-popup > :not(.orm-popup-title, .orm-popup-label) {
+    transition: opacity 0.2s;
+  }
+
+  .orm-info-popup.sheet-collapsed .orm-popup > :not(.orm-popup-title, .orm-popup-label) {
+    opacity: 0;
+  }
+
+  .orm-info-popup .orm-popup:has(.orm-popup-sections) {
+    width: auto;
+    max-height: none;
+    overflow: visible;
+  }
+
+  .orm-info-popup .orm-popup h5.orm-popup-title {
+    padding-right: 36px;
+    font-size: 16px;
+  }
+
+  .orm-info-popup .orm-popup h6.orm-popup-label {
+    font-size: 14px;
+  }
+
+  .orm-sheet-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    padding: 0;
+    border: 0;
+    border-radius: 50%;
+    background: #f1f5f9;
+    color: #475569;
+    font-size: 20px;
+    line-height: 1;
+    cursor: pointer;
+  }
+}
+
+@media (max-width: 640px) and (prefers-reduced-motion: reduce) {
+  #map .maplibregl-popup.orm-info-popup {
+    transition: none;
+    animation: none;
+  }
+}

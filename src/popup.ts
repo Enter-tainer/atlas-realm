@@ -11,6 +11,7 @@
 
 import { renderMarkdown } from './markdown.js';
 import { buildWeatherDashboardUrl, buildWeatherRouteSummary } from './weather-dashboard.js';
+import { installSheetCollapse, isSheetLayout, sheetClosed, sheetOpened } from './bottom-sheet.js';
 
 // ---------------------------------------------------------------------------
 // OSM element type icons (base64 SVGs from ORM upstream)
@@ -116,6 +117,9 @@ type PopupBuilderLike = PopupLike & {
   setDOMContent(node: Node): PopupBuilderLike;
   addTo(map: MapLike): PopupBuilderLike;
   on(type: 'close', listener: () => void): unknown;
+  // MapLibre's Popup has both; test doubles need not.
+  getElement?(): HTMLElement;
+  getLngLat?(): unknown;
 };
 type RenderedFeatureLike = {
   id?: string | number;
@@ -147,6 +151,8 @@ type MapLike = {
   queryRenderedFeatures(point: unknown): RenderedFeatureLike[];
   setFeatureState(feature: FeatureStateTarget, state: JsonRecord): void;
   on(type: 'mousemove' | 'click', listener: (event: PopupMapEvent) => void): void;
+  panBy?(offset: [number, number]): void;
+  project?(lngLat: unknown): { y: number };
 };
 
 function isRecord(value: unknown): value is JsonRecord {
@@ -1372,6 +1378,48 @@ function annotationPopupContent(feature: RenderedFeatureLike) {
 // ---------------------------------------------------------------------------
 // Install ORM-style popups on a MapLibre GL map
 // ---------------------------------------------------------------------------
+// On phones the info box is a bottom sheet (bottom-sheet.ts; style.css,
+// `.orm-info-popup` under max-width 640px) instead of a box at its point, with a
+// close button of its own that stays put while its content scrolls. On wider
+// screens the grabber and that button are hidden and the box stays a MapLibre
+// popup at its point.
+function installInfoSheet(map: MapLike, popup: PopupBuilderLike) {
+  const element = popup.getElement?.();
+  if (!element) return;
+  const grabber = el('button');
+  const closeButton = el('button', 'orm-sheet-close');
+  closeButton.type = 'button';
+  closeButton.setAttribute('aria-label', 'Close info box');
+  closeButton.innerText = '\u00D7';
+  closeButton.addEventListener('click', () => popup.remove());
+  element.insertBefore(closeButton, element.firstChild);
+  element.insertBefore(grabber, closeButton);
+
+  installSheetCollapse(element, grabber, {
+    label: 'info box',
+    // Down to its name, with the content scrolled back to the top.
+    peek: () => {
+      const scroller = element.querySelector('.maplibregl-popup-content');
+      if (scroller) scroller.scrollTop = 0;
+      const head = element.querySelector('.orm-popup-label') || element.querySelector('.orm-popup-title');
+      const top = element.getBoundingClientRect().top;
+      return head ? Math.ceil(head.getBoundingClientRect().bottom - top + 12) : 64;
+    },
+  });
+
+  // It covers the sheets opened before it, such as a timetable, until it closes.
+  sheetOpened(element);
+  popup.on('close', () => sheetClosed(element));
+
+  // Move the clicked point up out from under the sheet.
+  if (isSheetLayout() && map.panBy && map.project) {
+    const height = map.getContainer().clientHeight;
+    const visible = height - element.getBoundingClientRect().height;
+    const y = map.project(popup.getLngLat?.()).y;
+    if (visible > 80 && y > visible - 24) map.panBy([0, y - visible / 2]);
+  }
+}
+
 export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, featuresCatalog: FeaturesCatalog) {
   let popup: PopupBuilderLike | null = null;
   let hoveredFeature: FeatureStateTarget | null = null;
@@ -1507,7 +1555,7 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
         : popupContent(feature, featuresCatalog, abortController);
     if (!content) return;
 
-    popup = new maplibregl.Popup({ offset: popupOffsets, maxWidth: '340px' })
+    popup = new maplibregl.Popup({ offset: popupOffsets, maxWidth: '340px', className: 'orm-info-popup' })
       .setLngLat(coordinates)
       .setDOMContent(content)
       .addTo(map);
@@ -1515,5 +1563,6 @@ export function installOrmPopups(map: MapLike, maplibregl: MaplibreLike, feature
     popup.on('close', () => {
       abortController.abort('Popup closed');
     });
+    installInfoSheet(map, popup);
   });
 }
