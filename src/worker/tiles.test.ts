@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseTilePath } from './tiles.js';
+import { parseTilePath, tileCacheControl } from './tiles.js';
 
 describe('parseTilePath', () => {
   it('parses tile paths with an archive name', () => {
@@ -22,5 +22,17 @@ describe('parseTilePath', () => {
 
   it('rejects unknown paths', () => {
     expect(parseTilePath('/tiles/openrailwaymap/6/56.mvt')).toEqual({ ok: false });
+  });
+});
+
+describe('tileCacheControl', () => {
+  it('lets browsers keep versioned tiles for a year', () => {
+    expect(tileCacheControl(new URL('https://map.test/tiles/orm/7/113/50.mvt?v=20261111c'))).toBe(
+      'public, max-age=31536000, immutable',
+    );
+  });
+
+  it('keeps unversioned tiles to a day', () => {
+    expect(tileCacheControl(new URL('https://map.test/tiles/orm/7/113/50.mvt'))).toBe('public, max-age=86400');
   });
 });

@@ -8,6 +8,14 @@ type TileRequestPath =
   | { ok: true; name: string; tile: null; ext: 'json' }
   | { ok: false };
 
+// The map's tile URLs carry the archive version (?v=TILE_VERSION in main.ts),
+// which changes with every new archive, so a versioned tile, empty or not, never
+// changes: browsers keep it for a year and ask the Worker only for tiles they
+// have not seen. Unversioned requests may outlive an archive, so a day.
+export function tileCacheControl(url: URL) {
+  return url.searchParams.has('v') ? 'public, max-age=31536000, immutable' : 'public, max-age=86400';
+}
+
 export function parseTilePath(pathname: string): TileRequestPath {
   const tileMatch = pathname.match(TILE_RE);
   if (tileMatch?.groups) {
@@ -132,20 +140,23 @@ export async function handleTileRequest(
   }
 
   const [z, x, y] = parsed.tile;
+  const cacheControl = tileCacheControl(url);
+  // Areas without railways (oceans, deserts) have no tile. Browsers cache that
+  // answer like a tile, or every view of them would reach the Worker again; the
+  // Worker's own cache would not help (it runs inside the Worker, which is
+  // invoked either way) and refuses responses without a body.
+  const noTile = (status: number) =>
+    new Response(null, { status, headers: { 'Cache-Control': cacheControl, 'Access-Control-Allow-Origin': '*' } });
 
-  if (z < header.minZoom || z > header.maxZoom) {
-    return new Response(null, { status: 404 });
-  }
+  if (z < header.minZoom || z > header.maxZoom) return noTile(404);
 
   const tiledata = await p.getZxy(z, x, y);
-  if (!tiledata) {
-    return new Response(null, { status: 204 });
-  }
+  if (!tiledata) return noTile(204);
 
   const contentType = CONTENT_TYPES[header.tileType] || 'application/octet-stream';
   const headers: Record<string, string> = {
     'Content-Type': contentType,
-    'Cache-Control': 'public, max-age=86400',
+    'Cache-Control': cacheControl,
     'Access-Control-Allow-Origin': '*',
   };
   if (header.tileCompression === 2 /* Gzip */) headers['Content-Encoding'] = 'gzip';
