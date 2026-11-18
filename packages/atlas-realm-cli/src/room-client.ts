@@ -1,5 +1,6 @@
 import { RoomSyncClient, type Draft, type SyncJournal } from './sync-client.js';
 import type { BatchResult, ServerMessage } from './sync-protocol.js';
+import { isRecoverableSyncError } from './sync-protocol.js';
 import { buildApiUrl, buildSocketUrl } from './config.js';
 import { decodeFileContentMessage } from './protocol.js';
 import type {
@@ -231,7 +232,9 @@ export class RoomClient {
         ? new Error(`Sync rejected: ${event.json.reason}. Read the current state before retrying.`)
         : event.json?.type === 'protocol:error'
           ? new Error('Sync protocol mismatch. Upgrade the CLI.')
-          : null;
+          : event.json?.type === 'sync:error' && !isRecoverableSyncError(event.json.reason)
+            ? new Error(fatalSyncErrorMessage(event.json))
+            : null;
     const matches = (event: RoomEvent) => (!requestId || event.json?.requestId === requestId) && predicate(event);
     for (const event of this.events) {
       const error = failure(event);
@@ -243,7 +246,9 @@ export class RoomClient {
         this.waiters.delete(waiter);
         reject(
           new Error(
-            `Timed out waiting for ${label}. Submission outcome may be unknown; inspect shared state before repeating a create.`,
+            `Timed out waiting for ${label}. Submission outcome may be unknown; inspect shared state before repeating a create.` +
+              summarizeRoomEvents(this.events) +
+              (this.sync.storageError ? ` Sync state: ${this.sync.storageError}` : ''),
           ),
         );
       }, timeoutMs);
@@ -292,4 +297,37 @@ export class RoomClient {
     if (this.socket && this.socket.readyState <= this.WebSocketImpl.OPEN) this.socket.close(1000, 'done');
     await this.sync.drain();
   }
+}
+
+function fatalSyncErrorMessage(json: JsonRecord): string {
+  const reason = String(json.reason || 'unknown');
+  const limit = json.limit ? ` (${json.limit})` : '';
+  return (
+    `Room sync error: ${reason}${limit}. The server stopped synchronization for this connection, ` +
+    `so waiting longer cannot help. Inspect the room state before retrying.`
+  );
+}
+
+/**
+ * Compact histogram of the messages received so far, appended to wait timeouts
+ * so a silent or misbehaving room can be told apart from a lost reply.
+ */
+export function summarizeRoomEvents(events: RoomEvent[], maxTypes = 8): string {
+  const counts = new Map<string, number>();
+  for (const event of events) {
+    const type = event.json?.type
+      ? String(event.json.type) +
+        (event.json.type === 'sync:error' && event.json.reason ? `(${event.json.reason})` : '')
+      : event.binary
+        ? 'file:content (binary)'
+        : 'unknown';
+    counts.set(type, (counts.get(type) || 0) + 1);
+  }
+  if (!counts.size) return ' No room messages were received at all.';
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const shown = ranked.slice(0, maxTypes);
+  const hidden = ranked.length - shown.length;
+  return ` Room messages received so far: ${shown.map(([type, count]) => `${type} x${count}`).join(', ')}${
+    hidden > 0 ? `, … ${hidden} more types` : ''
+  }.`;
 }
