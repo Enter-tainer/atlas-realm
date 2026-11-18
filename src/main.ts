@@ -23,11 +23,20 @@ import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
-const TILE_VERSION = '20261116a';
 // Optional ?tileset=<archive-name> override to point at a test tileset
 // (e.g. openrailwaymap-test-<run_id>), defaulting to the production archive.
 const TILE_ARCHIVE = new URLSearchParams(window.location.search).get('tileset') ?? 'openrailwaymap';
-const TILE_URL = `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt?v=${TILE_VERSION}`;
+// The tile URL carries the archive's version, which the Worker tells
+// (/tiles/<archive>/version), so a new archive shows on the next load and its
+// tiles can still be cached for good. Without an answer the URL has no version,
+// and tiles are cached for a day.
+const TILE_URL = fetch(`/tiles/${TILE_ARCHIVE}/version`)
+  .then((res): Promise<{ version?: string }> | { version?: string } => (res.ok ? res.json() : {}))
+  .catch((): { version?: string } => ({}))
+  .then(({ version }) => {
+    const query = version ? `?v=${encodeURIComponent(version)}` : '';
+    return `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt${query}`;
+  });
 // The single vector source every railway layer draws from.
 const ORM_SOURCE = 'openrailwaymap';
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
@@ -195,7 +204,7 @@ async function fetchWithSwr(url: string, ttlMs = 3600_000) {
   return res;
 }
 
-function rewriteOrmStyle(style: StyleLike): StyleLike {
+function rewriteOrmStyle(style: StyleLike, tileUrl: string): StyleLike {
   style.layers = style.layers
     ?.map(normalizeOrmLayerFonts)
     .map(withRouteLineColors)
@@ -220,7 +229,7 @@ function rewriteOrmStyle(style: StyleLike): StyleLike {
     for (const [name] of localVectorSources) delete sources[name];
     sources[ORM_SOURCE] = {
       type: 'vector',
-      tiles: [TILE_URL],
+      tiles: [tileUrl],
       attribution: firstSource.attribution,
       bounds: firstSource.bounds,
       maxzoom: 15,
@@ -515,11 +524,12 @@ function installMapLibreErrorLogging(map: maplibregl.Map) {
 }
 
 async function loadStyle(demSource: DemSourceLike): Promise<StyleLike> {
-  const [baseStyle, ormStyleRaw] = await Promise.all([
+  const [baseStyle, ormStyleRaw, tileUrl] = await Promise.all([
     loadJson<StyleLike>(OPENFREEMAP_STYLE),
     loadJson<StyleLike>(STYLE_URL),
+    TILE_URL,
   ]);
-  const merged = mergeBaseAndOrm(baseStyle, rewriteOrmStyle(ormStyleRaw));
+  const merged = mergeBaseAndOrm(baseStyle, rewriteOrmStyle(ormStyleRaw, tileUrl));
   const withTerrain = addMapterhornTerrain(merged, demSource);
   return addSatelliteSourceAndLayer(withTerrain);
 }
