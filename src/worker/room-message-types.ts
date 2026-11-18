@@ -23,6 +23,8 @@ export interface RoomMessageContext {
   broadcast(message: string | ArrayBuffer | ArrayBufferView, exclude?: string[]): void;
   _canEdit(connection: Connection<PeerState>): boolean;
   _canManage(connection: Connection<PeerState>): boolean;
+  /** Connection keys of every live (including hibernated) connection in the room. */
+  _liveSyncConnectionKeys(): Set<string>;
   _roomStatus(): Record<string, unknown>;
   _setRoomPersistence(persistence: RoomPersistence): Promise<Record<string, unknown>>;
   _listLayers(): Layer[];

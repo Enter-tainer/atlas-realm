@@ -24,6 +24,16 @@ type ClientRow = {
   result_json: string | null;
   expires_at: number;
 };
+type ClientRowWithCreation = { client_id: string; connection_id: string; created_at: number };
+// One owner may not register more than this many fresh sync clients per
+// minute. This is the only hard client_limit: it stops registration floods.
+const RECENT_REGISTRATION_LIMIT = 16;
+// Absolute row budgets for sync_clients. Reaching a cap no longer rejects
+// sync:open — rows are evicted to make room (dead rows first, oldest first,
+// then the oldest live rows). An evicted client recovers through the
+// client_expired path, so the caps bound storage without bricking clients.
+const OWNED_CLIENT_CAP = 128;
+const TOTAL_CLIENT_CAP = 1024;
 const encoder = new TextEncoder();
 function owner(connection: Connection<PeerState>) {
   return connection.state?.auth?.userId || connection.state?.user?.id || connection.id;
@@ -36,6 +46,34 @@ function getState(room: RoomMessageContext) {
 }
 function getClient(room: RoomMessageContext, id: string) {
   return room.sql<ClientRow>`SELECT * FROM sync_clients WHERE client_id = ${id}`[0];
+}
+/**
+ * Keep sync_clients inside its per-owner and room-wide budgets. The lease lasts
+ * a week, so workflows that register one client per invocation (the CLI) used
+ * to hit the caps and get every later connection rejected with an opaque
+ * client_limit. Instead of rejecting, evict rows to make room — rows without a
+ * live connection first, oldest first, and only then the oldest live rows so
+ * the caps stay absolute even against an owner that holds many connections
+ * open. An evicted client only loses its resume slot and re-registers through
+ * the existing client_expired recovery.
+ */
+function evictSyncClients(room: RoomMessageContext, ownerId: string): void {
+  const live = room._liveSyncConnectionKeys();
+  const evictable = (rows: ClientRowWithCreation[], cap: number) => {
+    const oldestFirst = (a: ClientRowWithCreation, b: ClientRowWithCreation) =>
+      a.created_at - b.created_at || a.client_id.localeCompare(b.client_id);
+    const dead = rows.filter((row) => !live.has(row.connection_id)).sort(oldestFirst);
+    const liveRows = rows.filter((row) => live.has(row.connection_id)).sort(oldestFirst);
+    return [...dead, ...liveRows].slice(0, Math.max(0, rows.length - (cap - 1)));
+  };
+  const owned = room.sql<ClientRowWithCreation>`SELECT client_id, connection_id, created_at FROM sync_clients WHERE owner_id = ${ownerId}`;
+  for (const row of evictable(owned, OWNED_CLIENT_CAP))
+    void room.sql`DELETE FROM sync_clients WHERE client_id = ${row.client_id}`;
+  const total = room.sql<{ count: number }>`SELECT COUNT(*) AS count FROM sync_clients`[0].count;
+  if (total < TOTAL_CLIENT_CAP) return;
+  const allRows = room.sql<ClientRowWithCreation>`SELECT client_id, connection_id, created_at FROM sync_clients`;
+  for (const row of evictable(allRows, TOTAL_CLIENT_CAP))
+    void room.sql`DELETE FROM sync_clients WHERE client_id = ${row.client_id}`;
 }
 export function rejectSyncProtocol(connection: Connection<PeerState>) {
   connection.send(encodeMessage({ type: 'protocol:error', reason: 'upgrade-required', protocol: ROOM_SYNC_VERSION }));
@@ -127,15 +165,14 @@ export async function handleSyncMessage(
       return true;
     }
     void room.sql`DELETE FROM sync_clients WHERE expires_at <= ${now}`;
-    const counts = room.sql<{
-      total: number;
-      owned: number;
-      recent: number;
-    }>`SELECT COUNT(*) AS total, SUM(owner_id = ${ownerId}) AS owned, SUM(owner_id = ${ownerId} AND created_at > ${now - 60_000}) AS recent FROM sync_clients`[0];
-    if (counts.total >= 1024 || counts.owned >= 128 || counts.recent >= 16) {
-      error(room, connection, 'client_limit');
+    const recent = room.sql<{ count: number }>`
+      SELECT COUNT(*) AS count FROM sync_clients WHERE owner_id = ${ownerId} AND created_at > ${now - 60_000}
+    `[0].count;
+    if (recent >= RECENT_REGISTRATION_LIMIT) {
+      error(room, connection, 'client_limit', { limit: 'recent-registrations-per-minute' });
       return true;
     }
+    evictSyncClients(room, ownerId);
     const id = crypto.randomUUID();
     void room.sql`INSERT INTO sync_clients (client_id, owner_id, connection_id, created_at, expires_at) VALUES (${id}, ${ownerId}, ${connectionKey(connection)}, ${now}, ${now + CLIENT_LEASE_MS})`;
     snapshot(room, connection, getClient(room, id));

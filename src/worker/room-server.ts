@@ -113,6 +113,7 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
       broadcast: this.broadcast.bind(this),
       _canEdit: this._canEdit.bind(this),
       _canManage: this._canManage.bind(this),
+      _liveSyncConnectionKeys: this._liveSyncConnectionKeys.bind(this),
       _roomStatus: this._roomStatus.bind(this),
       _setRoomPersistence: this._setRoomPersistence.bind(this),
       _listLayers: this._listLayers.bind(this),
@@ -233,6 +234,15 @@ export class MapCollaboration extends Server<Cloudflare.Env> {
 
   _canManage(connection: Connection<PeerState>): boolean {
     return canManage(this._roleFor(connection));
+  }
+
+  _liveSyncConnectionKeys(): Set<string> {
+    const keys = new Set<string>();
+    for (const connection of this.getConnections<PeerState>()) {
+      const key = connection.state?.syncConnectionToken || connection.id;
+      if (key) keys.add(key);
+    }
+    return keys;
   }
 
   async _ensureLayerStorage(): Promise<void> {

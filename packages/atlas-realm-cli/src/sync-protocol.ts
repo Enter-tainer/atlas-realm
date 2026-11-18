@@ -55,8 +55,23 @@ export type OperationResult = {
   delta?: RoomDelta;
   current?: RecordValue;
 };
-export type SyncError = { type: 'sync:error'; reason: string; seq?: number; contentHash?: string };
+export type SyncError = { type: 'sync:error'; reason: string; seq?: number; contentHash?: string; limit?: string };
 export type ServerMessage = RoomSnapshot | RoomCommit | OperationResult | SyncError;
+// sync:error reasons the client recovers from on its own (re-requesting a
+// snapshot, re-registering, or re-uploading content). Every other reason parks
+// the sync layer with no retry — "Sync paused: <reason>" — so callers waiting
+// on the room must fail immediately with the reason instead of running out the
+// clock on an opaque timeout.
+export const RECOVERABLE_SYNC_ERROR_REASONS = new Set([
+  'content_needed',
+  'client_expired',
+  'client_forbidden',
+  'sequence-gap',
+  'already_processed',
+]);
+export function isRecoverableSyncError(reason: unknown): boolean {
+  return typeof reason === 'string' && RECOVERABLE_SYNC_ERROR_REASONS.has(reason);
+}
 export const entityKey = (kind: EntityKind, id: string) => `${kind}:${id}`;
 export const fieldVersion = (row: RecordValue | null | undefined, field: string): number =>
   row?.fieldVersions?.[field] ?? 0;

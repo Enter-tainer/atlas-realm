@@ -1297,6 +1297,73 @@ describe('MapCollaboration layer storage', () => {
     expect(data.count.n).toBe(16);
   });
 
+  it('evicts the owner’s oldest dead client rows at the cap instead of rejecting sync:open', async () => {
+    const data = await runInDO(roomStub('client-cap-eviction'), async (instance) => {
+      await instance.onStart();
+      const now = Date.now();
+      for (let i = 0; i < 128; i++)
+        instance.sql`INSERT INTO sync_clients (client_id, owner_id, connection_id, created_at, expires_at) VALUES (${'stale-' + i}, 'user-a', ${'dead-connection-' + i}, ${now - (200 - i) * 1000}, ${now + 60_000})`;
+      const c = authorizeConnection(createConnection('fresh'), { userId: 'user-a' });
+      await instance.onMessage(workerConnection(c), JSON.stringify({ type: 'sync:open', protocol: 2 }));
+      return {
+        snapshot: sentJson(c, 'sync:snapshot').at(-1),
+        errors: sentJson(c, 'sync:error'),
+        rows: instance.sql<{ client_id: string }>`SELECT client_id FROM sync_clients WHERE owner_id = 'user-a'`,
+      };
+    });
+    expect(data.errors).toEqual([]);
+    expect(data.snapshot).toMatchObject({ type: 'sync:snapshot' });
+    const ids = data.rows.map((row) => row.client_id);
+    expect(ids).toHaveLength(128); // 127 survivors + the fresh registration
+    expect(ids).not.toContain('stale-0'); // oldest row evicted
+    expect(ids).toContain('stale-127');
+  });
+
+  it('never evicts a client row a live connection still depends on', async () => {
+    const data = await runInDO(roomStub('client-cap-live-protection'), async (instance) => {
+      await instance.onStart();
+      const now = Date.now();
+      for (let i = 0; i < 128; i++)
+        instance.sql`INSERT INTO sync_clients (client_id, owner_id, connection_id, created_at, expires_at) VALUES (${'stale-' + i}, 'user-a', ${i === 0 ? 'live-connection' : 'dead-connection-' + i}, ${now - (200 - i) * 1000}, ${now + 60_000})`;
+      // The oldest row belongs to a connection that is still in the room.
+      instance._liveSyncConnectionKeys = () => new Set(['live-connection']);
+      const c = authorizeConnection(createConnection('fresh'), { userId: 'user-a' });
+      await instance.onMessage(workerConnection(c), JSON.stringify({ type: 'sync:open', protocol: 2 }));
+      return {
+        errors: sentJson(c, 'sync:error'),
+        rows: instance.sql<{ client_id: string }>`SELECT client_id FROM sync_clients WHERE owner_id = 'user-a'`,
+      };
+    });
+    expect(data.errors).toEqual([]);
+    const ids = data.rows.map((row) => row.client_id);
+    expect(ids).toHaveLength(128);
+    expect(ids).toContain('stale-0'); // live row survived
+    expect(ids).not.toContain('stale-1'); // next-oldest dead row evicted instead
+  });
+
+  it('evicts the oldest live rows too when the cap cannot be met from dead rows alone', async () => {
+    const data = await runInDO(roomStub('client-cap-live-overflow'), async (instance) => {
+      await instance.onStart();
+      const now = Date.now();
+      for (let i = 0; i < 128; i++)
+        instance.sql`INSERT INTO sync_clients (client_id, owner_id, connection_id, created_at, expires_at) VALUES (${'live-' + i}, 'user-a', 'live-connection', ${now - (200 - i) * 1000}, ${now + 60_000})`;
+      // Every seeded row belongs to the one live connection in the room, so
+      // the caps can only hold by evicting live rows.
+      instance._liveSyncConnectionKeys = () => new Set(['live-connection']);
+      const c = authorizeConnection(createConnection('fresh'), { userId: 'user-a' });
+      await instance.onMessage(workerConnection(c), JSON.stringify({ type: 'sync:open', protocol: 2 }));
+      return {
+        errors: sentJson(c, 'sync:error'),
+        rows: instance.sql<{ client_id: string }>`SELECT client_id FROM sync_clients WHERE owner_id = 'user-a'`,
+      };
+    });
+    expect(data.errors).toEqual([]);
+    const ids = data.rows.map((row) => row.client_id);
+    expect(ids).toHaveLength(128); // cap stays absolute even for all-live rows
+    expect(ids).not.toContain('live-0'); // oldest live row evicted
+    expect(ids).toContain('live-127');
+  });
+
   it('rolls back business data, stream progress and room version together on storage failure', async () => {
     const data = await runInDO(roomStub('stream-rollback'), async (instance) => {
       await instance.onStart();
