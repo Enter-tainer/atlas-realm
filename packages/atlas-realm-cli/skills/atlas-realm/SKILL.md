@@ -335,9 +335,10 @@ Annotation-layer ids are server-assigned like every other id; `annotations layer
 
 ## Scripting many mutations
 
-Agents usually batch this work in a script. Three habits keep the batches honest:
+Agents usually batch this work in a script. Four habits keep the batches honest:
 
 - **Batch in one command, not one command per object.** `annotations update` and `annotations delete` accept several targets: positionals, `--ids a,b,c`, or `--ids-file ids.txt` (one id per line, `#` comments allowed). One connection applies the whole patch, and the result reports per-id `failures` instead of aborting on the first miss — the CLI exits non-zero when any target failed, so check the exit code as well as `ok`.
+- **A dropped connection no longer loses the command.** The room link is a WebSocket, and the CLI watches it: if the socket dies mid-command it reconnects, re-opens the sync session, and either settles the submission (the server replays its last result) or re-sends it. The connect handshake itself is retried a few times on transient failures (`fetch failed`, closed-before-open, 5xx/429) with backoff, and retry notices go to stderr so `--json` on stdout stays parseable. When the acknowledgement truly cannot be recovered, the CLI resolves the outcome and reports `applied: true | false | "unknown"` — `applied: false` means the write did **not** land and is safe to re-run, so a script can branch on that instead of guessing from a timeout.
 - Write each payload to a JSON file and pass `--feature-file` / `--patch-file`, and pass large geometry with `--geometry-file` / `--waypoints-file` / `--points-file`, instead of building long command lines or `shell=True` + f-string pipelines. Those pipelines can silently drop arguments containing quotes, `#` colors, or other special characters, and the command then looks successful while writing the wrong value. Routing engines return 20–60 kB point strings, which also blow past command-line length limits.
 - Read the object back with `annotations get <id> --json` (or `snapshot`) after critical writes. A successful response only means the command was accepted; it does not prove the field landed the way you intended.
 
@@ -348,6 +349,8 @@ atlas-realm --host <host> --room <room> --client-id <id> annotations update --id
 atlas-realm --host <host> --room <room> --client-id <id> annotations add route --layer-id <layer-id> \
   --waypoints-file waypoints.json --geometry-file geometry.json --label "Day 3" --json
 ```
+
+A long-lived script (one `RoomClient`, many upserts) is still the cheapest option for hundreds of edits, because it pays the handshake once and keeps the socket warm. For tens of edits, the batch flags above make per-command invocations fine.
 
 ## Travel Planning Conventions
 

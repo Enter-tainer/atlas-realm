@@ -608,15 +608,23 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
   try {
     await client.sync.loaded;
     const recovering = Boolean(client.sync.inFlight || client.sync.pending.length);
-    await client.connect();
+    await client.connectWithRetry({
+      // Nothing is submitted before the snapshot, so a retried handshake cannot
+      // duplicate work; say so on stderr so JSON on stdout stays machine-readable.
+      onRetry: ({ attempt, attempts, delayMs, error }) =>
+        console.error(
+          `atlas-realm: connect attempt ${attempt}/${attempts} failed (${error.message}); retrying in ${delayMs}ms`,
+        ),
+    });
     if (recovering) {
       await client.waitFor(
         (event) =>
           Boolean(event.json?.type.startsWith('sync:')) && !client.sync.pending.length && !client.sync.inFlight,
         'previous submission recovery',
       );
+      const clean = client.sync.conflicts.length === 0;
       const result = {
-        ok: client.sync.conflicts.length === 0,
+        ok: clean,
         recovered: true,
         requestedCommandExecuted: false,
         room: config.room,
@@ -624,13 +632,13 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
         conflicts: client.sync.conflicts,
       };
       args.io.log(
-        formatOutput(
-          result,
-          { json: args.json, pretty: args.pretty },
-          () =>
-            'Recovered previous edits. The requested command was not executed; inspect the recovery result before issuing a new command.',
+        formatOutput(result, { json: args.json, pretty: args.pretty }, () =>
+          clean
+            ? 'Recovered a previous submission (applied). The requested command was not executed; re-run it if you still need it.'
+            : 'Recovered a previous submission with conflicts. The requested command was not executed; inspect the conflicts first.',
         ),
       );
+      if (!clean) process.exitCode = 1;
       return;
     }
     if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
@@ -639,10 +647,57 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
     // A batch that reports per-id failures still prints its full result, but a
     // partial write must not look like success to a calling script.
     if (response.result && response.result.ok === false) process.exitCode = 1;
+  } catch (error) {
+    // A lost acknowledgement is not the same as a failed write: resolve it here
+    // so the caller learns whether the room changed instead of guessing.
+    const resolved = await resolveUnknownSubmission(client, config);
+    if (resolved) {
+      args.io.log(
+        formatOutput(resolved, { json: args.json, pretty: args.pretty }, (data: JsonRecord) =>
+          data.applied === true
+            ? 'The submission did land; the room already reflects this command.'
+            : data.applied === false
+              ? `The submission did not land (${data.reason || 'rejected'}). It is safe to re-run the command.`
+              : `The submission outcome could not be determined (${data.reason || 'no response'}). Read the room state before re-running.`,
+        ),
+      );
+      if (resolved.applied !== true) process.exitCode = 1;
+      return;
+    }
+    throw error;
   } finally {
     await client.close();
     await journal.close();
   }
+}
+
+/**
+ * Ask the room what happened to a submission we never saw acknowledged.
+ * Returns null when nothing was outstanding (the original error stands).
+ */
+async function resolveUnknownSubmission(
+  client: RoomClient,
+  config: ReturnType<typeof createConfig>,
+): Promise<JsonRecord | null> {
+  const outstanding = Boolean(client.sync.inFlight || client.sync.pending.length);
+  if (!outstanding) return null;
+  let outcome: Awaited<ReturnType<RoomClient['resolvePendingOutcome']>>;
+  try {
+    outcome = await client.resolvePendingOutcome({ timeoutMs: Math.min(config.timeoutMs, 20_000) });
+  } catch {
+    return null;
+  }
+  const base = { room: config.room, resolved: outcome.status !== 'unknown' };
+  if (outcome.status === 'accepted') return { ok: true, applied: true, ...base, result: outcome.result };
+  if (outcome.status === 'rejected')
+    return { ok: false, applied: false, ...base, reason: outcome.result.reason, result: outcome.result };
+  return {
+    ok: false,
+    applied: 'unknown',
+    ...base,
+    reason: outcome.status === 'unknown' ? outcome.reason : 'unknown',
+    conflicts: client.sync.conflicts,
+  };
 }
 
 async function touchAgentAction(client: RoomClient, action: string): Promise<void> {
