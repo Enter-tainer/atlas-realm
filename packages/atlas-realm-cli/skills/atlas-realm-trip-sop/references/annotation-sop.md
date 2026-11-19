@@ -32,7 +32,7 @@
 | 标注 id  | **服务端分配** `feature-<uuid>`；语义放 label / note，老房间的可读 id 继续可寻址                       | `seg-d1-01`、`ferry-d3-rishiri`（同步 v2 之前创建的对象）                              |
 | label    | `emoji + 名称(+日期/时间)`，一行，不写 detail                                                          | `🏔️ 神威岬 8/5`、`⛴️ 鴛泊FT 09:05発`                                                   |
 
-> **id 与顺序都归服务端管**（房间同步 v2 §9–§10）：`create` 一定 mint 新 id，客户端传的 `--id` 只是批次内本地引用（不会落库），`--sort-key` 被忽略并按位置重编号。所以「用 `seg-d1-01` 这种 id 建对象」只在 v2 之前成立；新对象把语义写进 label / note，排序统一走 `annotations reorder`。
+> **id 与顺序都归服务端管**（房间同步 v2 §9–§10）：`create` 一定 mint 新 id，客户端传的 `--id` 只是批次内本地引用（不会落库），`--sort-key` 会被显式拒绝（`sort_key_not_supported`），排序一律按位置重编号。所以「用 `seg-d1-01` 这种 id 建对象」只在 v2 之前成立；新对象把语义写进 label / note，排序统一走 `annotations reorder`。
 
 **label 命名习惯**：自驾段 `A→B 距离 时长`、徒步 `🥾 日期 起点→终点`、点位 `emoji 名称 日期`；路线分类靠 emoji / note，不靠 id 前缀。
 

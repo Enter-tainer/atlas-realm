@@ -158,6 +158,7 @@ export interface Command extends JsonRecord {
   action?: string;
   id?: string;
   ids?: string[];
+  idsFile?: string;
   file?: string;
   type?: string;
   featureType?: string;
@@ -168,9 +169,13 @@ export interface Command extends JsonRecord {
   persistence?: RoomPersistence;
   hideLayer?: boolean;
   ensureLayer?: boolean;
+  yes?: boolean;
   lineStyle?: string;
   opacity?: number;
   fillOpacity?: number;
+  pointsFile?: string;
+  waypointsFile?: string;
+  geometryFile?: string;
 }
 
 export interface WebSocketLike {

@@ -51,3 +51,45 @@ describe('annotation command feature types', () => {
     }
   });
 });
+
+describe('annotation batch target parsing', () => {
+  it('merges positionals and the --ids option into one target list', () => {
+    const command = normalizeAnnotationCommand('update', ['stop-a', 'stop-b'], { ids: 'stop-c, stop-d' });
+    expect(command.ids).toEqual(['stop-a', 'stop-b', 'stop-c', 'stop-d']);
+  });
+
+  it('excludes a second positional feature type from the target list', () => {
+    const command = normalizeAnnotationCommand('update', ['stop-a', 'weather'], {});
+    expect(command.featureType).toBe('weather');
+    expect(command.ids).toEqual(['stop-a']);
+  });
+
+  it('keeps reorder on the merged target list', () => {
+    const command = normalizeAnnotationCommand('reorder', ['stop-b'], { ids: 'stop-a,stop-c' });
+    expect(command.ids).toEqual(['stop-b', 'stop-a', 'stop-c']);
+  });
+
+  it('splits comma lists inside a repeated --ids flag', () => {
+    // yargs keeps duplicate flags as an array when duplicate-arguments-array is
+    // on, so each entry can still be a comma list.
+    const command = normalizeAnnotationCommand('update', [], { ids: ['stop-a,stop-b', 'stop-c'] });
+    expect(command.ids).toEqual(['stop-a', 'stop-b', 'stop-c']);
+  });
+
+  it('treats feature-type-looking ids as targets for reorder and delete', () => {
+    const reorder = normalizeAnnotationCommand('reorder', ['route', 'seg-a', 'point'], {});
+    expect(reorder.featureType).toBeUndefined();
+    expect(reorder.ids).toEqual(['route', 'seg-a', 'point']);
+    const deleted = normalizeAnnotationCommand('delete', ['route', 'text'], {});
+    expect(deleted.featureType).toBeUndefined();
+    expect(deleted.ids).toEqual(['route', 'text']);
+  });
+
+  it('forwards --yes through the annotation layers branch so clear can be confirmed', () => {
+    // The layers branch builds its own command object; a missing field here
+    // made `annotations layers clear --yes` unsatisfiable.
+    const command = normalizeAnnotationCommand('layers', ['clear', 'day-1'], { yes: true });
+    expect(command.yes).toBe(true);
+    expect(normalizeAnnotationCommand('layers', ['clear', 'day-1'], {}).yes).toBeUndefined();
+  });
+});

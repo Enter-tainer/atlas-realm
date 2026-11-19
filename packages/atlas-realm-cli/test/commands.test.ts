@@ -1,5 +1,5 @@
 import { applyFields, moveRows } from '../src/sync-protocol.js';
-import { beforeEach, afterEach, describe, expect, it } from 'vitest';
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -312,6 +312,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(syncDirectory, { recursive: true, force: true });
+  process.exitCode = 0;
   if (originalStateDirectory === undefined) delete process.env.ATLAS_REALM_STATE_DIR;
   else process.env.ATLAS_REALM_STATE_DIR = originalStateDirectory;
   globalThis.fetch = originalFetch;
@@ -1180,7 +1181,7 @@ describe('atlas-realm CLI package', () => {
     expect(response.result.layer.visible).toBe(false);
   });
 
-  it('clears annotation features from a layer and can hide it', async () => {
+  it('requires --yes before clearing a layer and can hide it afterwards', async () => {
     const client = new FakeRoomClient();
     client.annotationFeatures.push(
       {
@@ -1207,11 +1208,17 @@ describe('atlas-realm CLI package', () => {
       },
     );
 
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'clear', layerId: 'annotation-default' }),
+    ).rejects.toThrow(/--yes/);
+    expect(client.sentJson).toEqual([]);
+
     const response = await executeCommand(client, {
       subject: 'annotations',
       action: 'clear',
       layerId: 'annotation-default',
       hideLayer: true,
+      yes: true,
     });
 
     expect(client.sentJson).toEqual([
@@ -1479,5 +1486,335 @@ describe('atlas-realm CLI package', () => {
       ],
     });
     expect(response.result.orderedIds).toEqual(['custom-layer', 'annotation-default']);
+  });
+});
+
+describe('TECH-100 CLI ergonomics', () => {
+  function pointFeature(id: string, extra: Record<string, unknown> = {}) {
+    return {
+      id,
+      layerId: 'annotation-default',
+      featureType: 'point',
+      payload: { id, type: 'point', layerId: 'annotation-default', coordinate: [121.5, 31.2], ...extra },
+      sortKey: '000010',
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+      updatedBy: 'Agent',
+    };
+  }
+
+  it('quotes ids in not-found errors so dirty shell input is visible', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push(pointFeature('stop-a'));
+
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'update', id: 'stop-a\n', label: 'x' }),
+    ).rejects.toThrow('Annotation not found: "stop-a\\n"');
+  });
+
+  it('prints handler failures without dumping the command usage block', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        runCli(
+          [
+            'annotations',
+            'update',
+            'missing-feature',
+            '--label',
+            'x',
+            '--host',
+            'https://example.com',
+            '--room',
+            'trip-room',
+            '--client-id',
+            'agent-a',
+            '--client-type',
+            'query',
+            '--json',
+          ],
+          captureIo().io,
+        ),
+      ).rejects.toThrow('Annotation not found: "missing-feature"');
+      // The old default fail handler printed the whole annotations usage
+      // block through console.error before the rejection surfaced.
+      expect(errorSpy).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('still shows usage context for genuine parse failures', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(
+        runCli(
+          [
+            'annotations',
+            '--host',
+            'https://example.com',
+            '--room',
+            'trip-room',
+            '--client-id',
+            'agent-a',
+            '--client-type',
+            'query',
+          ],
+          captureIo().io,
+        ),
+      ).rejects.toThrow();
+      expect(errorSpy).toHaveBeenCalled();
+      const printed = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
+      expect(printed).toContain('Options:');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('applies one patch to many annotations from --ids and --ids-file in a single connection', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push(pointFeature('stop-a'), pointFeature('stop-b'), pointFeature('stop-c'));
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-ids-'));
+    const idsFile = join(dir, 'ids.txt');
+    await writeFile(idsFile, 'stop-b\n# comment line\nstop-c\n', 'utf8');
+
+    try {
+      const response = await executeCommand(client, {
+        subject: 'annotations',
+        action: 'update',
+        ids: ['stop-a'],
+        idsFile,
+        note: 'bulk note',
+      });
+
+      expect(response.result).toMatchObject({ ok: true, requested: 3, updatedCount: 3, failures: [] });
+      expect(client.sentJson).toHaveLength(3);
+      for (const message of client.sentJson) {
+        expect(message.type).toBe('annotation-feature:upsert');
+        expect(message.feature.payload.note).toBe('bulk note');
+      }
+      expect(new Set(client.sentJson.map((message: any) => message.feature.id))).toEqual(
+        new Set(['stop-a', 'stop-b', 'stop-c']),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports per-id failures in a batch update instead of aborting the run', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push(pointFeature('stop-a'), pointFeature('stop-b'));
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'update',
+      ids: ['stop-a', 'missing-one', 'stop-b'],
+      note: 'bulk note',
+    });
+
+    expect(response.result).toMatchObject({ ok: false, requested: 3, updatedCount: 2 });
+    expect(response.result.failures).toEqual([{ id: 'missing-one', error: 'Annotation not found: "missing-one"' }]);
+  });
+
+  it('deletes many annotations from positionals in one connection', async () => {
+    const client = new FakeRoomClient();
+    client.annotationFeatures.push(pointFeature('stop-a'), pointFeature('stop-b'), pointFeature('stop-c'));
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'delete',
+      id: 'stop-a',
+      ids: ['stop-a', 'stop-b', 'stop-c'],
+    });
+
+    expect(response.result).toMatchObject({ ok: true, requested: 3, deletedCount: 3 });
+    expect(response.result.deletedIds).toEqual(['stop-a', 'stop-b', 'stop-c']);
+    expect(client.annotationFeatures).toEqual([]);
+  });
+
+  it('reads route waypoints and geometry from files', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-geometry-'));
+    try {
+      const waypointsFile = join(dir, 'waypoints.json');
+      const geometryFile = join(dir, 'geometry.txt');
+      await writeFile(
+        waypointsFile,
+        JSON.stringify([
+          [121.5, 31.2],
+          [121.51, 31.21],
+        ]),
+        'utf8',
+      );
+      await writeFile(geometryFile, '121.5,31.2;121.505,31.205;121.51,31.21', 'utf8');
+
+      const client = new FakeRoomClient();
+      const response = await executeCommand(client, {
+        subject: 'annotations',
+        action: 'add',
+        featureType: 'route',
+        type: 'route',
+        id: 'route-a',
+        label: 'Walk',
+        waypointsFile,
+        geometryFile,
+      });
+
+      expect(response.result.annotation.payload.waypoints).toEqual([
+        [121.5, 31.2],
+        [121.51, 31.21],
+      ]);
+      expect(response.result.annotation.payload.geometry).toEqual([
+        [121.5, 31.2],
+        [121.505, 31.205],
+        [121.51, 31.21],
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects mixing inline geometry options with their file variants', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'atlas-geometry-'));
+    try {
+      const geometryFile = join(dir, 'geometry.txt');
+      await writeFile(geometryFile, '121.5,31.2;121.51,31.21', 'utf8');
+      const client = new FakeRoomClient();
+
+      await expect(
+        executeCommand(client, {
+          subject: 'annotations',
+          action: 'add',
+          featureType: 'route',
+          type: 'route',
+          id: 'route-a',
+          waypoints: '[[121.5,31.2],[121.51,31.21]]',
+          geometry: '121.5,31.2;121.51,31.21',
+          geometryFile,
+        }),
+      ).rejects.toThrow('Use either --geometry or --geometry-file, not both.');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects --sort-key on annotation and layer mutations instead of ignoring it', async () => {
+    const client = new FakeRoomClient();
+    await expect(
+      executeCommand(client, {
+        subject: 'annotations',
+        action: 'add',
+        featureType: 'point',
+        type: 'point',
+        id: 'stop-a',
+        lng: 121.5,
+        lat: 31.2,
+        sortKey: '000000012',
+      }),
+    ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
+    await expect(
+      executeCommand(client, {
+        subject: 'annotations',
+        action: 'update',
+        id: 'stop-a',
+        label: 'x',
+        sortKey: '000000012',
+      }),
+    ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
+    await expect(
+      executeCommand(client, { subject: 'layers', action: 'update', id: 'route-layer', sortKey: '000000012' }),
+    ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'layers', layerAction: 'add', sortKey: '000000012' }),
+    ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
+  });
+
+  it('requires and accepts --yes on annotations layers clear', async () => {
+    const client = new FakeRoomClient();
+    client.layers.push({
+      id: 'day-1',
+      kind: 'annotation',
+      name: 'Day 1',
+      visible: true,
+      sortKey: '000020',
+      payload: { version: 1 },
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    client.annotationFeatures.push({ ...pointFeature('stop-a'), layerId: 'day-1' });
+
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'layers', layerAction: 'clear', id: 'day-1' }),
+    ).rejects.toMatchObject({ code: 'confirmation_required' });
+    expect(client.sentJson).toEqual([]);
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'layers',
+      layerAction: 'clear',
+      id: 'day-1',
+      yes: true,
+    });
+    expect(response.result).toMatchObject({ ok: true, layerId: 'day-1', deletedIds: ['stop-a'] });
+  });
+
+  it('exits non-zero through the CLI when a batch partially fails', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    FakeWebSocket.initialLayers = [];
+    const { io, lines } = captureIo();
+
+    // Both ids are absent from the room snapshot, so every target fails.
+    await runCli(
+      [
+        'annotations',
+        'update',
+        '--ids',
+        'missing-a,missing-b',
+        '--note',
+        'x',
+        '--host',
+        'https://example.com',
+        '--room',
+        'trip-room',
+        '--client-id',
+        'agent-a',
+        '--client-type',
+        'query',
+        '--json',
+      ],
+      io,
+    );
+
+    expect(JSON.parse(lines[0])).toMatchObject({ ok: false, requested: 2, updatedCount: 0 });
+    expect(process.exitCode).toBe(1);
+  });
+
+  it('applies "lng,lat" --coordinate strings identically on add and update', async () => {
+    const addClient = new FakeRoomClient();
+    const added = await executeCommand(addClient, {
+      subject: 'annotations',
+      action: 'add',
+      featureType: 'point',
+      type: 'point',
+      id: 'stop-a',
+      coordinate: '120.498314,31.285788',
+    });
+    expect(added.result.annotation.payload.coordinate).toEqual([120.498314, 31.285788]);
+
+    const updateClient = new FakeRoomClient();
+    updateClient.annotationFeatures.push(pointFeature('stop-a'));
+    const updated = await executeCommand(updateClient, {
+      subject: 'annotations',
+      action: 'update',
+      id: 'stop-a',
+      coordinate: '120.498314,31.285788',
+    });
+    expect(updated.result.annotation.payload.coordinate).toEqual([120.498314, 31.285788]);
   });
 });

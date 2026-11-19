@@ -1,5 +1,5 @@
-import { writeFile } from 'node:fs/promises';
-import { buildFeatureFromOptions } from './annotation-feature.js';
+import { readFile, writeFile } from 'node:fs/promises';
+import { buildFeatureFromOptions, resolveFeatureFileOptions } from './annotation-feature.js';
 import { buildFileLayerAsset, materializeFileLayerContent, sha256Hex } from './file-layer-asset.js';
 import { encodeFileContentMessage } from './protocol.js';
 import {
@@ -98,23 +98,24 @@ export async function handleLayerCommand(
 
   if (action === 'metadata' || action === 'info') {
     const layer = getLayer(client.layers, command.id);
-    if (!layer) throw new Error(`Layer not found: ${command.id}`);
+    if (!layer) throw new Error(`Layer not found: ${quoteId(command.id)}`);
     return { result: { ok: true, room: client.config.room, layer } };
   }
 
   if (action === 'get' || action === 'content') {
     const layer = getLayer(client.layers, command.id);
-    if (!layer) throw new Error(`Layer not found: ${command.id}`);
+    if (!layer) throw new Error(`Layer not found: ${quoteId(command.id)}`);
     return { result: await layerContentResult(client, layer) };
   }
 
   if (action === 'export') {
     const layer = getLayer(client.layers, command.id);
-    if (!layer) throw new Error(`Layer not found: ${command.id}`);
+    if (!layer) throw new Error(`Layer not found: ${quoteId(command.id)}`);
     return exportLayerContent(client, layer, command.out);
   }
 
   if (action === 'add' || action === 'replace') {
+    rejectIgnoredSortKey(command, 'layers add');
     const existing = command.id ? getLayer(client.layers, command.id) : undefined;
     if (action === 'replace' && existing?.kind !== 'file')
       throw new Error('layers replace requires an existing file layer --id');
@@ -129,7 +130,7 @@ export async function handleLayerCommand(
       `file content store ${asset.manifest.contentHash}`,
     );
     const layer = fileLayerFromManifest(asset.manifest, {
-      sortKey: command.sortKey || existing?.sortKey || nextSortKey(client.layers.length),
+      sortKey: existing?.sortKey || nextSortKey(client.layers.length),
       createdAt: existing?.createdAt,
       updatedBy: client.config.agentName,
     });
@@ -158,10 +159,11 @@ export async function handleLayerCommand(
 
   if (action === 'show' || action === 'hide') command.visible = action === 'show';
   if (action === 'update' || action === 'patch' || action === 'show' || action === 'hide') {
+    rejectIgnoredSortKey(command, 'layers update');
     const id = command.id;
     if (!id) throw new Error('layers update requires a layer id');
     const existing = getLayer(client.layers, id);
-    if (!existing) throw new Error(`Layer not found: ${id}`);
+    if (!existing) throw new Error(`Layer not found: ${quoteId(id)}`);
     const patch = layerPatchFromCommand(command, existing);
     if (Object.keys(patch).length === 0) throw new Error('No layer patch options were provided');
     client.sendJson({ type: 'layer:update', layerId: id, patch, baseline: existing });
@@ -227,11 +229,12 @@ export async function handleAnnotationCommand(
 
   if (action === 'get' || action === 'content') {
     const feature = getAnnotationFeature(client.annotationFeatures, command.id);
-    if (!feature) throw new Error(`Annotation not found: ${command.id}`);
+    if (!feature) throw new Error(`Annotation not found: ${quoteId(command.id)}`);
     return { result: { ok: true, room: client.config.room, annotation: feature } };
   }
 
   if (action === 'clear') {
+    requireClearConfirmation(command, 'annotations clear');
     return {
       result: await clearAnnotationLayer(client, command.layerId || command.id || DEFAULT_ANNOTATION_LAYER_ID, command),
       human: (data: JsonRecord) => `Deleted ${data.deletedIds.length} annotations from ${data.layerId}`,
@@ -239,6 +242,7 @@ export async function handleAnnotationCommand(
   }
 
   if (action === 'add') {
+    rejectIgnoredSortKey(command, 'annotations add');
     const existing = command.id ? getAnnotationFeature(client.annotationFeatures, command.id) : undefined;
     if (existing) throw new Error('Annotation already exists. Use annotations update to edit it.');
     const payload = await buildFeatureFromOptions(
@@ -258,9 +262,15 @@ export async function handleAnnotationCommand(
   }
 
   if (action === 'update' || action === 'patch') {
-    if (!command.id) throw new Error('annotations update requires an annotation id');
-    const existing = getAnnotationFeature(client.annotationFeatures, command.id);
-    if (!existing) throw new Error(`Annotation not found: ${command.id}`);
+    rejectIgnoredSortKey(command, 'annotations update');
+    const targets = await annotationTargets(command);
+    if (targets.length === 0) {
+      throw new Error('annotations update requires an annotation id (positional, --id, --ids, or --ids-file)');
+    }
+    if (targets.length > 1) return batchUpdateAnnotations(client, targets, command);
+    const id = targets[0];
+    const existing = getAnnotationFeature(client.annotationFeatures, id);
+    if (!existing) throw new Error(`Annotation not found: ${quoteId(id)}`);
     const payload = await buildFeatureFromOptions(
       command,
       client.config,
@@ -278,11 +288,16 @@ export async function handleAnnotationCommand(
   }
 
   if (action === 'delete' || action === 'remove' || action === 'rm') {
-    if (!command.id) throw new Error('annotations delete requires an annotation id');
-    client.sendJson({ type: 'annotation-feature:delete', featureId: command.id });
+    const targets = await annotationTargets(command);
+    if (targets.length === 0) {
+      throw new Error('annotations delete requires an annotation id (positional, --id, --ids, or --ids-file)');
+    }
+    if (targets.length > 1) return batchDeleteAnnotations(client, targets);
+    const id = targets[0];
+    client.sendJson({ type: 'annotation-feature:delete', featureId: id });
     const ack = await client.waitFor(
-      (event: RoomEvent) => event.json?.type === 'annotation-feature:deleted' && event.json.featureId === command.id,
-      `annotation feature delete ${command.id}`,
+      (event: RoomEvent) => event.json?.type === 'annotation-feature:deleted' && event.json.featureId === id,
+      `annotation feature delete ${id}`,
     );
     return {
       result: { ok: true, room: client.config.room, annotationId: ack.json.featureId },
@@ -332,11 +347,12 @@ export async function handleAnnotationLayerCommand(
 
   if (action === 'get' || action === 'content') {
     const layer = getLayer(client.layers, command.id);
-    if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${command.id}`);
+    if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${quoteId(command.id)}`);
     return { result: await layerContentResult(client, layer) };
   }
 
   if (action === 'clear') {
+    requireClearConfirmation(command, 'annotations layers clear');
     const id = command.id || command.layerId || DEFAULT_ANNOTATION_LAYER_ID;
     return {
       result: await clearAnnotationLayer(client, id, command),
@@ -348,7 +364,7 @@ export async function handleAnnotationLayerCommand(
     const id = command.id;
     if (!id) throw new Error('annotation layers show/hide requires a layer id');
     const existing = getLayer(client.layers, id);
-    if (!existing || existing.kind !== 'annotation') throw new Error(`Annotation layer not found: ${id}`);
+    if (!existing || existing.kind !== 'annotation') throw new Error(`Annotation layer not found: ${quoteId(id)}`);
     const layer = await patchLayerVisibility(client, id, action === 'show', 'annotation layer');
     return {
       result: { ok: true, room: client.config.room, layer },
@@ -357,6 +373,7 @@ export async function handleAnnotationLayerCommand(
   }
 
   if (action === 'add' || action === 'create' || action === 'update' || action === 'patch') {
+    rejectIgnoredSortKey(command, `annotations layers ${action || 'add'}`);
     const creating = action === 'add' || action === 'create';
     if (!creating && !command.id) throw new Error('annotation layers update requires a layer id');
     const id = normalizeId(command.id, `draft-${crypto.randomUUID()}`);
@@ -382,7 +399,7 @@ export async function handleAnnotationLayerCommand(
       kind: 'annotation',
       name: normalizeName(command.name, 'Annotations', 80),
       visible: coerceBoolean(command.visible, true) !== false,
-      sortKey: typeof command.sortKey === 'string' ? command.sortKey : nextSortKey(client.layers.length),
+      sortKey: nextSortKey(client.layers.length),
       payload: { version: 1 },
       revision: 0,
       createdAt: now,
@@ -468,6 +485,148 @@ function fileLayerFromManifest(
   };
 }
 
+/**
+ * Resolve the annotation ids a mutation targets: positionals/--id, the --ids
+ * option (comma or whitespace separated), and --ids-file (one id per line,
+ * # comments allowed) all feed one deduplicated list.
+ */
+async function annotationTargets(command: Command): Promise<string[]> {
+  const ids = new Set<string>();
+  // Positional ids and --ids values stay raw: a trailing newline from a shell
+  // variable must surface as "Annotation not found: ..." instead of being
+  // silently trimmed into a different id.
+  for (const id of [command.id, ...(command.ids || [])]) if (id) ids.add(String(id));
+  if (command.idsFile) {
+    const text = await readFile(String(command.idsFile), 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const id = line.split('#')[0].trim();
+      if (id) ids.add(id);
+    }
+  }
+  return [...ids].filter(Boolean);
+}
+
+/** One connection, one patch applied to many annotations. */
+async function batchUpdateAnnotations(
+  client: RoomClientLike,
+  targets: string[],
+  command: Command,
+): Promise<CommandResponse> {
+  const updated: JsonRecord[] = [];
+  const failures: Array<{ id: string; error: string }> = [];
+  // File inputs are read once for the whole batch, not once per target.
+  const perTargetCommand: Command = {
+    ...command,
+    id: undefined,
+    ids: undefined,
+    idsFile: undefined,
+    labelFile: undefined,
+    noteFile: undefined,
+    pointsFile: undefined,
+    waypointsFile: undefined,
+    geometryFile: undefined,
+    ...(await resolveFeatureFileOptions(command)),
+  };
+  for (const id of targets) {
+    try {
+      const existing = getAnnotationFeature(client.annotationFeatures, id);
+      if (!existing) throw new Error(`Annotation not found: ${quoteId(id)}`);
+      const payload = await buildFeatureFromOptions(
+        perTargetCommand,
+        client.config,
+        command.featureType || existing.featureType,
+        existing.payload,
+      );
+      await ensureAnnotationLayer(client, payload.layerId, perTargetCommand);
+      const feature = annotationFeatureFromPayload(client, payload, existing);
+      client.sendJson({ type: 'annotation-feature:upsert', feature, baseline: existing, isCreate: false });
+      const ack = await waitForFeatureMutation(client, feature, 'update');
+      updated.push(ack.json.feature);
+    } catch (error) {
+      failures.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return {
+    result: {
+      ok: failures.length === 0,
+      room: client.config.room,
+      requested: targets.length,
+      updatedCount: updated.length,
+      updated,
+      failures,
+    },
+    human: (data: JsonRecord) =>
+      `Updated ${data.updatedCount}/${data.requested} annotations` +
+      (data.failures.length ? `; failed: ${data.failures.map((item: JsonRecord) => item.id).join(', ')}` : ''),
+  };
+}
+
+async function batchDeleteAnnotations(client: RoomClientLike, targets: string[]): Promise<CommandResponse> {
+  const deleted: string[] = [];
+  const failures: Array<{ id: string; error: string }> = [];
+  for (const id of targets) {
+    try {
+      client.sendJson({ type: 'annotation-feature:delete', featureId: id });
+      const ack = await client.waitFor(
+        (event: RoomEvent) => event.json?.type === 'annotation-feature:deleted' && event.json.featureId === id,
+        `annotation feature delete ${id}`,
+      );
+      deleted.push(String(ack.json.featureId));
+    } catch (error) {
+      failures.push({ id, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return {
+    result: {
+      ok: failures.length === 0,
+      room: client.config.room,
+      requested: targets.length,
+      deletedCount: deleted.length,
+      deletedIds: deleted,
+      failures,
+    },
+    human: (data: JsonRecord) =>
+      `Deleted ${data.deletedCount}/${data.requested} annotations` +
+      (data.failures.length ? `; failed: ${data.failures.map((item: JsonRecord) => item.id).join(', ')}` : ''),
+  };
+}
+
+function requireClearConfirmation(command: Command, label: string): void {
+  if (command.yes === true) return;
+  const layerId = command.layerId || command.id || DEFAULT_ANNOTATION_LAYER_ID;
+  throw new CliCommandError(
+    'confirmation_required',
+    [
+      `${label} deletes every annotation in layer ${layerId} and cannot be undone.`,
+      'Take a snapshot first if you need the data, then re-run with --yes to confirm.',
+    ].join('\n'),
+    { layerId, confirmFlag: '--yes' },
+  );
+}
+
+/**
+ * sort keys are owned by the room: creates append and renumber, and ordering
+ * changes go through reorder. Silently ignoring --sort-key used to make
+ * writes look successful while the requested order never landed.
+ */
+function rejectIgnoredSortKey(command: Command, label: string): void {
+  if (typeof command.sortKey !== 'string') return;
+  throw new CliCommandError(
+    'sort_key_not_supported',
+    [
+      `${label} does not accept --sort-key: the room assigns and renumbers sort keys on every change.`,
+      'Order annotations with:',
+      `  atlas-realm annotations reorder <id1> <id2> ...`,
+    ].join('\n'),
+    { sortKey: command.sortKey },
+  );
+}
+
+/** Quote ids in errors so trailing newlines and spaces from shell variables are visible. */
+function quoteId(id: unknown): string {
+  return JSON.stringify(String(id ?? ''));
+}
+
 function annotationFeatureFromPayload(
   client: RoomClientLike,
   payload: AnnotationFeaturePayload,
@@ -501,7 +660,7 @@ async function ensureAnnotationLayer(client: RoomClientLike, layerId: string, co
     kind: 'annotation',
     name: normalizeName(command.name, layerId === DEFAULT_ANNOTATION_LAYER_ID ? 'Annotations' : layerId, 80),
     visible: coerceBoolean(command.visible, true) !== false,
-    sortKey: typeof command.sortKey === 'string' ? command.sortKey : nextSortKey(client.layers.length),
+    sortKey: nextSortKey(client.layers.length),
     payload: { version: 1 },
     revision: 0,
     createdAt: now,
@@ -556,7 +715,7 @@ function annotationLayerNotFoundError(client: RoomClientLike, layerId: string, c
   return new CliCommandError(
     'annotation_layer_not_found',
     [
-      `Annotation layer not found: ${layerId}.`,
+      `Annotation layer not found: ${quoteId(layerId)}.`,
       'Create it first:',
       `  ${suggestedCommand}`,
       'Or retry the annotation command with --ensure-layer.',
@@ -706,7 +865,7 @@ async function exportLayerContent(
 
 async function clearAnnotationLayer(client: RoomClientLike, layerId: string, command: Command): Promise<JsonRecord> {
   const layer = getLayer(client.layers, layerId);
-  if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${layerId}`);
+  if (!layer || layer.kind !== 'annotation') throw new Error(`Annotation layer not found: ${quoteId(layerId)}`);
   const features = sortedAnnotationFeatures(client.annotationFeatures, layerId);
   const deletedIds: string[] = [];
   for (const feature of features) {
@@ -747,7 +906,6 @@ function layerPatchFromCommand(command: Command, existing: Layer): JsonRecord {
   const patch: JsonRecord = {};
   if (command.name !== undefined) patch.name = command.name;
   if (command.visible !== undefined) patch.visible = coerceBoolean(command.visible, true);
-  if (typeof command.sortKey === 'string') patch.sortKey = command.sortKey;
   if (command.color !== undefined || command.opacity !== undefined || command.lineWidth !== undefined) {
     const style: JsonRecord = {};
     if (command.color !== undefined) style.color = command.color;
@@ -765,6 +923,5 @@ function annotationLayerPatchFromCommand(command: Command, existing: Layer): Jso
   };
   if (command.name !== undefined) patch.name = normalizeName(command.name, existing.name, 80);
   if (command.visible !== undefined) patch.visible = coerceBoolean(command.visible, existing.visible) !== false;
-  if (typeof command.sortKey === 'string') patch.sortKey = command.sortKey;
   return patch;
 }

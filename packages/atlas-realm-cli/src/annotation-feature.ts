@@ -50,9 +50,21 @@ export async function buildFeatureFromOptions(
   const patch = await readJsonOption(options.patchFile, options.patchJson, 'patch');
   const resolvedOptions = {
     ...options,
-    ...(await readTextFileOptions(options)),
+    ...(await resolveFeatureFileOptions(options)),
   };
   return buildFeatureFromParts({ options: resolvedOptions, config, typeHint, existing, fullFeature, patch, now });
+}
+
+/**
+ * Resolve the text and list file options into their inline counterparts.
+ * Exported so a batch mutation reads each file once for the whole run instead
+ * of once per target.
+ */
+export async function resolveFeatureFileOptions(options: JsonRecord): Promise<JsonRecord> {
+  return {
+    ...(await readTextFileOptions(options)),
+    ...(await readListFileOptions(options)),
+  };
 }
 
 export function buildFeatureFromParts({
@@ -174,6 +186,26 @@ async function readTextFileOptions(options: JsonRecord): Promise<JsonRecord> {
   if (options.noteFile) {
     if (options.note !== undefined) throw new Error('Use either --note or --note-file, not both.');
     resolved.note = await readFile(String(options.noteFile), 'utf8');
+  }
+  return resolved;
+}
+
+/**
+ * Route geometries and path points regularly exceed shell-friendly command
+ * line lengths (routing engines return 20-60 kB point strings), so the list
+ * options accept a file with the same JSON or "lng,lat;lng,lat" content.
+ */
+async function readListFileOptions(options: JsonRecord): Promise<JsonRecord> {
+  const resolved: JsonRecord = {};
+  const pairs: Array<[inline: string, file: string, fileFlag: string]> = [
+    ['points', 'pointsFile', '--points-file'],
+    ['waypoints', 'waypointsFile', '--waypoints-file'],
+    ['geometry', 'geometryFile', '--geometry-file'],
+  ];
+  for (const [inline, file, fileFlag] of pairs) {
+    if (!options[file]) continue;
+    if (options[inline] !== undefined) throw new Error(`Use either --${inline} or ${fileFlag}, not both.`);
+    resolved[inline] = await readFile(String(options[file]), 'utf8');
   }
   return resolved;
 }

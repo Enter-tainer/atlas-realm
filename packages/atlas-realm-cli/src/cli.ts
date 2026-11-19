@@ -19,6 +19,18 @@ export function buildParser(argv: readonly string[] = []) {
   return yargs(argv)
     .scriptName('atlas-realm')
     .usage('$0 <command> [options]')
+    .fail((message: string | undefined, error: Error | undefined, yargs: { showHelp(where: string): unknown }) => {
+      // Command handler failures arrive as (null, error): rethrow them so
+      // runCli's catch formats the failure like any other. Without this,
+      // yargs' default fail handler prints the whole usage block first, which
+      // makes every "annotation not found" or "client id in use" look like a
+      // syntax error and buries the one-line reason agents need.
+      if (message == null && error) throw error;
+      // Genuine parse/validation failures keep the usage context, then surface
+      // as a normal CLI error instead of exiting straight from yargs.
+      yargs.showHelp('error');
+      throw new Error(String(message || 'Invalid arguments'));
+    })
     .option('host', {
       type: 'string',
       describe: 'App origin or WebSocket host',
@@ -342,7 +354,10 @@ function layerBuilder(y: any): any {
     .option('opacity', { type: 'number', describe: 'Layer opacity, 0.2-1' })
     .option('line-width', { type: 'number', describe: 'Layer line width, 1-12' })
     .option('visible', { type: 'boolean', describe: 'Layer visibility' })
-    .option('sort-key', { type: 'string', describe: 'Layer sort key' })
+    .option('sort-key', {
+      type: 'string',
+      describe: 'Rejected on add/update: the room owns sort keys, order with reorder instead',
+    })
     .option('out', { type: 'string', alias: 'output', describe: 'Export destination file' })
     .option('persistence', { choices: ['ephemeral', 'persistent'], describe: 'Room persistence hint' });
 }
@@ -363,6 +378,14 @@ function annotationBuilder(y: any): any {
     .option('patch-file', { type: 'string', describe: 'Patch JSON file merged into an existing feature' })
     .option('patch-json', { type: 'string', describe: 'Patch JSON string merged into an existing feature' })
     .option('id', { type: 'string', describe: 'Annotation or annotation-layer id' })
+    .option('ids', {
+      type: 'string',
+      describe: 'Comma-separated annotation ids for batch update/delete',
+    })
+    .option('ids-file', {
+      type: 'string',
+      describe: 'File with one annotation id per line (# comments allowed) for batch update/delete',
+    })
     .option('layer-id', { type: 'string', describe: 'Annotation layer id' })
     .option('label', { type: 'string', describe: 'Annotation label' })
     .option('label-file', { type: 'string', describe: 'Read annotation label from a UTF-8 text file' })
@@ -373,8 +396,11 @@ function annotationBuilder(y: any): any {
     .option('lat', { type: 'number', describe: 'Point/text/weather latitude' })
     .option('coordinate', { type: 'string', describe: 'Point/text/weather coordinate as "lng,lat" or JSON' })
     .option('points', { type: 'string', describe: 'Path/polygon points JSON or "lng,lat;lng,lat"' })
+    .option('points-file', { type: 'string', describe: 'Read path/polygon points JSON from a file' })
     .option('waypoints', { type: 'string', describe: 'Route waypoints JSON or "lng,lat;lng,lat"' })
+    .option('waypoints-file', { type: 'string', describe: 'Read route waypoints JSON from a file' })
     .option('geometry', { type: 'string', describe: 'Route geometry JSON or "lng,lat;lng,lat"' })
+    .option('geometry-file', { type: 'string', describe: 'Read route geometry JSON from a file' })
     .option('width', { type: 'number', describe: 'Path, route, polygon, or text width' })
     .option('height', { type: 'number', describe: 'Text height' })
     .option('line-style', { choices: ['solid', 'dashed', 'dotted'], describe: 'Path, route, or polygon outline style' })
@@ -392,14 +418,21 @@ function annotationBuilder(y: any): any {
       describe: 'Weather card forecast days, 1-30 (keep it to a day or two)',
     })
     .option('updated-by', { type: 'string', describe: 'Annotation editor id/name' })
-    .option('sort-key', { type: 'string', describe: 'Annotation layer sort key' })
+    .option('sort-key', {
+      type: 'string',
+      describe: 'Rejected on add/update: the room owns sort keys, order with reorder instead',
+    })
     .option('name', { type: 'string', describe: 'Annotation layer name' })
     .option('visible', { type: 'boolean', describe: 'Annotation layer visibility' })
     .option('ensure-layer', {
       type: 'boolean',
       describe: 'Create the target annotation layer when --layer-id does not exist',
     })
-    .option('hide-layer', { type: 'boolean', describe: 'Hide annotation layer after clearing it' });
+    .option('hide-layer', { type: 'boolean', describe: 'Hide annotation layer after clearing it' })
+    .option('yes', {
+      type: 'boolean',
+      describe: 'Confirm destructive commands such as annotations clear without a prompt',
+    });
 }
 
 function roomBuilder(y: any): any {
@@ -484,6 +517,8 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
       sortKey: args.sortKey,
       updatedBy: args.updatedBy,
       hideLayer: args.hideLayer,
+      // Without this the layers clear guard can never be satisfied.
+      yes: args.yes,
     };
   }
 
@@ -491,7 +526,7 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
     subject: 'annotations',
     action,
     id: args.id,
-    ids: items,
+    ids: mergeAnnotationIds(items, args.ids),
     featureType: undefined,
     type: undefined,
     layerId: args.layerId,
@@ -504,8 +539,11 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
     lat: args.lat,
     coordinate: args.coordinate,
     points: args.points,
+    pointsFile: args.pointsFile,
     waypoints: args.waypoints,
+    waypointsFile: args.waypointsFile,
     geometry: args.geometry,
+    geometryFile: args.geometryFile,
     width: args.width,
     height: args.height,
     lineStyle: args.lineStyle,
@@ -518,12 +556,15 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
     distanceText: args.distanceText,
     durationText: args.durationText,
     updatedBy: args.updatedBy,
+    sortKey: args.sortKey,
     featureFile: args.featureFile,
     featureJson: args.featureJson,
     patchFile: args.patchFile,
     patchJson: args.patchJson,
+    idsFile: args.idsFile,
     ensureLayer: args.ensureLayer,
     hideLayer: args.hideLayer,
+    yes: args.yes,
   };
 
   if (action === 'add') {
@@ -531,15 +572,32 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
     command.type = command.featureType;
     if (!command.id && command.featureType && items[1]) command.id = items[1];
     if (!command.id && !command.featureType && items[0]) command.id = items[0];
-  } else if (action === 'reorder') {
-    command.ids = items;
   } else {
     command.id ||= items[0];
-    command.featureType = FEATURE_TYPES.has(items[1]) ? items[1] : undefined;
-    command.type = command.featureType;
+    // Only the feature-mutating actions read a second positional as a type
+    // hint. For reorder and delete every positional is a target id, so an id
+    // that happens to be spelled like a feature type must not be dropped.
+    if (action === 'update' || action === 'patch') {
+      command.featureType = FEATURE_TYPES.has(items[1]) ? items[1] : undefined;
+      command.type = command.featureType;
+      if (command.featureType) command.ids = command.ids.filter((id) => id !== command.featureType);
+    }
   }
 
   return command;
+}
+
+/** Positional ids and the --ids option both feed the same target list.
+ * Positionals stay raw so a trailing newline from a shell variable surfaces as
+ * a "not found" error instead of being silently trimmed into another id; the
+ * --ids option is comma/whitespace separated by definition, so its values are
+ * split and trimmed. */
+function mergeAnnotationIds(items: string[], idsOption: unknown): string[] {
+  // yargs runs with duplicate-arguments-array, so repeated --ids flags arrive
+  // as an array whose entries may each still be a comma list.
+  const values = Array.isArray(idsOption) ? idsOption.map(String) : [String(idsOption ?? '')];
+  const inline = values.flatMap((value) => value.split(/[,\s]+/)).filter(Boolean);
+  return [...items, ...inline].filter(Boolean);
 }
 
 async function runRoomCommand(command: Command, args: JsonRecord): Promise<void> {
@@ -578,6 +636,9 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
     if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
     const response = await executeCommand(client, command);
     args.io.log(formatOutput(response.result, { json: args.json, pretty: args.pretty }, response.human));
+    // A batch that reports per-id failures still prints its full result, but a
+    // partial write must not look like success to a calling script.
+    if (response.result && response.result.ok === false) process.exitCode = 1;
   } finally {
     await client.close();
     await journal.close();

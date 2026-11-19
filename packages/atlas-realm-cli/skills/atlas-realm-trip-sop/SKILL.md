@@ -73,7 +73,7 @@ CLI 语法、登录、字段细节看 `atlas-realm` skill；本 skill 管「怎�
 | 老房间的既有 id | 保留可寻址（`day3-routes`、`poi-hotel` 等），`get/update/delete/reorder` 继续用                                              |
 | label           | `emoji + 名称(+日期/时间)`：`🏔️ 神威岬 8/5`                                                                                  |
 
-> **id 与顺序都归服务端管**（房间同步 v2 §9–§10）：`create` 一定 mint 新 id，客户端传的 `--id` 只是批次内本地引用（不落库），`--sort-key` 被忽略。新增或删除都会把同层所有 `sortKey` 重编号 → **快照前后对照按 id 比对，不要按 sortKey diff**；老房间里的可读 id 继续能寻址。
+> **id 与顺序都归服务端管**（房间同步 v2 §9–§10）：`create` 一定 mint 新 id，客户端传的 `--id` 只是批次内本地引用（不落库），`--sort-key` 会被显式拒绝（`sort_key_not_supported`）。新增或删除都会把同层所有 `sortKey` 重编号 → **快照前后对照按 id 比对，不要按 sortKey diff**；老房间里的可读 id 继续能寻址。
 
 label 命名习惯：自驾段 `A→B 距离 时长` · 徒步 `🥾 日期 起点→终点 距离 时长` · 点位 `emoji 名称 日期`。想给路线分类就靠 emoji + note，不要指望 id 前缀。
 
