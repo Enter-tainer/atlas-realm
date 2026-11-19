@@ -1,5 +1,5 @@
 import { readFile, writeFile } from 'node:fs/promises';
-import { buildFeatureFromOptions } from './annotation-feature.js';
+import { buildFeatureFromOptions, resolveFeatureFileOptions } from './annotation-feature.js';
 import { buildFileLayerAsset, materializeFileLayerContent, sha256Hex } from './file-layer-asset.js';
 import { encodeFileContentMessage } from './protocol.js';
 import {
@@ -514,7 +514,19 @@ async function batchUpdateAnnotations(
 ): Promise<CommandResponse> {
   const updated: JsonRecord[] = [];
   const failures: Array<{ id: string; error: string }> = [];
-  const perTargetCommand: Command = { ...command, id: undefined, ids: undefined, idsFile: undefined };
+  // File inputs are read once for the whole batch, not once per target.
+  const perTargetCommand: Command = {
+    ...command,
+    id: undefined,
+    ids: undefined,
+    idsFile: undefined,
+    labelFile: undefined,
+    noteFile: undefined,
+    pointsFile: undefined,
+    waypointsFile: undefined,
+    geometryFile: undefined,
+    ...(await resolveFeatureFileOptions(command)),
+  };
   for (const id of targets) {
     try {
       const existing = getAnnotationFeature(client.annotationFeatures, id);

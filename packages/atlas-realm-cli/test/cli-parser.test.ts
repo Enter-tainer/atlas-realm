@@ -68,4 +68,20 @@ describe('annotation batch target parsing', () => {
     const command = normalizeAnnotationCommand('reorder', ['stop-b'], { ids: 'stop-a,stop-c' });
     expect(command.ids).toEqual(['stop-b', 'stop-a', 'stop-c']);
   });
+
+  it('splits comma lists inside a repeated --ids flag', () => {
+    // yargs keeps duplicate flags as an array when duplicate-arguments-array is
+    // on, so each entry can still be a comma list.
+    const command = normalizeAnnotationCommand('update', [], { ids: ['stop-a,stop-b', 'stop-c'] });
+    expect(command.ids).toEqual(['stop-a', 'stop-b', 'stop-c']);
+  });
+
+  it('treats feature-type-looking ids as targets for reorder and delete', () => {
+    const reorder = normalizeAnnotationCommand('reorder', ['route', 'seg-a', 'point'], {});
+    expect(reorder.featureType).toBeUndefined();
+    expect(reorder.ids).toEqual(['route', 'seg-a', 'point']);
+    const deleted = normalizeAnnotationCommand('delete', ['route', 'text'], {});
+    expect(deleted.featureType).toBeUndefined();
+    expect(deleted.ids).toEqual(['route', 'text']);
+  });
 });

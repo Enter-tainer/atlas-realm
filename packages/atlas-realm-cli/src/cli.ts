@@ -572,20 +572,29 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
     if (!command.id && !command.featureType && items[0]) command.id = items[0];
   } else {
     command.id ||= items[0];
-    command.featureType = FEATURE_TYPES.has(items[1]) ? items[1] : undefined;
-    command.type = command.featureType;
-    // The second positional can be a feature type hint, not a target id.
-    if (command.featureType) command.ids = command.ids.filter((id) => id !== command.featureType);
+    // Only the feature-mutating actions read a second positional as a type
+    // hint. For reorder and delete every positional is a target id, so an id
+    // that happens to be spelled like a feature type must not be dropped.
+    if (action === 'update' || action === 'patch') {
+      command.featureType = FEATURE_TYPES.has(items[1]) ? items[1] : undefined;
+      command.type = command.featureType;
+      if (command.featureType) command.ids = command.ids.filter((id) => id !== command.featureType);
+    }
   }
 
   return command;
 }
 
-/** Positional ids and the --ids option both feed the same target list. Values
- * stay raw: a trailing newline from a shell variable must surface as a
- * "not found" error instead of being silently trimmed into another id. */
+/** Positional ids and the --ids option both feed the same target list.
+ * Positionals stay raw so a trailing newline from a shell variable surfaces as
+ * a "not found" error instead of being silently trimmed into another id; the
+ * --ids option is comma/whitespace separated by definition, so its values are
+ * split and trimmed. */
 function mergeAnnotationIds(items: string[], idsOption: unknown): string[] {
-  const inline = Array.isArray(idsOption) ? idsOption.map(String) : String(idsOption || '').split(/[,\s]+/);
+  // yargs runs with duplicate-arguments-array, so repeated --ids flags arrive
+  // as an array whose entries may each still be a comma list.
+  const values = Array.isArray(idsOption) ? idsOption.map(String) : [String(idsOption ?? '')];
+  const inline = values.flatMap((value) => value.split(/[,\s]+/)).filter(Boolean);
   return [...items, ...inline].filter(Boolean);
 }
 
@@ -625,6 +634,9 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
     if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
     const response = await executeCommand(client, command);
     args.io.log(formatOutput(response.result, { json: args.json, pretty: args.pretty }, response.human));
+    // A batch that reports per-id failures still prints its full result, but a
+    // partial write must not look like success to a calling script.
+    if (response.result && response.result.ok === false) process.exitCode = 1;
   } finally {
     await client.close();
     await journal.close();

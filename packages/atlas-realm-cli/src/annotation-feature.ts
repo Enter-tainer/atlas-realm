@@ -50,10 +50,21 @@ export async function buildFeatureFromOptions(
   const patch = await readJsonOption(options.patchFile, options.patchJson, 'patch');
   const resolvedOptions = {
     ...options,
+    ...(await resolveFeatureFileOptions(options)),
+  };
+  return buildFeatureFromParts({ options: resolvedOptions, config, typeHint, existing, fullFeature, patch, now });
+}
+
+/**
+ * Resolve the text and list file options into their inline counterparts.
+ * Exported so a batch mutation reads each file once for the whole run instead
+ * of once per target.
+ */
+export async function resolveFeatureFileOptions(options: JsonRecord): Promise<JsonRecord> {
+  return {
     ...(await readTextFileOptions(options)),
     ...(await readListFileOptions(options)),
   };
-  return buildFeatureFromParts({ options: resolvedOptions, config, typeHint, existing, fullFeature, patch, now });
 }
 
 export function buildFeatureFromParts({

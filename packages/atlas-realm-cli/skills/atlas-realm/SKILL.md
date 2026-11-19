@@ -102,7 +102,7 @@ atlas-realm ... annotations update feature-9f3c… --label "Hotel (checked in)" 
 
 Objects that already exist keep their ids, so pre-v2 rooms can still hold readable ids (`day3-routes`, `poi-hotel`) that `get` / `update` / `delete` / `reorder` accept. For new objects, express meaning through `--name` / `--label` instead of trying to choose the id.
 
-**Order is a server field, not a client attribute.** `--sort-key` is ignored on create and on layer update: the server renumbers every sibling's `sortKey` to `(position + 1) * 10` (9-digit: `000000010`, `000000020`, …) whenever an object is created or deleted. New objects therefore land at the end of their layer, and sort keys of untouched siblings can change between snapshots — diff by id, never by sortKey. To set an order, send an explicit reorder, which the client translates into anchored `moveBefore` commands:
+**Order is a server field, not a client attribute.** `--sort-key` is rejected on annotation and layer add/update (`sort_key_not_supported`): the server renumbers every sibling's `sortKey` to `(position + 1) * 10` (9-digit: `000000010`, `000000020`, …) whenever an object is created or deleted. New objects therefore land at the end of their layer, and sort keys of untouched siblings can change between snapshots — diff by id, never by sortKey. To set an order, send an explicit reorder, which the client translates into anchored `moveBefore` commands:
 
 ```bash
 # layer order: pass every layer id, in the order you want
@@ -307,9 +307,11 @@ A GeoJSON Geometry object (`{"type":"LineString","coordinates":[…]}`) is not a
 ```bash
 atlas-realm --host <host> --room <room> --client-id <id> annotations update feature-9f3c… --label "Updated hotel" --json
 atlas-realm --host <host> --room <room> --client-id <id> annotations delete feature-9f3c… --json
-atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id <layer-id> --json
-atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id <layer-id> --hide-layer --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id <layer-id> --yes --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations clear --layer-id <layer-id> --hide-layer --yes --json
 ```
+
+`annotations clear` deletes every annotation in the layer and cannot be undone, so it requires `--yes`; without it the CLI fails with `confirmation_required` and writes nothing. Take a snapshot first if you need the data.
 
 For multiline labels or notes, prefer UTF-8 files with `--label-file` / `--note-file` so shell quoting does not alter line breaks. For complex features, pass full JSON with `--feature-file` / `--feature-json`; for partial updates, pass `--patch-file` / `--patch-json`.
 
@@ -317,7 +319,7 @@ Layer targeting:
 
 - `--layer-id <id>` writes the annotation into an existing annotation layer.
 - By default, the CLI fails before writing if the target layer does not exist or is a file layer. The JSON error includes `code`, `layerId`, `existingAnnotationLayerIds`, and a suggested create command.
-- Use `--ensure-layer` with `--layer-id` when a batch script should create the annotation layer if it is missing. Optional `--name` and `--visible` apply to the new layer only; `--sort-key` is not honored (the server owns order — see [Entity ids and ordering](#entity-ids-and-ordering-server-authoritative)).
+- Use `--ensure-layer` with `--layer-id` when a batch script should create the annotation layer if it is missing. Optional `--name` and `--visible` apply to the new layer only; `--sort-key` is rejected (`sort_key_not_supported`) because the server owns order — see [Entity ids and ordering](#entity-ids-and-ordering-server-authoritative).
 
 ### Annotation layers
 
@@ -325,7 +327,7 @@ Layer targeting:
 atlas-realm --host <host> --room <room> --client-id <id> annotations layers list --json
 atlas-realm --host <host> --room <room> --client-id <id> annotations layers add --name "Notes" --json   # => layer-<uuid>
 atlas-realm --host <host> --room <room> --client-id <id> annotations layers hide <layer-id> --json
-atlas-realm --host <host> --room <room> --client-id <id> annotations layers clear <layer-id> --json
+atlas-realm --host <host> --room <room> --client-id <id> annotations layers clear <layer-id> --yes --json
 atlas-realm --host <host> --room <room> --client-id <id> annotations layers delete <layer-id> --json
 ```
 
@@ -333,10 +335,19 @@ Annotation-layer ids are server-assigned like every other id; `annotations layer
 
 ## Scripting many mutations
 
-Agents usually batch this work in a script. Two habits keep the batches honest:
+Agents usually batch this work in a script. Three habits keep the batches honest:
 
-- Write each payload to a JSON file and pass `--feature-file` / `--patch-file`, instead of building long command lines or `shell=True` + f-string pipelines. Those pipelines can silently drop arguments containing quotes, `#` colors, or other special characters, and the command then looks successful while writing the wrong value.
+- **Batch in one command, not one command per object.** `annotations update` and `annotations delete` accept several targets: positionals, `--ids a,b,c`, or `--ids-file ids.txt` (one id per line, `#` comments allowed). One connection applies the whole patch, and the result reports per-id `failures` instead of aborting on the first miss — the CLI exits non-zero when any target failed, so check the exit code as well as `ok`.
+- Write each payload to a JSON file and pass `--feature-file` / `--patch-file`, and pass large geometry with `--geometry-file` / `--waypoints-file` / `--points-file`, instead of building long command lines or `shell=True` + f-string pipelines. Those pipelines can silently drop arguments containing quotes, `#` colors, or other special characters, and the command then looks successful while writing the wrong value. Routing engines return 20–60 kB point strings, which also blow past command-line length limits.
 - Read the object back with `annotations get <id> --json` (or `snapshot`) after critical writes. A successful response only means the command was accepted; it does not prove the field landed the way you intended.
+
+```bash
+# One connection, one patch, many annotations
+atlas-realm --host <host> --room <room> --client-id <id> annotations update --ids-file ids.txt --note-file note.md --json
+# Geometry from files
+atlas-realm --host <host> --room <room> --client-id <id> annotations add route --layer-id <layer-id> \
+  --waypoints-file waypoints.json --geometry-file geometry.json --label "Day 3" --json
+```
 
 ## Travel Planning Conventions
 

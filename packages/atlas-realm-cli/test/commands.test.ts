@@ -312,6 +312,7 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await rm(syncDirectory, { recursive: true, force: true });
+  process.exitCode = 0;
   if (originalStateDirectory === undefined) delete process.env.ATLAS_REALM_STATE_DIR;
   else process.env.ATLAS_REALM_STATE_DIR = originalStateDirectory;
   globalThis.fetch = originalFetch;
@@ -1730,6 +1731,38 @@ describe('TECH-100 CLI ergonomics', () => {
     await expect(
       executeCommand(client, { subject: 'annotations', action: 'layers', layerAction: 'add', sortKey: '000000012' }),
     ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
+  });
+
+  it('exits non-zero through the CLI when a batch partially fails', async () => {
+    globalThis.fetch = async () => Response.json({});
+    globalThis.WebSocket = FakeWebSocket as never;
+    FakeWebSocket.initialLayers = [];
+    const { io, lines } = captureIo();
+
+    // Both ids are absent from the room snapshot, so every target fails.
+    await runCli(
+      [
+        'annotations',
+        'update',
+        '--ids',
+        'missing-a,missing-b',
+        '--note',
+        'x',
+        '--host',
+        'https://example.com',
+        '--room',
+        'trip-room',
+        '--client-id',
+        'agent-a',
+        '--client-type',
+        'query',
+        '--json',
+      ],
+      io,
+    );
+
+    expect(JSON.parse(lines[0])).toMatchObject({ ok: false, requested: 2, updatedCount: 0 });
+    expect(process.exitCode).toBe(1);
   });
 
   it('applies "lng,lat" --coordinate strings identically on add and update', async () => {
