@@ -1,6 +1,7 @@
 import { RoomSyncClient, type Draft, type SyncJournal } from './sync-client.js';
 import type { BatchResult, ServerMessage } from './sync-protocol.js';
 import { isRecoverableSyncError } from './sync-protocol.js';
+import { isTransientConnectError, retryDelayMs, sleep, type RetryNotice } from './retry.js';
 import { buildApiUrl, buildSocketUrl } from './config.js';
 import { decodeFileContentMessage } from './protocol.js';
 import type {
@@ -32,6 +33,10 @@ export class RoomClient {
   private pendingRequest = Promise.resolve();
   private requests = new Map<string, { ids: Set<string>; mutation: JsonRecord }>();
   private uploadContent = new Map<string, Uint8Array>();
+  private closing = false;
+  private recovering: Promise<void> | null = null;
+  /** Socket still completing its handshake; drops are handled by the handshake promise. */
+  private handshakeSocket: WebSocketLike | null = null;
 
   constructor(
     config: AgentRoomConfig,
@@ -57,11 +62,7 @@ export class RoomClient {
       batchDelay: 0,
       load: journal ? () => journal.load() : undefined,
       save: journal ? (state) => journal.save(state) : undefined,
-      send: (message) => {
-        if (!this.socket || this.socket.readyState !== this.WebSocketImpl.OPEN) return false;
-        this.socket.send(message instanceof Uint8Array ? message : JSON.stringify(message));
-        return true;
-      },
+      send: (message) => this.sendOnSocket(message instanceof Uint8Array ? message : JSON.stringify(message)),
       publish: (layers, features) => {
         this.layers = layers as Layer[];
         this.annotationFeatures = features as AnnotationFeature[];
@@ -92,43 +93,150 @@ export class RoomClient {
       throw new Error('This CLI requires a Node.js runtime with a global WebSocket implementation');
     }
 
-    await this.ensureRoomRegistry();
-
-    const url = buildSocketUrl(this.config);
-    this.socket = new this.WebSocketImpl(url);
-    this.socket.binaryType = 'arraybuffer';
-
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`Timed out connecting to ${url}`)), this.config.timeoutMs);
-      const cleanup = () => {
-        clearTimeout(timer);
-        this.socket?.removeEventListener('open', onOpen);
-        this.socket?.removeEventListener('close', onClose);
-        this.socket?.removeEventListener('error', onError);
-      };
-      const onOpen = () => {
-        cleanup();
-        resolve();
-      };
-      const onClose = () => {
-        cleanup();
-        reject(new Error(`WebSocket closed before opening: ${url}`));
-      };
-      const onError = () => {
-        cleanup();
-        reject(new Error(`WebSocket connection failed: ${url}`));
-      };
-      this.socket?.addEventListener('open', onOpen);
-      this.socket?.addEventListener('close', onClose);
-      this.socket?.addEventListener('error', onError);
-      this.socket?.addEventListener('message', (event: MessageEvent) => this.handleMessage(event.data));
-    });
+    await this.openSocket();
 
     this.sync.connect(true);
     await Promise.all([
       this.waitFor((event: RoomEvent) => event.json?.type === 'presence:init', 'presence:init'),
       this.waitFor((event: RoomEvent) => event.json?.type === 'sync:snapshot', 'sync:snapshot'),
     ]);
+  }
+
+  /**
+   * Handshake with a bounded retry. Only safe because nothing is submitted
+   * before the snapshot arrives: a failed handshake leaves the room untouched.
+   */
+  async connectWithRetry({
+    attempts = 3,
+    onRetry,
+  }: { attempts?: number; onRetry?: (notice: RetryNotice) => void } = {}): Promise<void> {
+    const total = Math.max(1, attempts);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        await this.connect();
+        return;
+      } catch (error) {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        if (attempt >= total || !isTransientConnectError(normalized)) throw normalized;
+        this.dropSocket('retry');
+        const delayMs = retryDelayMs(attempt);
+        onRetry?.({ attempt, attempts: total, delayMs, error: normalized });
+        await sleep(delayMs);
+      }
+    }
+  }
+
+  private async openSocket(): Promise<void> {
+    await this.ensureRoomRegistry();
+    const url = buildSocketUrl(this.config);
+    const socket = new this.WebSocketImpl(url);
+    socket.binaryType = 'arraybuffer';
+    this.socket = socket;
+    // Listen before waiting for `open`: the server may push frames in the same
+    // tick it accepts the upgrade, and anything attached after the await would
+    // miss them. Drops are only routed to recovery once the handshake is done.
+    this.handshakeSocket = socket;
+    socket.addEventListener('message', (event: MessageEvent) => void this.handleMessage(event.data));
+    socket.addEventListener('close', () => {
+      if (this.handshakeSocket !== socket) this.handleSocketDown('closed');
+    });
+    socket.addEventListener('error', () => {
+      if (this.handshakeSocket !== socket) this.handleSocketDown('error');
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        detach();
+        reject(new Error(`Timed out connecting to ${url}`));
+      }, this.config.timeoutMs);
+      const detach = () => {
+        clearTimeout(timer);
+        socket.removeEventListener('open', onOpen);
+        socket.removeEventListener('close', onClose);
+        socket.removeEventListener('error', onError);
+      };
+      const onOpen = () => {
+        detach();
+        resolve();
+      };
+      const onClose = () => {
+        detach();
+        reject(new Error(`WebSocket closed before opening: ${url}`));
+      };
+      const onError = () => {
+        detach();
+        reject(new Error(`WebSocket connection failed: ${url}`));
+      };
+      socket.addEventListener('open', onOpen);
+      socket.addEventListener('close', onClose);
+      socket.addEventListener('error', onError);
+    });
+    this.handshakeSocket = null;
+  }
+
+  private handleSocketDown(reason: 'closed' | 'error'): void {
+    if (this.closing || this.recovering) return;
+    if (!this.socket) return;
+    this.dropSocket(reason);
+    void this.recoverConnection(reason);
+  }
+
+  private dropSocket(reason: string): void {
+    this.sync.disconnect();
+    const socket = this.socket;
+    this.socket = null;
+    // Events from the dead session must not satisfy waits registered against
+    // the replacement session.
+    this.events = [];
+    try {
+      socket?.close(1000, reason);
+    } catch {
+      // Already closed.
+    }
+  }
+
+  /**
+   * Re-open the socket and the sync session after an unexpected drop. Re-opening
+   * with the existing clientId makes the server replay our last result, so an
+   * in-flight submission is either settled (it landed) or re-sent (it did not).
+   */
+  private async recoverConnection(reason: string): Promise<void> {
+    if (this.recovering || this.closing) return;
+    this.recovering = (async () => {
+      const attempts = 4;
+      for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (this.closing) return;
+        try {
+          await this.connect();
+          return;
+        } catch (error) {
+          const normalized = error instanceof Error ? error : new Error(String(error));
+          if (attempt === attempts || !isTransientConnectError(normalized)) break;
+          await sleep(retryDelayMs(attempt));
+        }
+      }
+      this.failPendingWaits(reason);
+    })().finally(() => {
+      this.recovering = null;
+    });
+    await this.recovering;
+  }
+
+  private failPendingWaits(reason: string): void {
+    this.addEvent({ json: { type: 'connection:lost', reason } });
+  }
+
+  private sendOnSocket(message: string | Uint8Array): boolean {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== this.WebSocketImpl.OPEN) {
+      if (!this.closing && !this.recovering) {
+        this.dropSocket('send-failed');
+        void this.recoverConnection('send-failed');
+      }
+      return false;
+    }
+    socket.send(message);
+    return true;
   }
 
   async handleMessage(data: unknown): Promise<void> {
@@ -232,9 +340,14 @@ export class RoomClient {
         ? new Error(`Sync rejected: ${event.json.reason}. Read the current state before retrying.`)
         : event.json?.type === 'protocol:error'
           ? new Error('Sync protocol mismatch. Upgrade the CLI.')
-          : event.json?.type === 'sync:error' && !isRecoverableSyncError(event.json.reason)
-            ? new Error(fatalSyncErrorMessage(event.json))
-            : null;
+          : event.json?.type === 'connection:lost'
+            ? new Error(
+                `Room connection lost (${event.json.reason}) and could not be re-established. ` +
+                  `The command may or may not have been applied; read the room state before retrying.`,
+              )
+            : event.json?.type === 'sync:error' && !isRecoverableSyncError(event.json.reason)
+              ? new Error(fatalSyncErrorMessage(event.json))
+              : null;
     const matches = (event: RoomEvent) => (!requestId || event.json?.requestId === requestId) && predicate(event);
     for (const event of this.events) {
       const error = failure(event);
@@ -288,14 +401,48 @@ export class RoomClient {
     this.currentRequest = null;
     const frame = decodeFileContentMessage(bytes);
     if (frame) this.uploadContent.set(frame.contentHash, frame.content);
-    this.socket.send(bytes);
+    this.sendOnSocket(bytes);
   }
 
   async close(): Promise<void> {
+    this.closing = true;
     this.sync.dispose();
     for (const waiter of this.waiters) this.waiters.delete(waiter);
     if (this.socket && this.socket.readyState <= this.WebSocketImpl.OPEN) this.socket.close(1000, 'done');
     await this.sync.drain();
+  }
+
+  /**
+   * Resolve a submission whose acknowledgement never arrived. Re-opening the
+   * sync session makes the server replay its last result for this client, so
+   * the caller gets a definitive answer instead of "outcome may be unknown".
+   */
+  async resolvePendingOutcome({ timeoutMs = this.config.timeoutMs }: { timeoutMs?: number } = {}): Promise<
+    | { status: 'accepted' | 'rejected'; result: BatchResult }
+    | { status: 'unknown'; reason: string; result?: BatchResult }
+  > {
+    const outstanding = () => Boolean(this.sync.inFlight || this.sync.pending.length);
+    if (outstanding() && this.socket && this.socket.readyState === this.WebSocketImpl.OPEN) {
+      const seen = this.events.length;
+      this.sync.requestSnapshot(true);
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline && outstanding()) {
+        const snapshotArrived = this.events
+          .slice(seen)
+          .some((event) => event.json?.type === 'sync:snapshot' || event.json?.type === 'connection:lost');
+        if (snapshotArrived) break;
+        await sleep(25);
+      }
+    }
+    const last = this.sync.lastOutcome;
+    if (!outstanding() && last)
+      return last.status === 'accepted' ? { status: 'accepted', result: last } : { status: 'rejected', result: last };
+    const conflict = this.sync.conflicts.at(-1);
+    return {
+      status: 'unknown',
+      reason: conflict?.reason || (outstanding() ? 'no-response' : 'no-submission'),
+      ...(last ? { result: last } : {}),
+    };
   }
 }
 

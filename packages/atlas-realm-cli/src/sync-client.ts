@@ -790,8 +790,14 @@ export class RoomSyncClient {
           return;
         }
       this.sent = true;
-      if (!this.options.send(this.inFlight.operation)) this.sent = false;
-      else this.armRecovery();
+      // A failed send used to leave the operation parked forever: the caller
+      // then waited out its whole timeout for an acknowledgement that could
+      // never arrive. Re-schedule so the next pump (or the reconnected session)
+      // retries the same seq instead of dropping it.
+      if (!this.options.send(this.inFlight.operation)) {
+        this.sent = false;
+        this.schedulePump();
+      } else this.armRecovery();
     } finally {
       this.preparingIds.clear();
       this.pumping = false;
