@@ -517,6 +517,8 @@ export function normalizeAnnotationCommand(action: string | undefined, items: st
       sortKey: args.sortKey,
       updatedBy: args.updatedBy,
       hideLayer: args.hideLayer,
+      // Without this the layers clear guard can never be satisfied.
+      yes: args.yes,
     };
   }
 

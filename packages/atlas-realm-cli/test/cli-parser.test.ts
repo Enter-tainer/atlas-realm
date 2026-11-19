@@ -84,4 +84,12 @@ describe('annotation batch target parsing', () => {
     expect(deleted.featureType).toBeUndefined();
     expect(deleted.ids).toEqual(['route', 'text']);
   });
+
+  it('forwards --yes through the annotation layers branch so clear can be confirmed', () => {
+    // The layers branch builds its own command object; a missing field here
+    // made `annotations layers clear --yes` unsatisfiable.
+    const command = normalizeAnnotationCommand('layers', ['clear', 'day-1'], { yes: true });
+    expect(command.yes).toBe(true);
+    expect(normalizeAnnotationCommand('layers', ['clear', 'day-1'], {}).yes).toBeUndefined();
+  });
 });

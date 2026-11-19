@@ -1733,6 +1733,36 @@ describe('TECH-100 CLI ergonomics', () => {
     ).rejects.toMatchObject({ code: 'sort_key_not_supported' });
   });
 
+  it('requires and accepts --yes on annotations layers clear', async () => {
+    const client = new FakeRoomClient();
+    client.layers.push({
+      id: 'day-1',
+      kind: 'annotation',
+      name: 'Day 1',
+      visible: true,
+      sortKey: '000020',
+      payload: { version: 1 },
+      revision: 1,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    client.annotationFeatures.push({ ...pointFeature('stop-a'), layerId: 'day-1' });
+
+    await expect(
+      executeCommand(client, { subject: 'annotations', action: 'layers', layerAction: 'clear', id: 'day-1' }),
+    ).rejects.toMatchObject({ code: 'confirmation_required' });
+    expect(client.sentJson).toEqual([]);
+
+    const response = await executeCommand(client, {
+      subject: 'annotations',
+      action: 'layers',
+      layerAction: 'clear',
+      id: 'day-1',
+      yes: true,
+    });
+    expect(response.result).toMatchObject({ ok: true, layerId: 'day-1', deletedIds: ['stop-a'] });
+  });
+
   it('exits non-zero through the CLI when a batch partially fails', async () => {
     globalThis.fetch = async () => Response.json({});
     globalThis.WebSocket = FakeWebSocket as never;
