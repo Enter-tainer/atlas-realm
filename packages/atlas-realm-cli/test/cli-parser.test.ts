@@ -51,3 +51,21 @@ describe('annotation command feature types', () => {
     }
   });
 });
+
+describe('annotation batch target parsing', () => {
+  it('merges positionals and the --ids option into one target list', () => {
+    const command = normalizeAnnotationCommand('update', ['stop-a', 'stop-b'], { ids: 'stop-c, stop-d' });
+    expect(command.ids).toEqual(['stop-a', 'stop-b', 'stop-c', 'stop-d']);
+  });
+
+  it('excludes a second positional feature type from the target list', () => {
+    const command = normalizeAnnotationCommand('update', ['stop-a', 'weather'], {});
+    expect(command.featureType).toBe('weather');
+    expect(command.ids).toEqual(['stop-a']);
+  });
+
+  it('keeps reorder on the merged target list', () => {
+    const command = normalizeAnnotationCommand('reorder', ['stop-b'], { ids: 'stop-a,stop-c' });
+    expect(command.ids).toEqual(['stop-b', 'stop-a', 'stop-c']);
+  });
+});

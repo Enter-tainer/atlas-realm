@@ -1423,6 +1423,40 @@ describe('MapCollaboration layer storage', () => {
     expect(data.stale.result.reason).toBe('revision-conflict');
   });
 
+  it('normalizes a client-supplied sort key on feature creates instead of dropping the feature', async () => {
+    // TECH-100 reported a non-numeric sortKey silently dropping the feature
+    // with no rejection. The server owns ordering: creates append and get a
+    // renumbered position, whatever the client suggested. Pin that the odd
+    // sortKey neither drops the feature nor leaks into the stored row.
+    const data = await runInDO(roomStub('client-sortkey-normalization'), async (instance) => {
+      await instance.onStart();
+      const c = authorizeConnection(createConnection());
+      const created = (await submit(instance, c, [
+        {
+          type: 'create' as const,
+          kind: 'feature' as const,
+          localId: 'odd-sort',
+          data: annotationFeature('odd-sort', 'annotation-default', { sortKey: '0000000zz' }),
+        },
+        {
+          type: 'create' as const,
+          kind: 'feature' as const,
+          localId: 'plain-sort',
+          data: annotationFeature('plain-sort', 'annotation-default', { sortKey: '000000012' }),
+        },
+      ]))!.response;
+      return {
+        created,
+        rows: instance._listAnnotationFeatures(),
+      };
+    });
+    expect(data.created.result.status).toBe('accepted');
+    const ids = data.created.result.ids as Record<string, string>;
+    const byId = new Map(data.rows.map((row) => [row.id, row]));
+    expect(byId.get(ids['odd-sort'])).toMatchObject({ sortKey: '000000010' });
+    expect(byId.get(ids['plain-sort'])).toMatchObject({ sortKey: '000000020' });
+  });
+
   it('returns an atomic snapshot with the last rejected outcome and no historical receipts', async () => {
     const data = await runInDO(roomStub('snapshot-progress'), async (instance) => {
       await instance.onStart();
