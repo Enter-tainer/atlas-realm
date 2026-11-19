@@ -205,6 +205,55 @@ describe('connection lifecycle', () => {
   });
 });
 
+describe('lost acknowledgement resolution', () => {
+  /** A socket that never acknowledges, so the submission stays in flight. */
+  function sendWithoutAck(client: RoomClient) {
+    const wait = client.waitFor((event) => event.json?.type === 'layer:updated', 'layer update', 2_000);
+    client.sendJson({ type: 'layer:update', layerId: 'annotation-default', patch: { name: 'Renamed' } });
+    return wait.catch(() => undefined);
+  }
+
+  it('reports accepted when the replayed snapshot carries the last result', async () => {
+    const client = makeClient();
+    await client.connectWithRetry();
+    FlakySocket.autoAck = false;
+    const wait = sendWithoutAck(client);
+    await vi.waitFor(() => expect(FlakySocket.instances[0].submitted()).toBe(true));
+
+    // The server actually processed it; the reply was lost. A re-opened session
+    // replays lastResult, which settles the draft instead of rejecting it.
+    const pending = client.resolvePendingOutcome({ timeoutMs: 2_000 });
+    await Promise.resolve();
+    client.sync.requestSnapshot(true);
+    FlakySocket.instances[0].receive({
+      type: 'sync:snapshot',
+      protocol: 2,
+      epoch: 'test',
+      commitVersion: 2,
+      clientId: 'stream-1',
+      lastProcessedSeq: 1,
+      lastResult: { seq: 1, status: 'accepted', commitVersion: 2, ids: {}, versions: {} },
+      layers: [layer],
+      features: [],
+    });
+
+    await expect(pending).resolves.toMatchObject({ status: 'accepted' });
+    await wait;
+  });
+
+  it('reports unknown when the room never settles the submission', async () => {
+    const client = makeClient();
+    await client.connectWithRetry();
+    FlakySocket.autoAck = false;
+    const wait = sendWithoutAck(client);
+    await vi.waitFor(() => expect(FlakySocket.instances[0].submitted()).toBe(true));
+
+    const outcome = await client.resolvePendingOutcome({ timeoutMs: 300 });
+    expect(outcome.status).toBe('unknown');
+    await wait;
+  });
+});
+
 describe('transient error classification', () => {
   it('retries transport and handshake failures', () => {
     const fetchFailed = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } });

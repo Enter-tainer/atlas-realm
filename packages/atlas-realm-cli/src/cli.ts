@@ -622,8 +622,9 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
           Boolean(event.json?.type.startsWith('sync:')) && !client.sync.pending.length && !client.sync.inFlight,
         'previous submission recovery',
       );
+      const clean = client.sync.conflicts.length === 0;
       const result = {
-        ok: client.sync.conflicts.length === 0,
+        ok: clean,
         recovered: true,
         requestedCommandExecuted: false,
         room: config.room,
@@ -631,13 +632,13 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
         conflicts: client.sync.conflicts,
       };
       args.io.log(
-        formatOutput(
-          result,
-          { json: args.json, pretty: args.pretty },
-          () =>
-            'Recovered previous edits. The requested command was not executed; inspect the recovery result before issuing a new command.',
+        formatOutput(result, { json: args.json, pretty: args.pretty }, () =>
+          clean
+            ? 'Recovered a previous submission (applied). The requested command was not executed; re-run it if you still need it.'
+            : 'Recovered a previous submission with conflicts. The requested command was not executed; inspect the conflicts first.',
         ),
       );
+      if (!clean) process.exitCode = 1;
       return;
     }
     if (config.clientType === 'agent') await touchAgentAction(client, commandActionLabel(command));
@@ -656,8 +657,8 @@ async function runRoomCommand(command: Command, args: JsonRecord): Promise<void>
           data.applied === true
             ? 'The submission did land; the room already reflects this command.'
             : data.applied === false
-              ? 'The submission did not land. It is safe to re-run the command.'
-              : 'The submission outcome could not be determined. Read the room state before re-running.',
+              ? `The submission did not land (${data.reason || 'rejected'}). It is safe to re-run the command.`
+              : `The submission outcome could not be determined (${data.reason || 'no response'}). Read the room state before re-running.`,
         ),
       );
       if (resolved.applied !== true) process.exitCode = 1;

@@ -71,107 +71,140 @@ export class RoomClient {
     });
   }
 
-  async ensureRoomRegistry(): Promise<void> {
+  async ensureRoomRegistry(timeoutMs = this.config.timeoutMs): Promise<void> {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (this.config.accessToken) headers.Authorization = `Bearer ${this.config.accessToken}`;
-    const response = await fetch(buildApiUrl(this.config, '/api/rooms'), {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ roomId: this.config.room }),
-    });
+    // The preflight must not outlive the command's budget: a hung DNS lookup or
+    // a silent TCP black hole would otherwise stall a single-shot invocation.
+    const controller = typeof AbortController === 'function' ? new AbortController() : null;
+    const timer = controller ? setTimeout(() => controller.abort(), Math.max(1000, timeoutMs)) : null;
+    let response: Response;
+    try {
+      response = await fetch(buildApiUrl(this.config, '/api/rooms'), {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ roomId: this.config.room }),
+        ...(controller ? { signal: controller.signal } : {}),
+      });
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
     if (!response.ok && response.status !== 501) {
       throw new Error(`Failed to prepare room registry: HTTP ${response.status}`);
     }
   }
 
-  async connect(): Promise<void> {
+  /**
+   * @param timeoutMs budget for this attempt (dial + handshake). Callers that
+   *   retry pass their remaining budget so the whole command stays bounded.
+   */
+  async connect(timeoutMs = this.config.timeoutMs): Promise<void> {
     await this.sync.loaded;
     if (this.sync.storageError) throw new Error(this.sync.storageError);
     if (typeof this.WebSocketImpl === 'undefined') {
       throw new Error('This CLI requires a Node.js runtime with a global WebSocket implementation');
     }
 
-    await this.openSocket();
+    const deadline = Date.now() + Math.max(1000, timeoutMs);
+    await this.openSocket(deadline);
+    const remaining = () => Math.max(1000, deadline - Date.now());
 
     this.sync.connect(true);
     await Promise.all([
-      this.waitFor((event: RoomEvent) => event.json?.type === 'presence:init', 'presence:init'),
-      this.waitFor((event: RoomEvent) => event.json?.type === 'sync:snapshot', 'sync:snapshot'),
+      this.waitFor((event: RoomEvent) => event.json?.type === 'presence:init', 'presence:init', remaining()),
+      this.waitFor((event: RoomEvent) => event.json?.type === 'sync:snapshot', 'sync:snapshot', remaining()),
     ]);
   }
 
   /**
    * Handshake with a bounded retry. Only safe because nothing is submitted
    * before the snapshot arrives: a failed handshake leaves the room untouched.
+   * The attempts share one budget so a flaky link cannot multiply the wait.
    */
   async connectWithRetry({
     attempts = 3,
+    budgetMs = this.config.timeoutMs,
     onRetry,
-  }: { attempts?: number; onRetry?: (notice: RetryNotice) => void } = {}): Promise<void> {
+  }: { attempts?: number; budgetMs?: number; onRetry?: (notice: RetryNotice) => void } = {}): Promise<void> {
     const total = Math.max(1, attempts);
+    const deadline = Date.now() + Math.max(1000, budgetMs);
+    let lastError: Error | undefined;
     for (let attempt = 1; ; attempt++) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
       try {
-        await this.connect();
+        await this.connect(remaining);
         return;
       } catch (error) {
-        const normalized = error instanceof Error ? error : new Error(String(error));
-        if (attempt >= total || !isTransientConnectError(normalized)) throw normalized;
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt >= total || !isTransientConnectError(lastError)) throw lastError;
         this.dropSocket('retry');
-        const delayMs = retryDelayMs(attempt);
-        onRetry?.({ attempt, attempts: total, delayMs, error: normalized });
-        await sleep(delayMs);
+        const delayMs = Math.min(retryDelayMs(attempt), Math.max(0, deadline - Date.now()) / 2);
+        onRetry?.({ attempt, attempts: total, delayMs, error: lastError });
+        if (delayMs > 0) await sleep(delayMs);
       }
     }
+    throw lastError ?? new Error('Timed out establishing the room connection');
   }
 
-  private async openSocket(): Promise<void> {
-    await this.ensureRoomRegistry();
+  private async openSocket(deadline: number): Promise<void> {
+    await this.ensureRoomRegistry(Math.max(1000, deadline - Date.now()));
     const url = buildSocketUrl(this.config);
     const socket = new this.WebSocketImpl(url);
     socket.binaryType = 'arraybuffer';
     this.socket = socket;
+    const timeoutMs = Math.max(1000, deadline - Date.now());
     // Listen before waiting for `open`: the server may push frames in the same
     // tick it accepts the upgrade, and anything attached after the await would
     // miss them. Drops are only routed to recovery once the handshake is done.
     this.handshakeSocket = socket;
     socket.addEventListener('message', (event: MessageEvent) => void this.handleMessage(event.data));
+    // Ignore anything from a socket we already replaced, and let the handshake
+    // promise own failures while this socket is still coming up.
     socket.addEventListener('close', () => {
-      if (this.handshakeSocket !== socket) this.handleSocketDown('closed');
+      if (socket !== this.socket || this.handshakeSocket === socket) return;
+      this.handleSocketDown('closed');
     });
     socket.addEventListener('error', () => {
-      if (this.handshakeSocket !== socket) this.handleSocketDown('error');
+      if (socket !== this.socket || this.handshakeSocket === socket) return;
+      this.handleSocketDown('error');
     });
 
-    await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        detach();
-        reject(new Error(`Timed out connecting to ${url}`));
-      }, this.config.timeoutMs);
-      const detach = () => {
-        clearTimeout(timer);
-        socket.removeEventListener('open', onOpen);
-        socket.removeEventListener('close', onClose);
-        socket.removeEventListener('error', onError);
-      };
-      const onOpen = () => {
-        detach();
-        resolve();
-      };
-      const onClose = () => {
-        detach();
-        reject(new Error(`WebSocket closed before opening: ${url}`));
-      };
-      const onError = () => {
-        detach();
-        reject(new Error(`WebSocket connection failed: ${url}`));
-      };
-      socket.addEventListener('open', onOpen);
-      socket.addEventListener('close', onClose);
-      socket.addEventListener('error', onError);
-    });
-    this.handshakeSocket = null;
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          detach();
+          reject(new Error(`Timed out connecting to ${url}`));
+        }, timeoutMs);
+        const detach = () => {
+          clearTimeout(timer);
+          socket.removeEventListener('open', onOpen);
+          socket.removeEventListener('close', onClose);
+          socket.removeEventListener('error', onError);
+        };
+        const onOpen = () => {
+          detach();
+          resolve();
+        };
+        const onClose = () => {
+          detach();
+          reject(new Error(`WebSocket closed before opening: ${url}`));
+        };
+        const onError = () => {
+          detach();
+          reject(new Error(`WebSocket connection failed: ${url}`));
+        };
+        socket.addEventListener('open', onOpen);
+        socket.addEventListener('close', onClose);
+        socket.addEventListener('error', onError);
+      });
+    } finally {
+      // Cleared on both paths so a later drop of this socket is handled by the
+      // persistent listeners above.
+      if (this.handshakeSocket === socket) this.handshakeSocket = null;
+    }
   }
 
   private handleSocketDown(reason: 'closed' | 'error'): void {
@@ -204,15 +237,19 @@ export class RoomClient {
     if (this.recovering || this.closing) return;
     this.recovering = (async () => {
       const attempts = 4;
+      const deadline = Date.now() + Math.max(1000, this.config.timeoutMs);
       for (let attempt = 1; attempt <= attempts; attempt++) {
         if (this.closing) return;
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
         try {
-          await this.connect();
+          await this.connect(remaining);
           return;
         } catch (error) {
           const normalized = error instanceof Error ? error : new Error(String(error));
-          if (attempt === attempts || !isTransientConnectError(normalized)) break;
-          await sleep(retryDelayMs(attempt));
+          if (!isTransientConnectError(normalized)) break;
+          const delayMs = Math.min(retryDelayMs(attempt), Math.max(0, deadline - Date.now()) / 2);
+          if (delayMs > 0) await sleep(delayMs);
         }
       }
       this.failPendingWaits(reason);
