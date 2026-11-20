@@ -20,6 +20,7 @@ import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
 import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
+import { installLoadStatus, type LoadStatusMap } from './load-status.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -629,6 +630,9 @@ async function init() {
 
     window._mlmap = map;
     map.addControl(new maplibregl.NavigationControl({ showCompass: true }), 'top-right');
+    installLoadStatus(map as unknown as LoadStatusMap, (style.sources ?? {}) as Record<string, { type?: unknown }>, [
+      ORM_SOURCE,
+    ]);
     const geolocateOptions: GeolocateControlOptionsWithHeading = {
       positionOptions: { enableHighAccuracy: true },
       trackUserLocation: true,

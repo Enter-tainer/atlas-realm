@@ -4026,3 +4026,83 @@ body,
     animation: none;
   }
 }
+
+/* Tile loading status (src/load-status.ts): bottom centre, the end the collab
+   panel does not take. Below 760px the collab panel drops to the bottom, so the
+   chip rises to just under the search box. */
+.load-status {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: calc(100vw - 24px);
+  padding: 5px 12px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.1);
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+}
+
+.load-status[hidden],
+.load-status-spinner[hidden],
+.load-status-retry[hidden] {
+  display: none;
+}
+
+.load-status-failed {
+  color: #991b1b;
+  pointer-events: auto;
+}
+
+.load-status-spinner {
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  border: 2px solid rgba(15, 23, 42, 0.18);
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: load-status-spin 0.8s linear infinite;
+}
+
+.load-status-retry {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #1d4ed8;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.load-status-retry:hover,
+.load-status-retry:focus-visible {
+  text-decoration: underline;
+}
+
+@keyframes load-status-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .load-status-spinner {
+    animation-duration: 2.4s;
+  }
+}
+
+@media (max-width: 760px) {
+  .load-status {
+    top: 64px;
+    bottom: auto;
+  }
+}
