@@ -28,6 +28,7 @@ type TileManagerLike = { getIds(): string[]; getTileByID(id: string): { state?: 
 export type LoadStatusMap = {
   getContainer(): HTMLElement;
   getSource(id: string): unknown;
+  getStyle?(): { sources?: Record<string, SourceLike> } | undefined;
   isSourceLoaded(id: string): boolean;
   on(type: string, listener: (event: TileEvent) => void): unknown;
   style?: unknown;
@@ -88,9 +89,25 @@ export function installLoadStatus(
   railwaySources: string[],
   ignored: string[] = [],
 ) {
-  const groups = loadGroups(sources, railwaySources, ignored);
-  const groupOf = new Map<string, LoadGroup>();
-  for (const group of ['railways', 'map'] as const) for (const id of groups[group]) groupOf.set(id, group);
+  // The style is usually still loading when the chip is installed, and the
+  // sources it was given may be the ones of a style not yet in the map, so the
+  // groups are read again whenever the map's style has sources.
+  let groups: Record<LoadGroup, string[]> = { railways: [], map: [] };
+  let groupOf = new Map<string, LoadGroup>();
+  const regroup = () => {
+    let current = sources;
+    try {
+      const fromMap = map.getStyle?.()?.sources;
+      if (fromMap && Object.keys(fromMap).length > 0) current = fromMap;
+    } catch {
+      // No style yet: keep what the caller gave.
+    }
+    groups = loadGroups(current, railwaySources, ignored);
+    const next = new Map<string, LoadGroup>();
+    for (const group of ['railways', 'map'] as const) for (const id of groups[group]) next.set(id, group);
+    if (next.size !== groupOf.size || [...next].some(([id, group]) => groupOf.get(id) !== group)) groupOf = next;
+  };
+  regroup();
   // For the fallback: failed tiles by source, as tile keys from error events.
   const failedTiles = new Map<string, Set<unknown>>();
   let tileManagersBroken = false;
@@ -169,6 +186,7 @@ export function installLoadStatus(
   let timer: ReturnType<typeof setTimeout> | undefined;
   const update = () => {
     frame = 0;
+    regroup();
     statuses = new Map([...groupOf.keys()].map((id) => [id, sourceStatus(id)]));
     const status = { railways: groupStatus('railways'), map: groupStatus('map') };
     loadingSince = status.railways.loading || status.map.loading ? (loadingSince ?? Date.now()) : null;
@@ -199,7 +217,9 @@ export function installLoadStatus(
     if (event.sourceId && event.tile) failedTiles.get(event.sourceId)?.delete(event.tile.tileID?.key);
     schedule();
   });
-  for (const type of ['sourcedataloading', 'dataloading', 'data', 'idle', 'movestart']) map.on(type, schedule);
+  for (const type of ['style.load', 'sourcedataloading', 'dataloading', 'data', 'idle', 'movestart']) {
+    map.on(type, schedule);
+  }
 
   retry.addEventListener('click', () => {
     for (const [id, status] of statuses) {

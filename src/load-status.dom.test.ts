@@ -121,6 +121,32 @@ describe('installLoadStatus', () => {
     expect(chip.querySelector('.load-status-text')?.textContent).toBe('Loading railways…');
   });
 
+  it('picks up the sources that come with the style', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const listeners = new Map<string, (event: unknown) => void>();
+    let styled = false;
+    const map = {
+      getContainer: () => container,
+      getSource: (id: string): unknown => (styled && id === 'openrailwaymap' ? {} : undefined),
+      getStyle: () => (styled ? { sources: { openrailwaymap: { type: 'vector' } } } : undefined),
+      isSourceLoaded: (): boolean => false,
+      on: (type: string, listener: (event: unknown) => void): void => {
+        listeners.set(type, listener);
+      },
+      style: {},
+    } as unknown as LoadStatusMap;
+    const chip = installLoadStatus(map, {}, ['openrailwaymap']);
+    await nextFrame();
+    expect(chip.hidden).toBe(true);
+
+    styled = true;
+    listeners.get('style.load')?.({});
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(chip.hidden).toBe(false);
+    expect(chip.querySelector('.load-status-text')?.textContent).toBe('Loading railways…');
+  });
+
   it('stays hidden while nothing is loading', async () => {
     const fake = fakeMap(['loaded', 'loaded']);
     const chip = installLoadStatus(fake.map, { openrailwaymap: { type: 'vector' } }, ['openrailwaymap']);
