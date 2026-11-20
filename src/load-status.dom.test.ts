@@ -100,6 +100,27 @@ describe('installLoadStatus', () => {
     expect(fake.source.setTiles).toHaveBeenCalledWith(['https://map.test/{z}/{x}/{y}.mvt']);
   });
 
+  it('shows loading while the style is still coming in, after a short delay', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const map = {
+      getContainer: () => container,
+      getSource: (): undefined => undefined,
+      isSourceLoaded: (): boolean => {
+        throw new Error('Style is not done loading.');
+      },
+      on: (): void => {},
+      style: {},
+    } as unknown as LoadStatusMap;
+    const chip = installLoadStatus(map, { openrailwaymap: { type: 'vector' } }, ['openrailwaymap']);
+    await nextFrame();
+    expect(chip.hidden).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(chip.hidden).toBe(false);
+    expect(chip.querySelector('.load-status-text')?.textContent).toBe('Loading railways…');
+  });
+
   it('stays hidden while nothing is loading', async () => {
     const fake = fakeMap(['loaded', 'loaded']);
     const chip = installLoadStatus(fake.map, { openrailwaymap: { type: 'vector' } }, ['openrailwaymap']);

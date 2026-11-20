@@ -112,7 +112,9 @@ export function installLoadStatus(
     if (tileManagersBroken) return null;
     try {
       const managers = (map.style as { tileManagers?: Record<string, TileManagerLike> } | undefined)?.tileManagers;
-      const manager = managers?.[id];
+      // Not there yet: the style is still loading, or adds this source later.
+      if (!managers || !(id in managers)) return null;
+      const manager = managers[id];
       if (typeof manager?.getIds !== 'function' || typeof manager.getTileByID !== 'function') {
         throw new Error(`no tile manager with getIds() and getTileByID() for source "${id}"`);
       }
@@ -136,9 +138,17 @@ export function installLoadStatus(
   };
 
   const sourceStatus = (id: string): GroupStatus => {
-    // Not there yet: the style is still loading.
-    if (!map.getSource(id)) return { loading: true, pending: null, failed: 0 };
-    const loaded = map.isSourceLoaded(id);
+    // Not there yet, or the style is still loading (isSourceLoaded throws
+    // before it is in): nothing to tell yet, so count it as loading.
+    let source: unknown;
+    let loaded = false;
+    try {
+      source = map.getSource(id);
+      loaded = map.isSourceLoaded(id);
+    } catch {
+      return { loading: true, pending: null, failed: 0 };
+    }
+    if (!source) return { loading: true, pending: null, failed: 0 };
     const counts = tileCounts(id);
     if (counts) return { loading: !loaded || counts.pending > 0, pending: counts.pending, failed: counts.failed };
     return { loading: !loaded, pending: null, failed: failedTiles.get(id)?.size ?? 0 };
