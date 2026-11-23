@@ -41,19 +41,10 @@ export default {
       }
     }
 
+    // Static assets (including /orm/*) are served at the edge before the Worker
+    // runs unless routed via run_worker_first; /orm/* CORS headers live in public/_headers.
     const assetResponse = await env.ASSETS.fetch(request);
-    if (assetResponse.status !== 404) {
-      if (url.pathname.startsWith('/orm/')) {
-        const headers = new Headers(assetResponse.headers);
-        headers.set('Access-Control-Allow-Origin', '*');
-        return new Response(assetResponse.body, {
-          status: assetResponse.status,
-          statusText: assetResponse.statusText,
-          headers,
-        });
-      }
-      return assetResponse;
-    }
+    if (assetResponse.status !== 404) return assetResponse;
     const spaResponse = await env.ASSETS.fetch(new Request(new URL('/', request.url), request));
     return spaResponse.status !== 404 ? spaResponse : new Response('Not Found', { status: 404 });
   },

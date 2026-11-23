@@ -5,6 +5,9 @@
 
 # Style JSON is versioned through the ?v=<hash> query string that the app
 # appends, so a short TTL is enough here.
+# Cloudflare Static Assets serves /orm/* directly at the edge before the Worker
+# runs (no run_worker_first), so Access-Control-Allow-Origin here is the active
+# CORS configuration for cross-origin consumers.
 /orm/style/*
   Cache-Control: public, max-age=300
   Access-Control-Allow-Origin: *

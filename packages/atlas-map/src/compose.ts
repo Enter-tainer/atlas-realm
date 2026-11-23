@@ -246,6 +246,9 @@ function normalizeOrmLayerFonts<T>(value: T): T {
 
 export function rewriteOrmStyle(style: StyleLike, tileUrl: string, ormOrigin?: string): StyleLike {
   const cloned = structuredClone(style);
+  if (typeof cloned.glyphs === 'string') {
+    cloned.glyphs = resolveOrmUrl(cloned.glyphs, ormOrigin);
+  }
   cloned.layers = cloned.layers
     ?.map(normalizeOrmLayerFonts)
     .map(withRouteLineColors)
