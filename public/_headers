@@ -7,13 +7,17 @@
 # appends, so a short TTL is enough here.
 /orm/style/*
   Cache-Control: public, max-age=300
+  Access-Control-Allow-Origin: *
 
 # Glyphs and sprites change only when the style is rebuilt.
 /orm/font/*
   Cache-Control: public, max-age=604800
+  Access-Control-Allow-Origin: *
 
 /orm/sprite/*
   Cache-Control: public, max-age=604800
+  Access-Control-Allow-Origin: *
 
 /orm/sdf_sprite/*
   Cache-Control: public, max-age=604800
+  Access-Control-Allow-Origin: *

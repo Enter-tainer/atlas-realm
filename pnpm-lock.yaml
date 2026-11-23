@@ -91,6 +91,15 @@ importers:
         specifier: ^2.8.2
         version: 2.8.4
 
+  packages/atlas-map:
+    dependencies:
+      maplibre-contour:
+        specifier: '>=0.0.5 <1.0.0'
+        version: 0.0.5
+      maplibre-gl:
+        specifier: '>=5.0.0 <7.0.0'
+        version: 5.24.0
+
   packages/atlas-realm-cli:
     dependencies:
       yargs:
