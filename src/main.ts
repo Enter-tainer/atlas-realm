@@ -1,8 +1,6 @@
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './style.css';
 import maplibregl from 'maplibre-gl';
-import mlcontour from 'maplibre-contour';
-import type { GlobalContourTileOptions } from 'maplibre-contour/dist/types';
 import createIconElement from 'lucide/dist/esm/createElement.mjs';
 import SatelliteIcon from 'lucide/dist/esm/icons/satellite.mjs';
 import { installGpxDragDrop, drainGpxQueue, processOrQueueGpx, processOrQueueGeoJson, mergeBounds } from './gpx.js';
@@ -12,10 +10,21 @@ import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
 import { installLayerManager } from './layer-manager.js';
 import { installOsrmRouting } from './routing.js';
-import { setGlobalStatePropertyWhenReady, runWhenStyleInfrastructureReady } from './style-ready.js';
-import { dropBaseRelief } from './style-base.js';
-import { withRouteLineColors, withRouteStationColors } from './style-railway-colors.js';
-import { hideTunnelAndBridgeMarks } from './style-railway-marks.js';
+import {
+  ORM_SOURCE,
+  SHOW_BASE_MAP_STATE,
+  TerrainToggleControl,
+  addMapterhornTerrain,
+  addSatelliteSourceAndLayer,
+  installSpriteFallback,
+  mergeBaseAndOrm,
+  rewriteOrmStyle,
+  runWhenStyleInfrastructureReady,
+  setGlobalStatePropertyWhenReady,
+  setupMapterhornDem,
+  type DemSourceLike,
+  type StyleLike,
+} from '@atlas-realm/map';
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
@@ -38,13 +47,8 @@ const TILE_URL = fetch(`/tiles/${TILE_ARCHIVE}/version`)
     const query = version ? `?v=${encodeURIComponent(version)}` : '';
     return `${window.location.origin}/tiles/${TILE_ARCHIVE}/{z}/{x}/{y}.mvt${query}`;
   });
-// The single vector source every railway layer draws from.
-const ORM_SOURCE = 'openrailwaymap';
 const OPENFREEMAP_STYLE = 'https://tiles.openfreemap.org/styles/liberty';
-const MAPTERHORN_TERRAIN_URL = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
-const SATELLITE_URL = 'https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}';
 const FULLSCREEN_ACTIVE_CLASS = 'route-map-fullscreen-active';
-const SHOW_BASE_MAP_STATE = 'showBaseMap';
 
 const app = document.querySelector('#app');
 app.innerHTML = `
@@ -54,37 +58,10 @@ app.innerHTML = `
 const featuresCatalog = buildFeatureCatalog();
 const layerStore = new LayerStore();
 
-type JsonRecord = Record<string, unknown>;
-type StyleLayerLike = JsonRecord & {
-  id?: string;
-  type?: string;
-  layout?: JsonRecord;
-};
-type StyleLike = JsonRecord & {
-  glyphs?: string;
-  sprite?: string | Array<JsonRecord & { id?: string; url: string }>;
-  sources?: Record<string, JsonRecord>;
-  layers?: StyleLayerLike[];
-  metadata?: JsonRecord;
-  state?: Record<string, JsonRecord>;
-  center?: maplibregl.LngLatLike;
-  zoom?: number;
-};
-type SpriteSpec = JsonRecord & { id: string; url: string };
 type MapLibreErrorEvent = ErrorEvent & {
   error?: unknown;
   sourceId?: string;
   tile?: unknown;
-};
-type DemSourceLike = {
-  setupMaplibre(maplibre: typeof maplibregl): void;
-  contourProtocolUrl(options: GlobalContourTileOptions): string;
-};
-type SpriteAtlas = {
-  prefix: string;
-  index: Record<string, { x: number; y: number; width: number; height: number; pixelRatio?: number }>;
-  image: CanvasImageSource;
-  sdf: boolean;
 };
 type Bounds = [[number, number], [number, number]];
 type SwrCacheEntry = { response: Response; timestamp: number };
@@ -119,10 +96,6 @@ async function loadScreenshotFixture() {
   return (await import('./screenshot-fixture.js')) as ScreenshotFixture;
 }
 
-function absoluteUrl(path: string) {
-  return `${window.location.origin}${path}`;
-}
-
 function importNameFromUrl(url: string, fallback: string) {
   try {
     const parsed = new URL(url, window.location.href);
@@ -137,36 +110,6 @@ async function loadJson<T>(url: string): Promise<T> {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
   return (await res.json()) as T;
-}
-
-async function loadImage(url: string): Promise<HTMLImageElement> {
-  return await new Promise((resolve, reject) => {
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => resolve(img);
-    img.onerror = reject;
-    img.src = url;
-  });
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((item) => typeof item === 'string');
-}
-
-function isFontStack(value: unknown): value is string[] {
-  return isStringArray(value) && value.some((fontName) => /(?:Noto Sans|Fira Code)/.test(fontName));
-}
-
-function coerceSpriteList(sprite: StyleLike['sprite'], defaultId: string): SpriteSpec[] {
-  if (!sprite) return [];
-  if (typeof sprite === 'string') return [{ id: defaultId, url: sprite }];
-  return sprite.map((entry) => ({ ...entry, id: entry.id || defaultId }));
-}
-
-function rewriteOrmSpriteUrl(url: string): string {
-  if (url.startsWith('/orm/')) return absoluteUrl(url);
-  if (url.startsWith('/')) return absoluteUrl(`/orm${url}`);
-  return url;
 }
 
 function appendIcon(parent: Element, icon: LucideIcon, className = 'satellite-icon') {
@@ -205,310 +148,6 @@ async function fetchWithSwr(url: string, ttlMs = 3600_000) {
   return res;
 }
 
-function rewriteOrmStyle(style: StyleLike, tileUrl: string): StyleLike {
-  style.layers = style.layers
-    ?.map(normalizeOrmLayerFonts)
-    .map(withRouteLineColors)
-    .map(withRouteStationColors)
-    .map(hideTunnelAndBridgeMarks);
-  style.sprite = coerceSpriteList(style.sprite, 'orm').map((sprite) => ({
-    ...sprite,
-    id: sprite.id === 'default' ? 'orm' : sprite.id,
-    url: rewriteOrmSpriteUrl(sprite.url),
-  }));
-
-  // Every railway layer draws from one archive, so all the local vector sources
-  // become a single source: MapLibre loads tiles per source, and several sources
-  // on the same tile URL fetch and decode the same tiles once per source.
-  const localVectorSources = Object.entries(style.sources || {}).filter(
-    ([, source]) => source?.type === 'vector' && typeof source.url === 'string' && source.url.startsWith('/'),
-  );
-  const rewrittenSources = localVectorSources.map(([name]) => name);
-  if (localVectorSources.length > 0) {
-    const [, firstSource] = localVectorSources[0];
-    const sources = { ...(style.sources || {}) };
-    for (const [name] of localVectorSources) delete sources[name];
-    sources[ORM_SOURCE] = {
-      type: 'vector',
-      tiles: [tileUrl],
-      attribution: firstSource.attribution,
-      bounds: firstSource.bounds,
-      maxzoom: 15,
-    };
-    style.sources = sources;
-    style.layers = style.layers?.map((layer) =>
-      layer.source && rewrittenSources.includes(String(layer.source)) ? { ...layer, source: ORM_SOURCE } : layer,
-    );
-  }
-
-  style.metadata = {
-    ...(style.metadata || {}),
-    ormClone: true,
-    ormRewrittenSources: rewrittenSources,
-  };
-
-  return style;
-}
-
-function normalizeOrmFontName(fontName: string): string {
-  if (fontName.includes('Italic')) return 'Noto Sans Italic';
-  if (fontName.includes('Bold') || fontName.includes('Fira Code')) return 'Noto Sans Bold';
-  return 'Noto Sans Regular';
-}
-
-function normalizeTextFont(value: unknown): unknown {
-  if (isFontStack(value)) return [normalizeOrmFontName(value[0] || 'Noto Sans Regular')];
-  if (!Array.isArray(value)) return value;
-  if (value[0] === 'literal' && isFontStack(value[1])) {
-    return ['literal', [normalizeOrmFontName(value[1][0] || 'Noto Sans Regular')]];
-  }
-  return value.map((item) => normalizeTextFont(item));
-}
-
-function normalizeOrmLayerFonts<T>(value: T): T {
-  if (Array.isArray(value)) return value.map(normalizeOrmLayerFonts) as T;
-  if (!value || typeof value !== 'object') return value;
-  const normalized: JsonRecord = {};
-  for (const [key, child] of Object.entries(value)) {
-    if (key === 'text-font') {
-      normalized[key] = normalizeTextFont(child);
-    } else if (key === 'icon-image' || key === 'fill-pattern' || key === 'line-pattern') {
-      normalized[key] = namespaceOrmImageReference(child);
-    } else {
-      normalized[key] = normalizeOrmLayerFonts(child);
-    }
-  }
-  return normalized as T;
-}
-
-function namespaceOrmImageId(id: string): string {
-  if (!id || id.startsWith('sdf:') || id.startsWith('orm:')) return id;
-  return `orm:${id}`;
-}
-
-function namespaceOrmImageReference(value: unknown): unknown {
-  if (typeof value === 'string') return namespaceOrmImageId(value);
-  if (!Array.isArray(value)) return value;
-
-  const [operator, ...args] = value;
-  if (operator === 'image') {
-    return ['image', namespaceOrmImageReference(args[0])];
-  }
-
-  if (operator === 'concat') {
-    const first = args[0];
-    if (typeof first === 'string' && (first.startsWith('sdf:') || first.startsWith('orm:'))) return value;
-    return ['concat', 'orm:', ...args];
-  }
-
-  if (operator === 'case') {
-    return value.map((item, index) =>
-      index >= 2 && (index % 2 === 0 || index === value.length - 1) ? namespaceOrmImageReference(item) : item,
-    );
-  }
-
-  if (operator === 'match') {
-    return value.map((item, index) =>
-      (index > 2 && index % 2 === 1) || index === value.length - 1 ? namespaceOrmImageReference(item) : item,
-    );
-  }
-
-  if (operator === 'step') {
-    return value.map((item, index) =>
-      index === 2 || (index > 3 && index % 2 === 0) ? namespaceOrmImageReference(item) : item,
-    );
-  }
-
-  if (operator === 'coalesce') {
-    return [operator, ...args.map(namespaceOrmImageReference)];
-  }
-
-  return ['concat', 'orm:', value];
-}
-
-function mergeStyleSprites(baseSprite: StyleLike['sprite'], ormSprite: StyleLike['sprite']): SpriteSpec[] | undefined {
-  const mergedSprites = [...coerceSpriteList(baseSprite, 'default'), ...coerceSpriteList(ormSprite, 'orm')];
-  const seenIds = new Set<string>();
-  const uniqueSprites = mergedSprites.filter((sprite) => {
-    if (seenIds.has(sprite.id)) return false;
-    seenIds.add(sprite.id);
-    return true;
-  });
-  return uniqueSprites.length > 0 ? uniqueSprites : undefined;
-}
-
-function getFirstSymbolLayerId(style: StyleLike) {
-  return (style.layers || []).find((layer) => layer.type === 'symbol')?.id;
-}
-
-function addMapterhornTerrain(style: StyleLike, demSource: DemSourceLike): StyleLike {
-  style.sources = {
-    ...(style.sources || {}),
-    hillshadeSource: {
-      type: 'raster-dem',
-      url: 'https://tiles.mapterhorn.com/tilejson.json',
-    },
-    contourSource: {
-      type: 'vector',
-      tiles: [
-        demSource.contourProtocolUrl({
-          thresholds: {
-            9: [100, 500],
-            10: [50, 250],
-            11: [25, 100],
-            12: [25, 100],
-            13: [10, 50],
-            14: [10, 40],
-          },
-          contourLayer: 'contours',
-          elevationKey: 'ele',
-          levelKey: 'level',
-        }),
-      ],
-      maxzoom: 17,
-    },
-  };
-
-  const terrainBaseLayers = [
-    {
-      id: 'trip-hillshade',
-      type: 'hillshade',
-      source: 'hillshadeSource',
-      // Terrain shading is invisible at world zooms and only costs raster-dem
-      // tile requests before the first frame, so it starts where the contour
-      // lines do.
-      minzoom: 8,
-      paint: {
-        'hillshade-shadow-color': 'rgba(20, 24, 36, 0.34)',
-        'hillshade-highlight-color': 'rgba(255, 255, 255, 0.28)',
-        'hillshade-illumination-direction': 315,
-        'hillshade-exaggeration': 0.26,
-      },
-    },
-    {
-      id: 'trip-contour-lines',
-      type: 'line',
-      source: 'contourSource',
-      'source-layer': 'contours',
-      minzoom: 8,
-      paint: {
-        'line-color': ['match', ['get', 'level'], 0, 'rgba(45, 56, 78, 0.28)', 'rgba(34, 44, 64, 0.44)'],
-        'line-width': ['match', ['get', 'level'], 0, 0.45, 1, 1.05, 1.35],
-        'line-opacity': ['interpolate', ['linear'], ['zoom'], 8, 0.26, 11, 0.42, 14, 0.65],
-      },
-    },
-  ];
-
-  const contourLabelLayer = {
-    id: 'trip-contour-labels',
-    type: 'symbol',
-    source: 'contourSource',
-    'source-layer': 'contours',
-    filter: ['>', ['get', 'level'], 0],
-    minzoom: 10,
-    layout: {
-      'symbol-placement': 'line',
-      'symbol-spacing': 200,
-      'text-size': 10,
-      'text-field': ['concat', ['to-string', ['get', 'ele']], ' m'],
-      'text-font': ['Noto Sans Regular'],
-      'text-max-angle': 90,
-      'text-padding': 1,
-      'text-allow-overlap': true,
-    },
-    paint: {
-      'text-color': 'rgba(22, 31, 48, 0.6)',
-      'text-halo-color': 'rgba(255, 255, 255, 0.82)',
-      'text-halo-width': 1.1,
-    },
-  };
-
-  // Insert hillshade and contour lines before other symbol layers (they render underneath)
-  const beforeId = getFirstSymbolLayerId(style);
-  const insertIndex = beforeId ? style.layers.findIndex((layer) => layer.id === beforeId) : style.layers.length;
-  style.layers.splice(insertIndex === -1 ? style.layers.length : insertIndex, 0, ...terrainBaseLayers);
-  // Append contour labels at the very end so they win collision detection against ORM labels
-  style.layers.push(contourLabelLayer);
-  return style;
-}
-
-function addSatelliteSourceAndLayer(style: StyleLike): StyleLike {
-  style.sources = {
-    ...(style.sources || {}),
-    satellite: {
-      type: 'raster',
-      tiles: [SATELLITE_URL],
-      tileSize: 256,
-      minzoom: 0,
-      maxzoom: 22,
-      attribution: '&copy; Google',
-    },
-  };
-
-  const insertIdx = style.layers.findIndex((l: StyleLayerLike) => l.id === 'trip-hillshade');
-  const satelliteLayer = {
-    id: 'satellite-layer',
-    type: 'raster',
-    source: 'satellite',
-    layout: { visibility: 'none' },
-    paint: { 'raster-opacity': 1 },
-  };
-
-  if (insertIdx !== -1) {
-    style.layers.splice(insertIdx, 0, satelliteLayer);
-  } else {
-    style.layers.push(satelliteLayer);
-  }
-
-  return style;
-}
-
-function withGlobalStateVisibility(layer: StyleLayerLike, stateName: string): StyleLayerLike {
-  const layout = { ...(layer.layout || {}) };
-  const originalVisibility = structuredClone(layout.visibility ?? 'visible');
-  layout.visibility = ['case', ['global-state', stateName], originalVisibility, 'none'];
-  return { ...layer, layout };
-}
-
-const STATE_DEFAULTS = {
-  date: 2026,
-  allDates: false,
-  theme: 'light',
-  stationLowZoomLabel: 'label',
-  openHistoricalMap: true,
-  showAbandonedInfrastructure: false,
-  showRazedInfrastructure: false,
-  showConstructionInfrastructure: true,
-  showProposedInfrastructure: true,
-  hillshade: false,
-  [SHOW_BASE_MAP_STATE]: true,
-  electrificationRailwayLine: 'voltageFrequency',
-  trackRailwayLine: 'gauge',
-};
-
-function mergeBaseAndOrm(baseStyle: StyleLike, ormStyle: StyleLike): StyleLike {
-  const base = dropBaseRelief(baseStyle);
-  const merged = structuredClone(base);
-  const baseLayers = (base.layers || []).map((layer) => withGlobalStateVisibility(layer, SHOW_BASE_MAP_STATE));
-  merged.center = ormStyle.center || merged.center;
-  merged.zoom = ormStyle.zoom || merged.zoom;
-  merged.glyphs = merged.glyphs || ormStyle.glyphs;
-  merged.sprite = mergeStyleSprites(merged.sprite, ormStyle.sprite);
-  // Set state defaults before the style is applied to avoid initial render flash
-  const state = { ...(merged.state || {}), ...(ormStyle.state || {}) };
-  for (const [key, value] of Object.entries(STATE_DEFAULTS)) {
-    state[key] = {
-      ...(state[key] || {}),
-      default: value,
-    };
-  }
-  merged.state = state;
-  merged.metadata = { ...(merged.metadata || {}), ...(ormStyle.metadata || {}) };
-  merged.sources = { ...(merged.sources || {}), ...(ormStyle.sources || {}) };
-  merged.layers = [...baseLayers, ...(ormStyle.layers || [])];
-  return merged;
-}
-
 function isMapResourceLoadError(event: MapLibreErrorEvent): boolean {
   const message = event.error instanceof Error ? event.error.message : String(event.error || '');
   return Boolean(event.sourceId || event.tile || /(?:tile|glyph|sprite|image|resource|fetch|load)/i.test(message));
@@ -535,65 +174,6 @@ async function loadStyle(demSource: DemSourceLike): Promise<StyleLike> {
   return addSatelliteSourceAndLayer(withTerrain);
 }
 
-function isSpriteIndex(value: unknown): value is SpriteAtlas['index'] {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-async function loadSpriteAtlases(): Promise<SpriteAtlas[]> {
-  const specs = [
-    { prefix: 'orm:', json: '/orm/sprite/symbols.json', png: '/orm/sprite/symbols.png', sdf: false },
-    { prefix: 'sdf:', json: '/orm/sdf_sprite/symbols.json', png: '/orm/sdf_sprite/symbols.png', sdf: true },
-  ];
-  const atlases: SpriteAtlas[] = [];
-  for (const spec of specs) {
-    const [index, image] = await Promise.all([loadJson<unknown>(spec.json), loadImage(spec.png)]);
-    atlases.push({ ...spec, index: isSpriteIndex(index) ? index : {}, image });
-  }
-  return atlases;
-}
-
-const SPRITE_ATLAS_PREFIXES = ['orm:', 'sdf:'];
-
-function addSpriteImage(map: maplibregl.Map, id: string, atlases: SpriteAtlas[]): void {
-  for (const atlas of atlases) {
-    const key = id.startsWith(atlas.prefix) ? id.slice(atlas.prefix.length) : null;
-    if (key && atlas.index[key]) {
-      const meta = atlas.index[key];
-      const canvas = document.createElement('canvas');
-      canvas.width = meta.width;
-      canvas.height = meta.height;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(atlas.image, meta.x, meta.y, meta.width, meta.height, 0, 0, meta.width, meta.height);
-      const data = ctx.getImageData(0, 0, meta.width, meta.height).data;
-      if (!map.hasImage(id)) {
-        map.addImage(
-          id,
-          { width: meta.width, height: meta.height, data },
-          { pixelRatio: meta.pixelRatio || 1, sdf: atlas.sdf },
-        );
-      }
-      return;
-    }
-  }
-}
-
-// Fills ORM icons MapLibre reports missing from the style's sprites, which hold
-// only the icons the standard style is known to use
-// (scripts/styles/sprite-subset.mjs). The full atlases load on the first such
-// miss instead of up front, so they never delay the map. Icons the base map
-// lacks are not ours to fill and must not trigger the download.
-function installSpriteFallback(map: maplibregl.Map): void {
-  let atlases: Promise<SpriteAtlas[]> | null = null;
-  map.on('styleimagemissing', (e) => {
-    const id = e.id;
-    if (!SPRITE_ATLAS_PREFIXES.some((prefix) => id.startsWith(prefix))) return;
-    atlases ??= loadSpriteAtlases();
-    atlases
-      .then((loaded) => addSpriteImage(map, id, loaded))
-      .catch((error) => console.warn('Sprite fallback failed:', error));
-  });
-}
-
 async function init() {
   try {
     const screenshotFixtureModule = await loadScreenshotFixture();
@@ -606,13 +186,7 @@ async function init() {
       screenshotFixtureModule && screenshotFixtureMode
         ? screenshotFixtureModule.createScreenshotCollaborationFixture(screenshotFixtureMode)
         : null;
-    const demSource = new mlcontour.DemSource({
-      url: MAPTERHORN_TERRAIN_URL,
-      encoding: 'terrarium',
-      maxzoom: 17,
-      worker: true,
-    });
-    demSource.setupMaplibre(maplibregl);
+    const demSource = setupMapterhornDem(maplibregl);
     const style = await loadStyle(demSource);
 
     window._mlmap = null;
@@ -746,48 +320,7 @@ async function init() {
       );
     };
 
-    // Terrain toggle control
-    class TerrainToggleControl {
-      _onChange: () => void;
-      _map?: maplibregl.Map;
-      _enabled = false;
-      _container?: HTMLElement;
-      _btn?: HTMLButtonElement;
-
-      constructor(onChange: () => void) {
-        this._onChange = onChange;
-      }
-      onAdd(map: maplibregl.Map) {
-        this._map = map;
-        this._enabled = false;
-        this._container = document.createElement('div');
-        this._container.className = 'maplibregl-ctrl maplibregl-ctrl-group';
-        this._btn = document.createElement('button');
-        this._btn.type = 'button';
-        this._btn.title = '3D Terrain';
-        this._btn.setAttribute('aria-label', '3D Terrain');
-        this._btn.className = 'maplibregl-ctrl-terrain';
-        this._btn.textContent = '3D';
-        this._btn.addEventListener('click', () => this.setEnabled(!this._enabled));
-        this._container.appendChild(this._btn);
-        return this._container;
-      }
-      setEnabled(enabled: boolean, options: ToggleOptions = {}) {
-        const next = Boolean(enabled);
-        if (this._enabled === next) return;
-        this._enabled = next;
-        runWhenStyleInfrastructureReady(this._map, () => {
-          this._map.setTerrain(next ? { source: 'hillshadeSource', exaggeration: 1.0 } : null);
-        });
-        this._btn?.classList.toggle('maplibregl-ctrl-terrain-enabled', next);
-        if (!options.silent) this._onChange?.();
-      }
-      onRemove() {
-        this._container.parentNode?.removeChild(this._container);
-        this._map = undefined;
-      }
-    }
-    terrainControl = new TerrainToggleControl(emitCollaborationViewState);
+    terrainControl = new TerrainToggleControl(() => emitCollaborationViewState()) as unknown as ToggleControl;
     map.addControl(terrainControl, 'top-right');
 
     // Satellite imagery toggle control

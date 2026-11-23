@@ -41,6 +41,8 @@ export default {
       }
     }
 
+    // Static assets (including /orm/*) are served at the edge before the Worker
+    // runs unless routed via run_worker_first; /orm/* CORS headers live in public/_headers.
     const assetResponse = await env.ASSETS.fetch(request);
     if (assetResponse.status !== 404) return assetResponse;
     const spaResponse = await env.ASSETS.fetch(new Request(new URL('/', request.url), request));

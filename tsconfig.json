@@ -19,6 +19,7 @@
   },
   "include": [
     "src/**/*.ts",
+    "packages/atlas-map/src/**/*.ts",
     "vite.config.js",
     "vitest.config.js",
     "vitest.worker.config.js",
