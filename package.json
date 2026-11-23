@@ -24,6 +24,7 @@
     "fmt:check": "oxfmt --check"
   },
   "dependencies": {
+    "@atlas-realm/map": "workspace:*",
     "@mapbox/vector-tile": "^2.0.4",
     "dompurify": "^3.4.10",
     "lucide": "^1.16.0",

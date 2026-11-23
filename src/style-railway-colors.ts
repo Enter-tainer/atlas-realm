@@ -1,1 +1,1 @@
-export * from '../packages/atlas-map/src/style-railway-colors.js';
+export { applyRouteColors, withRouteLineColors, withRouteStationColors } from '@atlas-realm/map';

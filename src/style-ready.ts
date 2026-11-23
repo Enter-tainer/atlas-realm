@@ -1,1 +1,1 @@
-export * from '../packages/atlas-map/src/style-ready.js';
+export { runWhenStyleInfrastructureReady, runWhenStyleReady, setGlobalStatePropertyWhenReady } from '@atlas-realm/map';

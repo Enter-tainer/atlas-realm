@@ -1,1 +1,1 @@
-export * from '../packages/atlas-map/src/style-railway-marks.js';
+export { hideTunnelAndBridgeMarks, hideTunnelAndBridgeMarksInStyle } from '@atlas-realm/map';

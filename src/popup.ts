@@ -1,4 +1,4 @@
-import { buildFeatureCatalog, installOrmPopups as installBaseOrmPopups } from '../packages/atlas-map/src/popup.js';
+import { buildFeatureCatalog, installOrmPopups as installBaseOrmPopups } from '@atlas-realm/map';
 import { renderMarkdown } from './markdown.js';
 import { buildWeatherDashboardUrl, buildWeatherRouteSummary } from './weather-dashboard.js';
 import { installSheetCollapse, isSheetLayout, sheetClosed, sheetOpened } from './bottom-sheet.js';

@@ -1,1 +1,1 @@
-export * from '../packages/atlas-map/src/style-base.js';
+export { BASE_RELIEF_SOURCE, dropBaseRelief } from '@atlas-realm/map';

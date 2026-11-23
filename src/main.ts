@@ -10,7 +10,6 @@ import { installMapCollaboration } from './collaboration.js';
 import { installWeatherPointPicker } from './weather.js';
 import { installLayerManager } from './layer-manager.js';
 import { installOsrmRouting } from './routing.js';
-import { setGlobalStatePropertyWhenReady, runWhenStyleInfrastructureReady } from './style-ready.js';
 import {
   ORM_SOURCE,
   SHOW_BASE_MAP_STATE,
@@ -20,10 +19,12 @@ import {
   installSpriteFallback,
   mergeBaseAndOrm,
   rewriteOrmStyle,
+  runWhenStyleInfrastructureReady,
+  setGlobalStatePropertyWhenReady,
   setupMapterhornDem,
   type DemSourceLike,
   type StyleLike,
-} from '../packages/atlas-map/src/compose.js';
+} from '@atlas-realm/map';
 import { LayerStore } from './layer-store.js';
 import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
