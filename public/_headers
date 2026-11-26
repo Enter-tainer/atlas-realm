@@ -24,3 +24,7 @@
 /orm/sdf_sprite/*
   Cache-Control: public, max-age=604800
   Access-Control-Allow-Origin: *
+
+# The manifest has to arrive as this type for iOS to read it as a web app.
+/manifest.webmanifest
+  Content-Type: application/manifest+json

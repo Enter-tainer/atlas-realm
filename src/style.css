@@ -15,8 +15,36 @@ body,
     sans-serif;
 }
 
+/* What covers the bottom of the page: the home indicator, or Safari's
+   floating toolbar, which browser-inset.ts measures in its place. */
+:root {
+  --browser-inset-bottom: env(safe-area-inset-bottom, 0px);
+}
+
 #app {
   position: relative;
+}
+
+/* With viewport-fit=cover (index.html) the map runs beside the notch in
+   landscape and under the floating toolbar in portrait; the controls keep out. */
+#map .maplibregl-ctrl-top-left,
+#map .maplibregl-ctrl-top-right {
+  top: env(safe-area-inset-top, 0px);
+}
+
+#map .maplibregl-ctrl-bottom-left,
+#map .maplibregl-ctrl-bottom-right {
+  bottom: var(--browser-inset-bottom);
+}
+
+#map .maplibregl-ctrl-top-left,
+#map .maplibregl-ctrl-bottom-left {
+  left: env(safe-area-inset-left, 0px);
+}
+
+#map .maplibregl-ctrl-top-right,
+#map .maplibregl-ctrl-bottom-right {
+  right: env(safe-area-inset-right, 0px);
 }
 
 #map {
@@ -768,7 +796,7 @@ body,
   .collab-panel {
     top: auto;
     right: 8px;
-    bottom: calc(8px + env(safe-area-inset-bottom));
+    bottom: calc(8px + var(--browser-inset-bottom));
     left: 8px;
     flex-direction: column-reverse;
     align-items: flex-end;
@@ -2922,7 +2950,7 @@ body,
 
   .annotation-body {
     gap: 8px;
-    padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+    padding: 9px 10px calc(10px + var(--browser-inset-bottom));
   }
 
   .annotation-mode-grid {
@@ -2984,7 +3012,7 @@ body,
 
   .routing-body {
     gap: 8px;
-    padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+    padding: 9px 10px calc(10px + var(--browser-inset-bottom));
   }
 
   .routing-point-row {
@@ -3033,7 +3061,7 @@ body,
 
   .layer-manager-body {
     gap: 8px;
-    padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+    padding: 9px 10px calc(10px + var(--browser-inset-bottom));
   }
 
   .layer-manager-dropzone {
@@ -3589,7 +3617,7 @@ body,
 
 @media (max-width: 640px) {
   .sheet-collapsed {
-    translate: 0 calc(100% - var(--sheet-peek, 64px) - env(safe-area-inset-bottom, 0px));
+    translate: 0 calc(100% - var(--sheet-peek, 64px) - var(--browser-inset-bottom));
   }
 
   .sheet-dragging {
@@ -3630,7 +3658,7 @@ body,
     flex-direction: column;
     max-width: none !important;
     max-height: var(--sheet-max, 50%);
-    padding-bottom: env(safe-area-inset-bottom, 0px);
+    padding-bottom: var(--browser-inset-bottom);
     border-radius: 14px 14px 0 0;
     background: #fff;
     box-shadow: 0 -4px 24px rgba(15, 23, 42, 0.18);
@@ -3733,7 +3761,7 @@ body,
    chip rises to just under the search box. */
 .load-status {
   position: absolute;
-  bottom: 14px;
+  bottom: calc(14px + var(--browser-inset-bottom));
   left: 50%;
   z-index: 3;
   display: inline-flex;
@@ -3803,7 +3831,22 @@ body,
 
 @media (max-width: 760px) {
   .load-status {
-    top: 64px;
+    top: calc(64px + env(safe-area-inset-top, 0px));
     bottom: auto;
   }
+}
+
+/* Safari on iOS zooms the page into a focused field whose text is under 16px,
+   and a pinch then zooms the map instead of the page back out. */
+@media (pointer: coarse) {
+  input:not([type='checkbox'], [type='radio'], [type='range'], [type='color'], [type='file']),
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* The clear button beside it does this. */
+.poi-search-input::-webkit-search-cancel-button {
+  appearance: none;
 }

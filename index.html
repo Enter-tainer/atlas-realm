@@ -3,7 +3,16 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- viewport-fit=cover lets the home screen app run down to the screen's
+         bottom edge, with the home indicator's inset reported to keep the
+         controls clear of it. iOS draws nothing of a page under the status bar
+         (black-translucent is deprecated); the bar takes the page's color. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Atlas Realm" />
     <!-- The app fetches the base style and terrain right after boot: open those
          connections while the bundle is still downloading. -->
     <link rel="preconnect" href="https://tiles.openfreemap.org" crossorigin />

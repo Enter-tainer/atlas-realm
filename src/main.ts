@@ -30,6 +30,7 @@ import { installAnnotationRenderer } from './annotation-renderer.js';
 import { installAnnotationTools } from './annotation-tools.js';
 import type * as ScreenshotFixtureModule from './screenshot-fixture.js';
 import { installLoadStatus, type LoadStatusMap } from './load-status.js';
+import { installBrowserInset } from './browser-inset.js';
 
 const LOCAL_ORM_PREFIX = '/orm';
 const STYLE_URL = `${LOCAL_ORM_PREFIX}/style/standard.json?v=${__STYLE_HASH__}`;
@@ -187,6 +188,7 @@ async function init() {
         ? screenshotFixtureModule.createScreenshotCollaborationFixture(screenshotFixtureMode)
         : null;
     const demSource = setupMapterhornDem(maplibregl);
+    installBrowserInset();
     const style = await loadStyle(demSource);
 
     window._mlmap = null;
